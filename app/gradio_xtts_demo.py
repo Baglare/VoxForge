@@ -4,8 +4,6 @@
 from datetime import datetime
 from pathlib import Path
 import json
-import shutil
-import subprocess
 import sys
 from threading import Lock
 from typing import Optional
@@ -24,18 +22,11 @@ GRADIO_QUALITY_REPORT_DIR = PROJECT_ROOT / "outputs" / "reports" / "gradio_quali
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_reference_audio
 from scripts.audio_quality_utils import analyze_audio_file, format_value
 
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 LANGUAGE = "tr"
-
-# Referans sesleri XTTS icin daha tutarli hale getiren FFmpeg filtresi.
-AUDIO_FILTER = (
-    "silenceremove="
-    "start_periods=1:start_duration=0.20:start_threshold=-45dB:"
-    "stop_periods=1:stop_duration=0.20:stop_threshold=-45dB,"
-    "loudnorm=I=-20:TP=-2:LRA=11"
-)
 
 _tts_model: Optional[TTS] = None
 _tts_device: Optional[str] = None
@@ -66,64 +57,6 @@ def resolve_reference_audio(uploaded_audio) -> Path:
         return Path(uploaded_audio)
 
     return DEFAULT_REFERENCE_AUDIO
-
-
-def build_preprocess_command(
-    ffmpeg_path: str,
-    reference_audio: Path,
-    preprocessed_audio: Path,
-) -> list[str]:
-    """Referans sesi standart XTTS girisine ceviren FFmpeg komutunu hazirlar."""
-    return [
-        ffmpeg_path,
-        "-y",
-        "-hide_banner",
-        "-i",
-        str(reference_audio),
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "24000",
-        "-af",
-        AUDIO_FILTER,
-        "-c:a",
-        "pcm_s16le",
-        str(preprocessed_audio),
-    ]
-
-
-def preprocess_reference_audio(reference_audio: Path) -> tuple[Path | None, str | None]:
-    """Ham referans sesi on isleyip yeni bir WAV dosyasi olarak kaydeder."""
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path is None:
-        return None, "FFmpeg bulunamadi. Lutfen FFmpeg kurulumunu ve PATH ayarini kontrol edin."
-
-    PREPROCESSED_REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    preprocessed_audio = PREPROCESSED_REFERENCE_DIR / f"reference_{timestamp}.wav"
-
-    command = build_preprocess_command(ffmpeg_path, reference_audio, preprocessed_audio)
-    print("Referans ses on isleme FFmpeg komutu:")
-    print(subprocess.list2cmdline(command))
-
-    result = subprocess.run(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        error_detail = result.stderr.strip() or "FFmpeg hata ayrintisi dondurmedi."
-        print(f"FFmpeg on isleme hatasi: {error_detail}")
-        return None, "FFmpeg referans ses on isleme adimi basarisiz oldu."
-
-    if not preprocessed_audio.is_file():
-        return None, "FFmpeg tamamlandi ancak on islenmis referans ses dosyasi olusmadi."
-
-    return preprocessed_audio, None
 
 
 def format_quality_report_section(title: str, report: dict, is_raw: bool) -> str:
@@ -161,7 +94,38 @@ def format_quality_report_section(title: str, report: dict, is_raw: bool) -> str
     return "\n".join(lines)
 
 
-def build_quality_report_text(raw_report: dict, preprocessed_report: dict | None) -> str:
+def build_preprocessing_section(preprocessing_result: dict | None) -> str:
+    """On isleme guvenlik sonucunu kalite raporunda gorunur yapar."""
+    if preprocessing_result is None:
+        return "### On isleme guvenlik notu\n- preprocessing_warning: rapor olusturulamadi."
+
+    warning = preprocessing_result.get("preprocessing_warning") or "yok"
+    selected_variant = preprocessing_result.get("selected_variant", "bilinmiyor")
+    original_duration = format_value(
+        preprocessing_result.get("original_duration_seconds"),
+        " saniye",
+    )
+    selected_duration = format_value(
+        preprocessing_result.get("selected_duration_seconds"),
+        " saniye",
+    )
+
+    return "\n".join(
+        [
+            "### On isleme guvenlik notu",
+            f"- Secilen varyant: `{selected_variant}`",
+            f"- Ham sure: {original_duration}",
+            f"- Secilen sure: {selected_duration}",
+            f"- preprocessing_warning: {warning}",
+        ]
+    )
+
+
+def build_quality_report_text(
+    raw_report: dict,
+    preprocessed_report: dict | None,
+    preprocessing_result: dict | None = None,
+) -> str:
     """Ham ve on islenmis referans raporlarini tek metinde birlestirir."""
     sections = [format_quality_report_section("Ham referans ses", raw_report, is_raw=True)]
 
@@ -176,6 +140,7 @@ def build_quality_report_text(raw_report: dict, preprocessed_report: dict | None
             )
         )
 
+    sections.append(build_preprocessing_section(preprocessing_result))
     return "\n\n".join(sections)
 
 
@@ -187,6 +152,7 @@ def write_gradio_quality_report(
     preprocessed_audio: Path | None,
     output_audio: Path | None,
     status: str,
+    preprocessing_result: dict | None = None,
     error_message: str | None = None,
 ) -> Path:
     """Her Gradio uretim denemesi icin kalite raporunu JSON olarak kaydeder."""
@@ -202,6 +168,15 @@ def write_gradio_quality_report(
         "error_message": error_message,
         "raw_reference_report": raw_report,
         "preprocessed_reference_report": preprocessed_report,
+        "selected_preprocessing_variant": (
+            preprocessing_result.get("selected_variant") if preprocessing_result else None
+        ),
+        "preprocessing_warning": (
+            preprocessing_result.get("preprocessing_warning") if preprocessing_result else None
+        ),
+        "preprocessing_candidate_reports": (
+            preprocessing_result.get("candidate_reports") if preprocessing_result else None
+        ),
     }
     report_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -224,6 +199,18 @@ def build_quality_status_warning(raw_report: dict, preprocessed_report: dict | N
     return f"\nKalite uyarisi: {', '.join(bad_labels)} icin sonuc BAD. Ciktiyi dinleyerek kontrol et."
 
 
+def build_preprocessing_status_warning(preprocessing_result: dict | None) -> str:
+    """Durum mesajina on isleme guvenlik uyarisini ekler."""
+    if not preprocessing_result:
+        return ""
+
+    warning = preprocessing_result.get("preprocessing_warning")
+    if not warning:
+        return ""
+
+    return f"\nOn isleme uyarisi: {warning}"
+
+
 def generate_voice(text: str, uploaded_audio, has_permission: bool):
     """Gradio butonuna basilinca Turkce ses uretimi yapar."""
     if not has_permission:
@@ -244,8 +231,16 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
     output_audio = OUTPUT_DIR / f"xtts_tr_{timestamp}.wav"
 
     print(f"Referans ses dosyasi: {reference_audio}")
-    preprocessed_audio, preprocess_error = preprocess_reference_audio(reference_audio)
-    if preprocess_error:
+    PREPROCESSED_REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    preprocessed_audio = PREPROCESSED_REFERENCE_DIR / f"reference_{timestamp}.wav"
+    try:
+        preprocessing_result = preprocess_reference_audio(
+            reference_audio,
+            preprocessed_audio,
+            mode="safe",
+        )
+    except PreprocessingError as exc:
+        preprocess_error = str(exc)
         quality_report_path = write_gradio_quality_report(
             timestamp,
             raw_report,
@@ -254,9 +249,9 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
             None,
             None,
             "preprocess_failed",
-            preprocess_error,
+            error_message=preprocess_error,
         )
-        quality_report_text = build_quality_report_text(raw_report, None)
+        quality_report_text = build_quality_report_text(raw_report, None, None)
         return (
             None,
             "HATA: Referans ses on isleme basarisiz oldu.\n"
@@ -265,28 +260,26 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
             f"Kalite raporu JSON: {quality_report_path.resolve()}",
             quality_report_text,
         )
-    if preprocessed_audio is None:
-        quality_report_path = write_gradio_quality_report(
-            timestamp,
-            raw_report,
-            None,
-            reference_audio,
-            None,
-            None,
-            "preprocess_failed",
-            "On islenmis referans ses yolu olusturulamadi.",
-        )
-        return (
-            None,
-            "HATA: On islenmis referans ses yolu olusturulamadi.\n"
-            f"Kalite raporu JSON: {quality_report_path.resolve()}",
-            build_quality_report_text(raw_report, None),
-        )
+
+    preprocessed_audio = Path(preprocessing_result["selected_output_path"])
 
     print(f"On islenmis referans ses dosyasi: {preprocessed_audio}")
+    print(f"On isleme varyanti: {preprocessing_result.get('selected_variant')}")
+    if preprocessing_result.get("preprocessing_warning"):
+        print(f"On isleme uyarisi: {preprocessing_result['preprocessing_warning']}")
     print(f"Cikti ses dosyasi: {output_audio}")
-    preprocessed_report = analyze_audio_file(preprocessed_audio)
-    quality_report_text = build_quality_report_text(raw_report, preprocessed_report)
+    preprocessed_report = (
+        preprocessing_result.get("candidate_reports", {})
+        .get(preprocessing_result.get("selected_variant"))
+    )
+    if preprocessed_report is None:
+        preprocessed_report = analyze_audio_file(preprocessed_audio)
+
+    quality_report_text = build_quality_report_text(
+        raw_report,
+        preprocessed_report,
+        preprocessing_result,
+    )
 
     try:
         tts = get_tts_model()
@@ -308,6 +301,7 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
             preprocessed_audio,
             output_audio,
             "tts_failed",
+            preprocessing_result,
             "Ses uretimi sirasinda sorun olustu.",
         )
         return (
@@ -318,6 +312,7 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
             f"Uretilmesi planlanan cikti ses yolu: {output_audio.resolve()}\n"
             f"Kullanilan cihaz: {device}\n"
             f"Kalite raporu JSON: {quality_report_path.resolve()}\n"
+            f"{build_preprocessing_status_warning(preprocessing_result)}\n"
             "Ayrinti: Teknik hata terminale yazildi.",
             quality_report_text,
         )
@@ -330,6 +325,7 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
         preprocessed_audio,
         output_audio,
         "success",
+        preprocessing_result,
     )
     status_message = (
         "Ses uretildi.\n"
@@ -338,6 +334,7 @@ def generate_voice(text: str, uploaded_audio, has_permission: bool):
         f"Uretilen cikti ses yolu: {output_audio.resolve()}\n"
         f"Kullanilan cihaz: {device}\n"
         f"Kalite raporu JSON: {quality_report_path.resolve()}"
+        f"{build_preprocessing_status_warning(preprocessing_result)}"
         f"{build_quality_status_warning(raw_report, preprocessed_report)}"
     )
     return str(output_audio), status_message, quality_report_text
