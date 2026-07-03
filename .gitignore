@@ -26,6 +26,10 @@ dist/
 samples/*
 !samples/.gitkeep
 
+# Local voice profiles
+profiles/*
+!profiles/.gitkeep
+
 # Generated outputs
 outputs/*
 !outputs/.gitkeep
