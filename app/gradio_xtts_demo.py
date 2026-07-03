@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import sys
 from threading import Lock
-from typing import Optional
+from typing import Any, Optional
 
 import gradio as gr
 import torch
@@ -20,8 +20,14 @@ PREPROCESSED_REFERENCE_DIR = PROJECT_ROOT / "outputs" / "preprocessed_references
 GRADIO_QUALITY_REPORT_DIR = PROJECT_ROOT / "outputs" / "reports" / "gradio_quality_reports"
 PROFILES_DIR = PROJECT_ROOT / "profiles"
 PROFILE_JSON_NAME = "profile.json"
+PROFILE_ORIGINAL_REFERENCE_NAME = "original_reference.wav"
 PROFILE_PREPROCESSED_REFERENCE_NAME = "preprocessed_reference.wav"
 NO_PROFILE_VALUE = ""
+NO_PROFILE_INFO_TEXT = (
+    "### Seçili profil bilgisi\n"
+    "Profil seçilmedi. Ses yüklenirse yüklenen ses, yüklenmezse "
+    "varsayılan referans ses kullanılacak."
+)
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -87,7 +93,8 @@ def read_profile_json(profile_json_path: Path) -> dict:
         metadata = json.loads(profile_json_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ProfileSelectionError(
-            f"Profil metadata dosyasi bozuk: {profile_json_path}"
+            "Profil metadata dosyasi bozuk: "
+            f"{profile_json_path} (satir {exc.lineno}, kolon {exc.colno})"
         ) from exc
     except OSError as exc:
         raise ProfileSelectionError(
@@ -102,43 +109,112 @@ def read_profile_json(profile_json_path: Path) -> dict:
     return metadata
 
 
-def build_profile_label(profile_slug: str, profile_json_path: Path) -> str:
-    """Dropdown etiketini mumkunse profile.json icindeki adla olusturur."""
-    try:
-        metadata = read_profile_json(profile_json_path)
-    except ProfileSelectionError:
-        return f"{profile_slug} (profile.json okunamadi)"
-
+def profile_name_from_metadata(metadata: dict[str, Any], profile_slug: str) -> str:
+    """Profil adini metadata icinden okur, yoksa slug'a duser."""
     profile_name = str(metadata.get("profile_name") or profile_slug).strip()
-    if not profile_name:
-        profile_name = profile_slug
-
-    return f"{profile_name} ({profile_slug})"
+    return profile_name or profile_slug
 
 
-def build_profile_dropdown_choices() -> list[tuple[str, str]]:
-    """profiles/ altindaki kullanilabilir yerel profilleri dropdown'a hazirlar."""
-    choices: list[tuple[str, str]] = [("Profil yok", NO_PROFILE_VALUE)]
+def quality_summary(report: Any) -> str:
+    """Profil bilgi paneli icin kalite raporunu tek satira indirir."""
+    if not isinstance(report, dict):
+        return "UNKNOWN"
+
+    quality = report.get("quality") or "UNKNOWN"
+    duration = format_value(report.get("duration_seconds"), " saniye")
+    sample_rate = format_value(report.get("sample_rate"), " Hz")
+    channels = format_value(report.get("channels"))
+    return (
+        f"{quality} "
+        f"(süre: {duration}, sample rate: {sample_rate}, kanal: {channels})"
+    )
+
+
+def scan_local_profiles() -> dict[str, list[dict[str, Any]]]:
+    """profiles/ klasorunu tarar ve gecerli/gecersiz profilleri ayirir."""
+    valid_profiles: list[dict[str, Any]] = []
+    invalid_profiles: list[dict[str, Any]] = []
 
     if not PROFILES_DIR.is_dir():
-        return choices
+        return {
+            "valid_profiles": valid_profiles,
+            "invalid_profiles": invalid_profiles,
+        }
 
     for profile_dir in sorted(PROFILES_DIR.iterdir(), key=lambda item: item.name.lower()):
         if not profile_dir.is_dir():
             continue
 
+        profile_slug = profile_dir.name
         profile_json_path = profile_dir / PROFILE_JSON_NAME
+        original_reference = profile_dir / PROFILE_ORIGINAL_REFERENCE_NAME
         preprocessed_reference = profile_dir / PROFILE_PREPROCESSED_REFERENCE_NAME
-        if not profile_json_path.is_file() or not preprocessed_reference.is_file():
+
+        profile_record: dict[str, Any] = {
+            "profile_slug": profile_slug,
+            "profile_dir": profile_dir,
+            "profile_json_path": profile_json_path,
+            "original_reference": original_reference,
+            "preprocessed_reference": preprocessed_reference,
+            "original_reference_exists": original_reference.is_file(),
+            "preprocessed_reference_exists": preprocessed_reference.is_file(),
+            "issues": [],
+        }
+
+        if not profile_json_path.is_file():
+            profile_record["issues"].append("profile.json bulunamadi.")
+        if not preprocessed_reference.is_file():
+            profile_record["issues"].append("preprocessed_reference.wav bulunamadi.")
+
+        metadata = None
+        if profile_json_path.is_file():
+            try:
+                metadata = read_profile_json(profile_json_path)
+            except ProfileSelectionError as exc:
+                profile_record["issues"].append(str(exc))
+
+        if profile_record["issues"]:
+            invalid_profiles.append(profile_record)
             continue
 
-        choices.append(
-            (
-                build_profile_label(profile_dir.name, profile_json_path),
-                profile_dir.name,
-            )
-        )
+        if metadata is None:
+            profile_record["issues"].append("profile.json okunamadi.")
+            invalid_profiles.append(profile_record)
+            continue
 
+        profile_record.update(
+            {
+                "profile_name": profile_name_from_metadata(metadata, profile_slug),
+                "created_at": metadata.get("created_at"),
+                "original_quality": metadata.get("original_quality"),
+                "preprocessed_quality": metadata.get("preprocessed_quality"),
+                "selected_preprocessing_variant": metadata.get(
+                    "selected_preprocessing_variant"
+                ),
+                "preprocessing_warning": metadata.get("preprocessing_warning"),
+            }
+        )
+        valid_profiles.append(profile_record)
+
+    return {
+        "valid_profiles": valid_profiles,
+        "invalid_profiles": invalid_profiles,
+    }
+
+
+def build_profile_dropdown_choices(
+    profile_scan: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[tuple[str, str]]:
+    """Guncel profil taramasindan dropdown secenekleri olusturur."""
+    if profile_scan is None:
+        profile_scan = scan_local_profiles()
+
+    choices: list[tuple[str, str]] = [("Profil yok", NO_PROFILE_VALUE)]
+    for profile in profile_scan["valid_profiles"]:
+        profile_name = profile.get("profile_name") or profile["profile_slug"]
+        choices.append(
+            (f"{profile_name} ({profile['profile_slug']})", profile["profile_slug"])
+        )
     return choices
 
 
@@ -154,21 +230,29 @@ def load_selected_profile(profile_slug: str | None) -> dict | None:
     if not profile_dir.is_dir():
         raise ProfileSelectionError(f"Profil klasoru bulunamadi: {profile_slug}")
     if not profile_json_path.is_file():
-        raise ProfileSelectionError(f"Profil metadata dosyasi bulunamadi: {profile_json_path}")
+        raise ProfileSelectionError(
+            f"Profil metadata dosyasi bulunamadi: {profile_json_path}"
+        )
     if not preprocessed_reference.is_file():
         raise ProfileSelectionError(
             f"Profil on islenmis referans sesi bulunamadi: {preprocessed_reference}"
         )
 
     metadata = read_profile_json(profile_json_path)
-    profile_name = str(metadata.get("profile_name") or profile_slug).strip() or str(profile_slug)
+    profile_name = (
+        str(metadata.get("profile_name") or profile_slug).strip()
+        or str(profile_slug)
+    )
     selected_variant = (
         metadata.get("selected_preprocessing_variant")
         or "profile_preprocessed_reference"
     )
     original_quality = metadata.get("original_quality")
     if not isinstance(original_quality, dict):
-        original_quality = {"quality": "UNKNOWN", "warnings": ["profile.json icinde original_quality yok."]}
+        original_quality = {
+            "quality": "UNKNOWN",
+            "warnings": ["profile.json icinde original_quality yok."],
+        }
 
     preprocessed_quality = metadata.get("preprocessed_quality")
     if not isinstance(preprocessed_quality, dict):
@@ -201,6 +285,103 @@ def load_selected_profile(profile_slug: str | None) -> dict | None:
         "preprocessed_quality": preprocessed_quality,
         "preprocessing_result": preprocessing_result,
     }
+
+
+def build_profile_refresh_message(profile_scan: dict[str, list[dict[str, Any]]]) -> str:
+    """Profil yenileme sonucunu kullaniciya sade metinle gosterir."""
+    valid_count = len(profile_scan["valid_profiles"])
+    invalid_profiles = profile_scan["invalid_profiles"]
+
+    if valid_count == 0:
+        lines = ["Henüz yerel ses profili bulunamadı."]
+    else:
+        lines = [f"Geçerli yerel ses profili sayısı: {valid_count}."]
+
+    if invalid_profiles:
+        lines.append(
+            f"Atlanan eksik veya bozuk profil sayısı: {len(invalid_profiles)}."
+        )
+        for profile in invalid_profiles:
+            issue_text = "; ".join(profile.get("issues") or ["bilinmeyen sorun"])
+            lines.append(f"- `{profile['profile_slug']}`: {issue_text}")
+
+    return "\n".join(lines)
+
+
+def find_scanned_profile(
+    profile_scan: dict[str, list[dict[str, Any]]],
+    profile_slug: str,
+) -> dict[str, Any] | None:
+    """Taranmis gecerli profiller icinde slug arar."""
+    for profile in profile_scan["valid_profiles"]:
+        if profile["profile_slug"] == profile_slug:
+            return profile
+    return None
+
+
+def build_selected_profile_info(selected_profile_slug: str | None) -> str:
+    """Secili profil bilgi panelini olusturur."""
+    if not selected_profile_slug or selected_profile_slug == NO_PROFILE_VALUE:
+        return NO_PROFILE_INFO_TEXT
+
+    profile_scan = scan_local_profiles()
+    profile = find_scanned_profile(profile_scan, str(selected_profile_slug))
+    if profile is None:
+        for invalid_profile in profile_scan["invalid_profiles"]:
+            if invalid_profile["profile_slug"] == selected_profile_slug:
+                issues = "; ".join(
+                    invalid_profile.get("issues") or ["bilinmeyen sorun"]
+                )
+                return (
+                    "### Seçili profil bilgisi\n"
+                    f"Uyarı: `{selected_profile_slug}` profili geçersiz görünüyor.\n\n"
+                    f"Sorun: {issues}"
+                )
+
+        return (
+            "### Seçili profil bilgisi\n"
+            f"Uyarı: `{selected_profile_slug}` profili artık bulunamadı. "
+            "Profilleri yenileyin veya başka bir profil seçin."
+        )
+
+    warning = profile.get("preprocessing_warning") or "yok"
+    selected_variant = profile.get("selected_preprocessing_variant") or "bilinmiyor"
+    preprocessed_exists = (
+        "evet" if profile.get("preprocessed_reference_exists") else "hayır"
+    )
+
+    return "\n".join(
+        [
+            "### Seçili profil bilgisi",
+            f"- Profil adı: {profile.get('profile_name', 'bilinmiyor')}",
+            f"- Profil slug: `{profile.get('profile_slug', 'bilinmiyor')}`",
+            f"- Oluşturulma tarihi: {profile.get('created_at') or 'bilinmiyor'}",
+            f"- original_quality: {quality_summary(profile.get('original_quality'))}",
+            "- preprocessed_quality: "
+            f"{quality_summary(profile.get('preprocessed_quality'))}",
+            f"- selected_preprocessing_variant: `{selected_variant}`",
+            f"- preprocessing_warning: {warning}",
+            f"- preprocessed_reference.wav var mı: {preprocessed_exists}",
+        ]
+    )
+
+
+def refresh_profile_choices(selected_profile_slug: str | None):
+    """Butona basildiginda profilleri yeniden tarar ve secimi korumaya calisir."""
+    profile_scan = scan_local_profiles()
+    choices = build_profile_dropdown_choices(profile_scan)
+    valid_values = {value for _, value in choices if value != NO_PROFILE_VALUE}
+
+    if selected_profile_slug in valid_values:
+        next_value = selected_profile_slug
+    else:
+        next_value = NO_PROFILE_VALUE
+
+    return (
+        gr.update(choices=choices, value=next_value),
+        build_profile_refresh_message(profile_scan),
+        build_selected_profile_info(next_value),
+    )
 
 
 def format_quality_report_section(title: str, report: dict, is_raw: bool) -> str:
@@ -576,15 +757,22 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
 
 def build_demo() -> gr.Blocks:
     """Basit lokal Gradio arayuzunu olusturur."""
+    initial_profile_scan = scan_local_profiles()
+
     with gr.Blocks(title="VoxForge XTTS Demo") as demo:
         gr.Markdown("# VoxForge XTTS Türkçe Demo")
 
         profile_dropdown = gr.Dropdown(
             label="Yerel ses profili",
-            choices=build_profile_dropdown_choices(),
+            choices=build_profile_dropdown_choices(initial_profile_scan),
             value=NO_PROFILE_VALUE,
             interactive=True,
         )
+        refresh_profiles_button = gr.Button("Profilleri yenile")
+        profile_refresh_status = gr.Markdown(
+            value=build_profile_refresh_message(initial_profile_scan)
+        )
+        selected_profile_info = gr.Markdown(value=NO_PROFILE_INFO_TEXT)
         gr.Markdown(
             "Profil seçerseniz yüklenen ses dosyası yerine profilin ön işlenmiş referansı kullanılır."
         )
@@ -614,6 +802,22 @@ def build_demo() -> gr.Blocks:
         )
         quality_report_output = gr.Markdown(
             value="Kalite raporu ses uretiminden sonra burada gorunecek."
+        )
+
+        refresh_profiles_button.click(
+            fn=refresh_profile_choices,
+            inputs=[profile_dropdown],
+            outputs=[
+                profile_dropdown,
+                profile_refresh_status,
+                selected_profile_info,
+            ],
+        )
+
+        profile_dropdown.change(
+            fn=build_selected_profile_info,
+            inputs=[profile_dropdown],
+            outputs=[selected_profile_info],
         )
 
         generate_button.click(
