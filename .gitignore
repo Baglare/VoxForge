@@ -1,48 +1,39 @@
-﻿# Python
+# Virtual environments
+.venv/
+venv/
+
+# Python caches
 __pycache__/
-*.py[cod]
-*.pyo
-*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# IDE / editor
+# IDE files
 .vs/
 .vscode/
 .idea/
 
-# OS files
-.DS_Store
-Thumbs.db
-
-# Environment / secrets
+# Environment files
 .env
 .env.*
-*.env
 
 # Build artifacts
 build/
 dist/
 *.egg-info/
 
-# VoxForge local audio data
+# Local reference samples
 samples/*
 !samples/.gitkeep
 
+# Generated outputs
 outputs/*
 !outputs/.gitkeep
 !outputs/gradio_outputs/
 outputs/gradio_outputs/*
 !outputs/gradio_outputs/.gitkeep
 
-# Audio files should not be committed by default
+# Audio files
 *.wav
 *.mp3
 *.m4a
@@ -50,7 +41,7 @@ outputs/gradio_outputs/*
 *.ogg
 *.aac
 
-# ML model / cache / checkpoint files
+# Model and checkpoint files
 .cache/
 models/
 checkpoints/
@@ -61,5 +52,5 @@ checkpoints/
 *.onnx
 *.bin
 
-# Gradio
+# Gradio flagged data
 flagged/
