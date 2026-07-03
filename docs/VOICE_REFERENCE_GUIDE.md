@@ -112,8 +112,12 @@ Ham referans, kullanıcının verdiği orijinal ses dosyasıdır. Bu dosya stere
 
 - Sesi mono WAV formatına çevirmek
 - Sample rate değerini 24000 Hz yapmak
-- Başta ve sondaki sessizlikleri azaltmak
 - Ses seviyesini daha dengeli hale getirmek
+- Referans süresini gereksiz kısaltmadan güvenli bir normalize edilmiş WAV üretmek
+
+Varsayılan akış artık `safe_normalized` yaklaşımını kullanır. Bu yaklaşım agresif sessizlik kırpma yapmadan formatı ve ses seviyesini düzenler. Amaç, XTTS'e daha tutarlı bir referans vermek ama konuşmacı karakterini taşıyan bölümleri yanlışlıkla kesmemektir.
+
+Agresif sessizlik kırpma bazı sesleri fazla kısaltabilir. Özellikle düşük sesli konuşma, doğal konuşma araları veya nefesli kayıtlar sessizlik gibi algılanırsa referans süresi gereğinden fazla düşebilir. Bu yüzden agresif kırpma varsayılan akışta kullanılmaz; güvenli normalize edilmiş referans tercih edilir.
 
 Ön işlenmiş dosyalar local olarak şu klasöre kaydedilir:
 

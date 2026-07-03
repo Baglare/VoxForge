@@ -180,6 +180,14 @@ Gradio demo:
 powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 ```
 
+Yerel voice profile oluşturma:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
+```
+
+Bu komut, verilen referans sesi `profiles/<slug>/` altında yerel bir profile dönüştürür. Profil dosyaları kişisel ses ve kalite metadata'sı içerebileceği için GitHub'a eklenmemelidir.
+
 ## 11. Sık görülen hatalar
 
 ### `isin_mps_friendly` import hatası
@@ -243,5 +251,6 @@ Adım adım kontrol:
 6. `where.exe ffmpeg` ve `where.exe ffprobe` ile FFmpeg görünürlüğünü kontrol edin.
 7. `samples/my_voice.wav` dosyasını local olarak ekleyin.
 8. `run_audio_quality_report.ps1` ile referans sesi kontrol edin.
-9. `run_first_xtts_test.ps1` ile ilk ses üretimini deneyin.
-10. `run_gradio_demo.ps1` ile local web demosunu açın.
+9. İsterseniz `run_create_voice_profile.ps1` ile yerel voice profile oluşturun.
+10. `run_first_xtts_test.ps1` ile ilk ses üretimini deneyin.
+11. `run_gradio_demo.ps1` ile local web demosunu açın.
