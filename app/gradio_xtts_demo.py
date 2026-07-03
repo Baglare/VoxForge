@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import sys
 from threading import Lock
+import traceback
 from typing import Any, Optional
 
 import gradio as gr
@@ -34,6 +35,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_reference_audio
 from scripts.audio_quality_utils import analyze_audio_file, format_value
+from scripts.voice_profile_utils import (
+    VoiceProfileError,
+    VoiceProfileResult,
+    create_voice_profile,
+)
 
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 LANGUAGE = "tr"
@@ -381,6 +387,113 @@ def refresh_profile_choices(selected_profile_slug: str | None):
         gr.update(choices=choices, value=next_value),
         build_profile_refresh_message(profile_scan),
         build_selected_profile_info(next_value),
+    )
+
+
+def resolve_uploaded_audio_path(uploaded_audio) -> Path | None:
+    """Profil olusturma input'undaki yuklenen sesi Path olarak cozer."""
+    if not uploaded_audio:
+        return None
+    if isinstance(uploaded_audio, dict) and uploaded_audio.get("path"):
+        return Path(uploaded_audio["path"])
+    return Path(uploaded_audio)
+
+
+def build_created_profile_status(result: VoiceProfileResult) -> str:
+    """Basarili profil olusturma sonucunu Gradio icin ozetler."""
+    warning = result.preprocessing_warning or "yok"
+    return "\n".join(
+        [
+            "Profil oluşturuldu.",
+            f"- Profil adı: {result.profile_name}",
+            f"- Profil slug: `{result.profile_slug}`",
+            f"- original_quality: {quality_summary(result.original_quality)}",
+            f"- preprocessed_quality: {quality_summary(result.preprocessed_quality)}",
+            "- selected_preprocessing_variant: "
+            f"`{result.selected_preprocessing_variant}`",
+            f"- preprocessing_warning: {warning}",
+        ]
+    )
+
+
+def build_profile_create_error_outputs(
+    current_profile_slug: str | None,
+    message: str,
+):
+    """Profil olusturma hatasinda mevcut dropdown durumunu korur."""
+    profile_scan = scan_local_profiles()
+    return (
+        gr.update(),
+        build_profile_refresh_message(profile_scan),
+        build_selected_profile_info(current_profile_slug),
+        message,
+    )
+
+
+def create_profile_from_gradio(
+    profile_name: str,
+    uploaded_audio,
+    has_permission: bool,
+    current_profile_slug: str | None,
+):
+    """Gradio arayuzunden yeni yerel voice profile olusturur."""
+    if not has_permission:
+        return build_profile_create_error_outputs(
+            current_profile_slug,
+            "Uyarı: Profil oluşturmak için sesin size ait olduğunu veya "
+            "kullanma izniniz olduğunu onaylamalısınız.",
+        )
+
+    cleaned_profile_name = (profile_name or "").strip()
+    if not cleaned_profile_name:
+        return build_profile_create_error_outputs(
+            current_profile_slug,
+            "Uyarı: Profil oluşturmak için profil adı girmelisiniz.",
+        )
+
+    input_audio_path = resolve_uploaded_audio_path(uploaded_audio)
+    if input_audio_path is None:
+        return build_profile_create_error_outputs(
+            current_profile_slug,
+            "Uyarı: Profil oluşturmak için referans ses dosyası yüklemelisiniz.",
+        )
+
+    try:
+        result = create_voice_profile(cleaned_profile_name, input_audio_path)
+    except VoiceProfileError as exc:
+        print(f"Profil olusturma hatasi: {exc}")
+        return build_profile_create_error_outputs(
+            current_profile_slug,
+            f"HATA: {exc}",
+        )
+    except Exception:
+        print("Profil olusturma sirasinda beklenmeyen teknik hata olustu.")
+        traceback.print_exc()
+        return build_profile_create_error_outputs(
+            current_profile_slug,
+            "HATA: Profil oluşturma sırasında teknik bir sorun oluştu. "
+            "Ayrıntı terminale yazıldı.",
+        )
+
+    profile_scan = scan_local_profiles()
+    choices = build_profile_dropdown_choices(profile_scan)
+    valid_values = {value for _, value in choices if value != NO_PROFILE_VALUE}
+    next_value = (
+        result.profile_slug
+        if result.profile_slug in valid_values
+        else NO_PROFILE_VALUE
+    )
+    created_status = build_created_profile_status(result)
+    if next_value == NO_PROFILE_VALUE:
+        created_status += (
+            "\n\nUyarı: Profil oluşturuldu ancak geçerli profil listesinde "
+            "görünmedi. Lütfen dosyaları ve kalite raporunu kontrol edin."
+        )
+    return (
+        gr.update(choices=choices, value=next_value),
+        build_profile_refresh_message(profile_scan),
+        build_selected_profile_info(next_value),
+        created_status,
     )
 
 
@@ -777,6 +890,24 @@ def build_demo() -> gr.Blocks:
             "Profil seçerseniz yüklenen ses dosyası yerine profilin ön işlenmiş referansı kullanılır."
         )
 
+        gr.Markdown("## Yeni yerel ses profili oluştur")
+        new_profile_name_input = gr.Textbox(
+            label="Profil adı",
+            placeholder="Örnek: baglare",
+        )
+        new_profile_audio_input = gr.Audio(
+            label="Profil referans ses dosyası",
+            type="filepath",
+        )
+        new_profile_permission_checkbox = gr.Checkbox(
+            label="Bu ses bana ait veya kullanma iznim var",
+            value=False,
+        )
+        create_profile_button = gr.Button("Profil oluştur")
+        create_profile_status = gr.Markdown(
+            value="Profil oluşturma sonucu burada görünecek."
+        )
+
         text_input = gr.Textbox(
             label="Türkçe metin",
             lines=4,
@@ -818,6 +949,22 @@ def build_demo() -> gr.Blocks:
             fn=build_selected_profile_info,
             inputs=[profile_dropdown],
             outputs=[selected_profile_info],
+        )
+
+        create_profile_button.click(
+            fn=create_profile_from_gradio,
+            inputs=[
+                new_profile_name_input,
+                new_profile_audio_input,
+                new_profile_permission_checkbox,
+                profile_dropdown,
+            ],
+            outputs=[
+                profile_dropdown,
+                profile_refresh_status,
+                selected_profile_info,
+                create_profile_status,
+            ],
         )
 
         generate_button.click(
