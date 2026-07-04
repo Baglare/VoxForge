@@ -86,13 +86,13 @@ Adım:
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
 ```
 
-Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, epoch fallback, batch size, grad accumulation, save step ve CUDA bilgisi görünür. Dataset klasörü, `metadata_train.csv`, varsa `metadata_eval.csv`, checkpoint dosyaları ve GPT trainer importları kontrol edilir. `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ayrı ayrı `Import OK` olarak görünür. `XttsAudioConfig` için `Import OK: XttsAudioConfig` ve `XttsAudioConfig import source: ...` satırları görünür; fallback kaynak kullanılması hata değildir. Config oluşturma başarılı olursa terminal sonunda `XTTS fine-tuning dry-run completed successfully` görünür. `-DryRun` kullanıldığı için training başlamaz, `load_tts_samples` çalıştırılmaz, checkpoint aranmaz ve checkpoint indirme yapılmaz.
+Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, epoch fallback, batch size, grad accumulation, save step, `Start with eval: False` ve CUDA bilgisi görünür. Dataset klasörü, `metadata_train.csv`, varsa `metadata_eval.csv`, checkpoint dosyaları ve GPT trainer importları kontrol edilir. `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ayrı ayrı `Import OK` olarak görünür. `XttsAudioConfig` için `Import OK: XttsAudioConfig` ve `XttsAudioConfig import source: ...` satırları görünür; fallback kaynak kullanılması hata değildir. `TrainerArgs ozeti` altında `start_with_eval: False`, `skip_train_epoch: False` ve `grad_accum_steps: 16` görünür. Config oluşturma başarılı olursa terminal sonunda `Dry-run config ve TrainerArgs olusturma OK.` ve `XTTS fine-tuning dry-run completed successfully` görünür. `-DryRun` kullanıldığı için training başlamaz, `load_tts_samples` çalıştırılmaz, checkpoint aranmaz ve checkpoint indirme yapılmaz.
 
 ## 9. Dry-run limit config kontrolü
 
 Adım: Dry-run çıktısında `Training config ozeti` bölümünü kontrol et.
 
-Beklenen sonuç: `requested max_steps`, `requested epochs`, `resolved limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints` ve `save_n_checkpoints` satırları görünür. `save_step` değeri `1`, `save_checkpoints` değeri `True`, `save_n_checkpoints` değeri `1` olmalıdır. `limit_mode: epochs_fallback` görünüyorsa config üzerinde `epochs` veya `num_epochs` alanlarından en az biri `1` veya daha büyük görünmelidir.
+Beklenen sonuç: `requested max_steps`, `requested epochs`, `resolved limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints` ve `save_n_checkpoints` satırları görünür. `save_step` değeri `1`, `save_checkpoints` değeri `True`, `save_n_checkpoints` değeri `1` olmalıdır. `TrainerArgs ozeti` altında `start_with_eval: False`, `skip_train_epoch: False` ve `grad_accum_steps` görünmelidir. `limit_mode: epochs_fallback` görünüyorsa config üzerinde `epochs` veya `num_epochs` alanlarından en az biri `1` veya daha büyük görünmelidir.
 
 ## 10. MaxSteps / epoch limit kontrolü
 
@@ -108,7 +108,7 @@ Adım: Dry-run başarılıysa ve kullanıcı bilinçli olarak training denemesi 
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
 ```
 
-Beklenen sonuç: Script training öncesi aynı özet bilgileri basar ve güvenli limit mekanizmasını kontrol eder. `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı uygulanabiliyorsa Coqui trainer süreci başlar. Güvenli limit uygulanamıyorsa `Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.` veya `Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.` hatasıyla durur. CUDA OOM olursa `-BatchSize 1` korunmalı ve gerekirse `-GradAccum` artırılmalıdır. Training çıktıları ve checkpointler GitHub'a eklenmez.
+Beklenen sonuç: Script training öncesi aynı özet bilgileri basar ve güvenli limit mekanizmasını kontrol eder. `Training baslangic akisi` altında gerçek `train sample count`, `eval sample count`, `start_with_eval: False`, `skip_train_epoch: False`, `save_step: 1` ve `save_checkpoints: True` görünür. `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı uygulanabiliyorsa Coqui trainer süreci başlar. Güvenli limit uygulanamıyorsa `Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.` veya `Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.` hatasıyla durur. CUDA OOM olursa `-BatchSize 1` korunmalı ve gerekirse `-GradAccum` artırılmalıdır. Training çıktıları ve checkpointler GitHub'a eklenmez.
 
 ## 12. Gerçek training sonrası checkpoint kontrolü
 
@@ -120,7 +120,7 @@ Beklenen sonuç: Script `training_output/` altında `.pth`, `.pt`, `.ckpt`, `.sa
 
 Adım: Training sonunda checkpoint artifact oluşmazsa terminal çıktısını kontrol et.
 
-Beklenen sonuç: `Training finished but no checkpoint artifact was found.` mesajı görünür ve script exit code `1` ile biter. `EPOCH: 0/0`, yalnızca eval çalışması veya checkpoint üretmeyen akış başarı sayılmaz.
+Beklenen sonuç: `Training finished but no checkpoint artifact was found.` mesajı görünür ve script exit code `1` ile biter. `EPOCH: 0/0`, yalnızca eval çalışması veya checkpoint üretmeyen akış başarı sayılmaz. Hata çıktısında `start_with_eval=False` kullanılması, epoch fallback değerinin kontrol edilmesi ve `save_step` değerinin `1` tutulması önerilir.
 
 ## 14. Gradio demo açılış testi
 

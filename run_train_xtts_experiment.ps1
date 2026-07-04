@@ -12,6 +12,8 @@ param(
 
     [int]$SaveStep = 1,
 
+    [switch]$StartWithEval,
+
     [switch]$DryRun
 )
 
@@ -132,6 +134,7 @@ Write-Host "Epoch fallback: $Epochs"
 Write-Host "Batch size: $BatchSize"
 Write-Host "Grad accumulation: $GradAccum"
 Write-Host "Save step: $SaveStep"
+Write-Host "Start with eval: $StartWithEval"
 Write-Host "Dry run: $DryRun"
 Write-Host "Calistirilacak script: $TrainScript"
 
@@ -150,6 +153,10 @@ $PythonArgs = @(
 
 if ($DryRun) {
     $PythonArgs += "--dry-run"
+}
+
+if ($StartWithEval) {
+    $PythonArgs += "--start-with-eval"
 }
 
 & $PythonExe @PythonArgs

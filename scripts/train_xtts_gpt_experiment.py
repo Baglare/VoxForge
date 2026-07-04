@@ -103,6 +103,7 @@ def print_preflight(
     batch_size: int,
     grad_accum: int,
     save_step: int,
+    start_with_eval: bool,
 ) -> None:
     """Training baslamadan once kritik bilgileri terminale basar."""
     dataset_path = experiment_path / "dataset"
@@ -119,6 +120,7 @@ def print_preflight(
     print(f"Batch size: {batch_size}")
     print(f"Grad accumulation: {grad_accum}")
     print(f"Save step: {save_step}")
+    print(f"Start with eval: {start_with_eval}")
     print(f"CUDA available: {cuda_available}")
     print(f"CUDA device name: {cuda_device_name}")
     print("")
@@ -519,6 +521,31 @@ def report_training_config(config: Any, max_steps: int, epochs: int, limit_mode:
     print(f"save_n_checkpoints: {config_field_value(config, 'save_n_checkpoints')}")
 
 
+def report_trainer_args(trainer_args: Any) -> None:
+    """TrainerArgs uzerindeki kritik training akis degerlerini terminale basar."""
+    print("TrainerArgs ozeti")
+    print(f"start_with_eval: {config_field_value(trainer_args, 'start_with_eval')}")
+    print(f"skip_train_epoch: {config_field_value(trainer_args, 'skip_train_epoch')}")
+    print(f"grad_accum_steps: {config_field_value(trainer_args, 'grad_accum_steps')}")
+
+
+def report_training_start_flow(
+    train_sample_count: int,
+    eval_sample_count: int,
+    trainer_args: Any,
+    config: Any,
+) -> None:
+    """trainer.fit oncesi gercek train/eval akis ayarlarini terminale basar."""
+    print("Training baslangic akisi")
+    print(f"train sample count: {train_sample_count}")
+    print(f"eval sample count: {eval_sample_count}")
+    print(f"start_with_eval: {config_field_value(trainer_args, 'start_with_eval')}")
+    print(f"skip_train_epoch: {config_field_value(trainer_args, 'skip_train_epoch')}")
+    print(f"save_step: {config_field_value(config, 'save_step')}")
+    print(f"save_checkpoints: {config_field_value(config, 'save_checkpoints')}")
+    print("")
+
+
 def is_checkpoint_artifact(path: Path) -> bool:
     """Trainer ciktilari icinde checkpoint/model artifact adaylarini secer."""
     suffix = path.suffix.lower()
@@ -554,7 +581,14 @@ def verify_checkpoint_artifacts(output_path: Path) -> None:
 
     print("UYARI: Training output icinde checkpoint artifact bulunamadi.")
     print("Training finished but no checkpoint artifact was found.")
-    raise TrainingError("Training finished but no checkpoint artifact was found.")
+    print("Oneri: Trainer eval-only gibi davrandiysa start_with_eval=False kullanin.")
+    print("Oneri: epochs fallback degerini kontrol edin.")
+    print("Oneri: save_step degerini 1 tutun.")
+    raise TrainingError(
+        "Training finished but no checkpoint artifact was found. "
+        "Trainer sadece eval calistirmis olabilir; start_with_eval=False kullanin, "
+        "epochs fallback degerini kontrol edin ve save_step degerini 1 tutun."
+    )
 
 
 def download_file(url: str, target_path: Path) -> None:
@@ -905,6 +939,18 @@ def build_trainer_args(
     kwargs.update(limit_kwargs)
     trainer_args = instantiate_supported(TrainerArgs, kwargs, "TrainerArgs")
 
+    if hasattr(trainer_args, "skip_train_epoch"):
+        setattr(trainer_args, "skip_train_epoch", False)
+        print("Skip train epoch TrainerArgs uzerinde ayarlandi: False")
+    else:
+        print("UYARI: TrainerArgs skip_train_epoch alani desteklemiyor.")
+
+    if hasattr(trainer_args, "start_with_eval"):
+        setattr(trainer_args, "start_with_eval", start_with_eval)
+        print(f"Start with eval TrainerArgs uzerinde ayarlandi: {start_with_eval}")
+    else:
+        print("UYARI: TrainerArgs start_with_eval alani desteklemiyor.")
+
     if hasattr(trainer_args, "grad_accum_steps"):
         setattr(trainer_args, "grad_accum_steps", grad_accum)
         print(f"Grad accumulation TrainerArgs uzerinde ayarlandi: {grad_accum}")
@@ -918,6 +964,8 @@ def build_trainer_args(
         epochs=epochs,
         constructor_limit_field=limit_field,
     )
+
+    report_trainer_args(trainer_args)
 
     return trainer_args, limit_support
 
@@ -970,6 +1018,7 @@ def prepare_training_objects(
     batch_size: int,
     grad_accum: int,
     save_step: int,
+    start_with_eval: bool,
     dry_run: bool,
 ) -> tuple[dict[str, Any], Any, Any, Any, Path, bool]:
     """Dry-run ve training icin ortak import/config kontrollerini yapar."""
@@ -1002,7 +1051,7 @@ def prepare_training_objects(
         max_steps=max_steps,
         epochs=epochs,
         grad_accum=grad_accum,
-        start_with_eval=bool(eval_metadata_path),
+        start_with_eval=start_with_eval,
     )
     limit_mode = resolve_limit_mode(config_limit, trainer_limit)
     report_and_enforce_limit_mode(limit_mode, dry_run=dry_run)
@@ -1025,6 +1074,7 @@ def run_dry_run(
     batch_size: int,
     grad_accum: int,
     save_step: int,
+    start_with_eval: bool,
 ) -> None:
     """Training baslatmadan dosya/import/config kontrollerini yapar."""
     checkpoint_files = check_checkpoint_files(experiment_path / CHECKPOINT_DIR_NAME)
@@ -1037,8 +1087,10 @@ def run_dry_run(
         batch_size=batch_size,
         grad_accum=grad_accum,
         save_step=save_step,
+        start_with_eval=start_with_eval,
         dry_run=True,
     )
+    print("Dry-run config ve TrainerArgs olusturma OK.")
     print("XTTS fine-tuning dry-run completed successfully")
 
 
@@ -1050,6 +1102,7 @@ def run_training(
     batch_size: int,
     grad_accum: int,
     save_step: int,
+    start_with_eval: bool,
 ) -> None:
     """Coqui Trainer ile deneysel XTTS GPT training baslatir."""
     checkpoint_files = ensure_xtts_files(experiment_path / CHECKPOINT_DIR_NAME)
@@ -1062,12 +1115,19 @@ def run_training(
         batch_size=batch_size,
         grad_accum=grad_accum,
         save_step=save_step,
+        start_with_eval=start_with_eval,
         dry_run=False,
     )
 
     train_samples, eval_samples = load_samples(api, dataset_config, manifest, eval_metadata_used)
     print(f"Coqui train samples: {len(train_samples)}")
     print(f"Coqui eval samples: {len(eval_samples)}")
+    report_training_start_flow(
+        train_sample_count=len(train_samples),
+        eval_sample_count=len(eval_samples),
+        trainer_args=trainer_args,
+        config=config,
+    )
 
     model = create_gpt_model(api["GPTTrainer"], config)
     trainer = api["Trainer"](
@@ -1096,6 +1156,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--save-step", type=int, default=1)
+    parser.add_argument(
+        "--start-with-eval",
+        action="store_true",
+        default=False,
+        help="Trainer'in training oncesinde eval calistirmasina izin ver.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -1145,6 +1211,7 @@ def main(argv: list[str]) -> int:
             batch_size=args.batch_size,
             grad_accum=args.grad_accum,
             save_step=args.save_step,
+            start_with_eval=args.start_with_eval,
         )
         if args.dry_run:
             run_dry_run(
@@ -1155,6 +1222,7 @@ def main(argv: list[str]) -> int:
                 batch_size=args.batch_size,
                 grad_accum=args.grad_accum,
                 save_step=args.save_step,
+                start_with_eval=args.start_with_eval,
             )
             return 0
 
@@ -1166,6 +1234,7 @@ def main(argv: list[str]) -> int:
             batch_size=args.batch_size,
             grad_accum=args.grad_accum,
             save_step=args.save_step,
+            start_with_eval=args.start_with_eval,
         )
         return 0
     except RuntimeError as exc:

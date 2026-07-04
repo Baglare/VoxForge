@@ -435,7 +435,7 @@ Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-r
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
 ```
 
-Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. Bazı `coqui-tts` sürümlerinde `XttsAudioConfig` farklı modülde bulunduğu için script fallback import kullanır ve import kaynağını terminalde yazar; desteklenmeyen config argümanlarını da uyarı olarak gösterir. Dry-run ayrıca `limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints` ve `save_n_checkpoints` bilgisini yazar. Gerçek training, güvenli bir `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı bulunamazsa başlatılmaz.
+Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. Bazı `coqui-tts` sürümlerinde `XttsAudioConfig` farklı modülde bulunduğu için script fallback import kullanır ve import kaynağını terminalde yazar; desteklenmeyen config argümanlarını da uyarı olarak gösterir. Dry-run ayrıca `limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints`, `save_n_checkpoints` ve `TrainerArgs` içindeki `start_with_eval`, `skip_train_epoch`, `grad_accum_steps` bilgisini yazar. Varsayılan akışta `start_with_eval=False` ve `skip_train_epoch=False` beklenir. Gerçek training, güvenli bir `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı bulunamazsa başlatılmaz.
 
 Training başlatmak için:
 
@@ -444,6 +444,8 @@ powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experi
 ```
 
 Training bittikten sonra script `training_output/` klasörünü recursive tarar. `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunmazsa işlem başarısız sayılır ve exit code `1` ile biter. Mevcut yaklaşık 7.45 dakikalık dataset teknik olarak geçerlidir, ancak gerçek fine-tuning kalitesi için küçük kabul edilir. Deney çıktıları, checkpointler, trainer logları ve model dosyaları `experiments/` veya `fine_tuned_models/` altında local kalmalı ve GitHub'a yüklenmemelidir.
+
+Not: `EPOCH: 0/0`, yalnızca evaluation çalışması veya checkpoint oluşmaması başarı sayılmaz. Bu durumda `-StartWithEval` kullanılmadığını, epoch fallback değerinin `1` veya daha büyük olduğunu ve kısa denemede `-SaveStep 1` kullanıldığını kontrol edin.
 
 Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
 

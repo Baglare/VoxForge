@@ -73,13 +73,21 @@ Dry-run modeli eğitmez, `load_tts_samples` çalıştırmaz ve checkpoint indirm
 XTTS fine-tuning dry-run completed successfully
 ```
 
+Dry-run çıktısında varsayılan akış için `Start with eval: False` görünmelidir. `TrainerArgs ozeti` altında da şu değerler kontrol edilmelidir:
+
+- `start_with_eval: False`
+- `skip_train_epoch: False`
+- `grad_accum_steps: <GradAccum degeri>`
+
 Training başlatmak için:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
 ```
 
-Bu komut gerçekten training sürecini başlatır. `-SaveStep 1`, kısa denemede checkpoint yazımını erken tetiklemek için kullanılır. Küçük dataset ve düşük adım sayısı nedeniyle çıkan model deneysel kabul edilmelidir.
+Bu komut gerçekten training sürecini başlatır. Runner varsayılan olarak `-StartWithEval` geçmez; bu yüzden Python tarafında `start_with_eval=False` kullanılır. `-SaveStep 1`, kısa denemede checkpoint yazımını erken tetiklemek için kullanılır. Küçük dataset ve düşük adım sayısı nedeniyle çıkan model deneysel kabul edilmelidir.
+
+Sadece bilinçli bir karşılaştırma yapmak istenirse runner'a `-StartWithEval` eklenebilir. Küçük dataset denemelerinde varsayılan önerilen akış `start_with_eval=False` olarak kalmalıdır.
 
 ## Beklenen çıktı klasörleri
 
@@ -172,6 +180,8 @@ Dry-run ve gerçek training öncesinde script şu config bilgilerini yazar:
 - save_checkpoints
 - save_n_checkpoints
 
+`TrainerArgs ozeti` bölümünde ayrıca `start_with_eval`, `skip_train_epoch` ve `grad_accum_steps` değerleri yazılır. Küçük deneyde beklenen güvenli varsayılan `start_with_eval: False` ve `skip_train_epoch: False` değerleridir.
+
 `limit_mode: epochs_fallback` ise script config üzerinde `epochs` veya `num_epochs` alanını gerçekten `1` veya daha büyük görmeyi bekler. Bu doğrulanamazsa gerçek training başlamaz ve şu hata verilir:
 
 ```text
@@ -180,7 +190,27 @@ Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.
 
 ### EPOCH: 0/0 ve checkpoint oluşmaması
 
-Bazı trainer sürümlerinde config limitleri doğru uygulanmadığında trainer açılıp eval çalışabilir, fakat `EPOCH: 0/0` görünebilir ve `training_output/` altında checkpoint üretilmeyebilir. Bu durum gerçek training pass olarak kabul edilmez.
+Bazı trainer sürümlerinde config limitleri doğru uygulanmadığında veya training eval ile başladığında trainer açılıp yalnızca eval çalıştırabilir. Bu durumda `EPOCH: 0/0` görünebilir ve `training_output/` altında checkpoint üretilmeyebilir. Bu durum gerçek training pass olarak kabul edilmez.
+
+Bu senaryoda önce dry-run çıktısını kontrol edin:
+
+- `Start with eval: False`
+- `TrainerArgs ozeti` altında `start_with_eval: False`
+- `TrainerArgs ozeti` altında `skip_train_epoch: False`
+- `save_step: 1`
+- `save_checkpoints: True`
+
+Gerçek training başlatırken normal komutta `-StartWithEval` kullanmayın:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
+```
+
+Checkpoint yine oluşmazsa şu üç noktayı özellikle kontrol edin:
+
+- `start_with_eval=False` kullanılıyor mu?
+- `limit_mode: epochs_fallback` görünüyorsa `epochs` veya `num_epochs` gerçekte `1` veya daha büyük mü?
+- Kısa deneyde `save_step` değeri `1` olarak tutuluyor mu?
 
 Training bittikten sonra script `training_output/` klasörünü recursive tarar. `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunursa yolları terminale yazar ve şu mesajı verir:
 
