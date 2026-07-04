@@ -86,6 +86,7 @@ VoxForge/
 |   |-- recreate_voice_profile.py
 |   |-- init_finetune_dataset.py
 |   |-- validate_finetune_dataset.py
+|   |-- finetune_readiness_report.py
 |   |-- generate_recording_plan.py
 |   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
@@ -128,6 +129,7 @@ VoxForge/
 |-- run_compare_reference_quality.ps1
 |-- run_init_finetune_dataset.ps1
 |-- run_validate_finetune_dataset.ps1
+|-- run_finetune_readiness_report.ps1
 |-- run_generate_recording_plan.ps1
 |-- run_build_metadata.ps1
 |-- docs/
@@ -232,6 +234,12 @@ Fine-tuning dataset doğrulama:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Fine-tuning readiness report:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
 Fine-tuning kayıt planı üretme:
@@ -359,6 +367,12 @@ powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Da
 ```
 
 Doğrulama scripti `metadata.csv` satırlarını, WAV dosyalarını, süreyi, sample rate değerini, mono kanal durumunu ve kalite analizini kontrol eder. Fine-tuning datasetindeki tekil klipler referans ses profili gibi 30-90 saniye beklenmez; çoğu klip 2.5-15 saniye aralığında olabilir ve datasetin toplam süresi ayrıca raporlanır. Rapor local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır; bu rapor ve gerçek dataset dosyaları GitHub'a yüklenmez.
+
+Readiness report, doğrulama özetinden datasetin teknik hazırlık seviyesini çıkarır. 10 dakikadan kısa ama hatasız datasetler `DATASET_VALID_BUT_SMALL` olarak raporlanır; bu, verinin teknik olarak geçerli olduğunu fakat gerçek fine-tuning kalitesi için daha fazla veri önerildiğini anlatır.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
 
 Kayıt toplama için `docs/RECORDING_TEXT_SET_TR.md` içinde özgün Türkçe metinler bulunur. Bu metinlerden kayıt planı üretmek için:
 

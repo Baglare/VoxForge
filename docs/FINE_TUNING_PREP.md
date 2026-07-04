@@ -161,6 +161,33 @@ powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Da
 
 Doğrulama; boş alanları, eksik dosyaları, WAV olmayan dosyaları, fine-tuning klip süresi eşiklerini, sample rate değerini, kanal sayısını, ses seviyesini ve clipping riskini kontrol eder. JSON raporu local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır. Rapor satırlarında `sample_status` değeri `VALID`, `WARNING` veya `ERROR` olarak görünür.
 
+## Fine-tuning readiness report
+
+Readiness report, doğrulama sonucunu daha portfolyo dostu bir teknik hazırlık özetine çevirir. Bu rapor model eğitimi başlatmaz; yalnızca mevcut datasetin fine-tuning denemesi için ne kadar hazır göründüğünü söyler.
+
+Çalıştırma komutu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Rapor şu local dosyalara yazılır:
+
+```text
+outputs/reports/finetune_readiness_report.json
+outputs/reports/finetune_readiness_report.md
+```
+
+Hazırlık seviyeleri:
+
+- `NOT_READY`: Metadata yoktur, dataset okunamıyordur veya geçerli örnek yoktur.
+- `STRUCTURE_READY`: Klasör/metadata yapısı vardır ama geçerli veri sayısı veya toplam süre hâlâ çok düşüktür.
+- `DATASET_VALID_BUT_SMALL`: Dataset teknik olarak geçerlidir ama toplam süre 10 dakikadan azdır.
+- `READY_FOR_EXPERIMENTAL_FINETUNING`: Toplam süre 10-30 dakika arasındadır; deneysel fine-tuning denemesi için daha anlamlıdır.
+- `READY_FOR_STRONGER_FINETUNING`: Toplam süre 30 dakikadan fazladır; daha güçlü denemeler için daha olgun bir veri hacmine yaklaşır.
+
+Örneğin yaklaşık 7-8 dakikalık, hatasız ve uyarısız bir dataset teknik olarak geçerli kabul edilir; ancak gerçek fine-tuning kalitesi için daha fazla veri önerilir. Hatalı örnek varsa readiness seviyesi düşürülür veya raporda açık şekilde uyarı verilir.
+
 ## GitHub'a neden gerçek dataset yüklenmez?
 
 Fine-tuning datasetleri kişisel ses kayıtları ve bu kayıtların transkriptlerini içerir. Bu dosyalar mahremiyet, izin ve repo boyutu nedeniyle GitHub'a yüklenmemelidir.
