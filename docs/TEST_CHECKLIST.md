@@ -12,7 +12,27 @@ powershell -ExecutionPolicy Bypass -File .\run_smoke_check.ps1
 
 Beklenen sonuç: Terminalde `SMOKE CHECK PASSED` veya yalnızca uyarılar varsa `SMOKE CHECK PASSED WITH WARNINGS` görünür. Kritik eksik varsa `SMOKE CHECK FAILED` görünür ve düzeltilmeden demo yapılmaz.
 
-## 2. Gradio demo açılış testi
+## 2. Fine-tuning dataset başlatma testi
+
+Adım:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
+```
+
+Beklenen sonuç: `datasets/baglare-finetune-v1/`, `datasets/baglare-finetune-v1/wavs/` ve başlığı `audio_path|text` olan boş `metadata.csv` oluşur. Aynı isimle tekrar çalıştırılırsa üzerine yazılmaz.
+
+## 3. Fine-tuning dataset doğrulama testi
+
+Adım:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Beklenen sonuç: Metadata satırları, WAV dosyaları, süre, sample rate, mono kanal ve kalite analizi kontrol edilir. Rapor `outputs/reports/finetune_dataset_report.json` dosyasına yazılır ve GitHub'a eklenmez.
+
+## 4. Gradio demo açılış testi
 
 Adım:
 
@@ -22,74 +42,74 @@ powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 
 Beklenen sonuç: Local Gradio arayüzü açılır. Demo public paylaşım açmadan local makinede çalışır.
 
-## 3. Web üzerinden profil oluşturma testi
+## 5. Web üzerinden profil oluşturma testi
 
 Adım: Gradio arayüzünde profil adı gir, referans ses yükle, izin checkbox'ını işaretle ve `Profil oluştur` butonuna bas.
 
 Beklenen sonuç: Yeni profil `profiles/<profile_slug>/` altında oluşur. Profil klasöründe `original_reference.wav`, `preprocessed_reference.wav` ve `profile.json` bulunur.
 
-## 4. Profil seçme testi
+## 6. Profil seçme testi
 
 Adım: Gradio profil dropdown'ından oluşturulan profili seç.
 
 Beklenen sonuç: Seçili profil üretimde öncelikli referans olur. Profil seçiliyken ayrıca yüklenen ses dosyası kullanılmaz.
 
-## 5. Profil dropdown yenileme testi
+## 7. Profil dropdown yenileme testi
 
 Adım: Yeni profil oluşturduktan sonra profil dropdown'ının güncellenip güncellenmediğini kontrol et.
 
 Beklenen sonuç: Dropdown yeni profili gösterir ve mümkünse yeni profil seçili hale gelir.
 
-## 6. Seçili profil yenileme testi
+## 8. Seçili profil yenileme testi
 
 Adım: Gradio'da bir profil seç ve `Seçili profili yenile` butonuna bas.
 
 Beklenen sonuç: `original_reference.wav` korunur, `preprocessed_reference.wav` yeniden üretilir ve `profile.json` içindeki kalite bilgisi güncellenir. XTTS modeli yüklenmez ve ses üretimi yapılmaz.
 
-## 7. Seçili profil silme testi
+## 9. Seçili profil silme testi
 
 Adım: Gradio'da bir profil seç, silme onay checkbox'ını işaretle ve `Seçili profili sil` butonuna bas.
 
 Beklenen sonuç: `profiles/<profile_slug>/` klasörü silinir, dropdown güncellenir, seçim temizlenir ve `profiles/.gitkeep` dosyası korunur. Onay checkbox'ı işaretli değilse silme yapılmaz.
 
-## 8. Varsayılan referans ses testi
+## 10. Varsayılan referans ses testi
 
 Adım: Profil seçmeden ve harici ses yüklemeden kısa bir metinle üretim denemesi yap.
 
 Beklenen sonuç: Sistem varsayılan `samples/my_voice.wav` referansını kullanmaya çalışır. Dosya yoksa kullanıcıya anlaşılır hata gösterilir.
 
-## 9. Harici referans ses yükleme testi
+## 11. Harici referans ses yükleme testi
 
 Adım: Profil seçmeden Gradio üzerinden açık izinli bir referans ses yükle ve metin seslendir.
 
 Beklenen sonuç: Yüklenen referans ses ön işlenir ve üretimde kullanılır.
 
-## 10. İzin checkbox testi
+## 12. İzin checkbox testi
 
 Adım: İzin checkbox'ını işaretlemeden üretim veya profil oluşturma denemesi yap.
 
 Beklenen sonuç: İşlem başlamaz ve kullanıcıdan ses üzerinde hakkı veya açık izni olduğunu onaylaması istenir.
 
-## 11. Boş metin testi
+## 13. Boş metin testi
 
 Adım: Metin alanını boş bırakıp ses üretmeyi dene.
 
 Beklenen sonuç: Ses üretimi başlamaz ve boş metin için anlaşılır uyarı verilir.
 
-## 12. Kalite raporu testi
+## 14. Kalite raporu testi
 
 Adım: Profil oluşturma veya ses üretimi sonrasında kalite raporu alanını kontrol et.
 
 Beklenen sonuç: Ham ve/veya ön işlenmiş referans için `GOOD`, `WARNING` veya `BAD` sonucu görünür. Rapor teknik sinyal verir; nihai kalite dinlenerek kontrol edilir.
 
-## 13. Çıktı dosyaları testi
+## 15. Çıktı dosyaları testi
 
 Adım: Üretimden sonra local çıktı klasörlerini kontrol et.
 
 Beklenen sonuç: Gradio çıktıları `outputs/gradio_outputs/`, kalite raporları `outputs/reports/`, ön işlenmiş referanslar `outputs/preprocessed_references/` altında tutulur.
 
-## 14. GitHub'a gitmemesi gereken dosyalar kontrolü
+## 16. GitHub'a gitmemesi gereken dosyalar kontrolü
 
 Adım: GitHub Desktop değişiklik listesini kontrol et.
 
-Beklenen sonuç: `samples/`, `profiles/`, `outputs/`, `.venv/` ve gerçek ses dosyaları commit listesine girmez. Commit listesinde yalnızca kod, PowerShell runner ve dokümantasyon değişiklikleri bulunur.
+Beklenen sonuç: `samples/`, `profiles/`, `datasets/`, `outputs/`, `.venv/` ve gerçek ses dosyaları commit listesine girmez. Commit listesinde yalnızca kod, PowerShell runner, `.gitkeep` ve dokümantasyon değişiklikleri bulunur.

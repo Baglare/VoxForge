@@ -30,6 +30,10 @@ samples/*
 profiles/*
 !profiles/.gitkeep
 
+# Local fine-tuning datasets
+datasets/*
+!datasets/.gitkeep
+
 # Generated outputs
 outputs/*
 !outputs/.gitkeep

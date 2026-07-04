@@ -30,6 +30,7 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Referans ses kalite analizi yapılır.
 - Ham ve ön işlenmiş referans kalite raporları Gradio'da gösterilir.
 - Kalite raporları `outputs/reports/gradio_quality_reports/` altına JSON olarak kaydedilir.
+- Fine-tuning'e geçmeden önce local dataset iskeleti oluşturma ve doğrulama desteği vardır.
 
 Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
 
@@ -48,6 +49,7 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - Boş metin kontrolü
 - FFmpeg ile mono, 24000 Hz WAV referans hazırlama
 - Ham ve ön işlenmiş referans kalite raporu
+- Yerel fine-tuning dataset hazırlığı ve doğrulama scriptleri
 - Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
 - Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
 
@@ -82,6 +84,8 @@ VoxForge/
 |   |-- voice_profile_utils.py
 |   |-- delete_voice_profile.py
 |   |-- recreate_voice_profile.py
+|   |-- init_finetune_dataset.py
+|   |-- validate_finetune_dataset.py
 |   |-- smoke_check.py
 |   |-- prepare_reference_audio.py
 |   |-- compare_reference_quality.py
@@ -96,6 +100,12 @@ VoxForge/
 |       |-- original_reference.wav
 |       |-- preprocessed_reference.wav
 |       `-- profile.json
+|-- datasets/
+|   |-- .gitkeep
+|   `-- <dataset-slug>/
+|       |-- wavs/
+|       |-- metadata.csv
+|       `-- dataset_report.json
 |-- outputs/
 |   |-- .gitkeep
 |   |-- gradio_outputs/
@@ -114,8 +124,11 @@ VoxForge/
 |-- run_smoke_check.ps1
 |-- run_audio_quality_report.ps1
 |-- run_compare_reference_quality.ps1
+|-- run_init_finetune_dataset.ps1
+|-- run_validate_finetune_dataset.ps1
 |-- docs/
 |   |-- DEMO_SCRIPT.md
+|   |-- FINE_TUNING_PREP.md
 |   |-- SETUP_WINDOWS.md
 |   |-- TEST_CHECKLIST.md
 |   |-- VOICE_REFERENCE_GUIDE.md
@@ -124,7 +137,7 @@ VoxForge/
 `-- README.md
 ```
 
-Not: `samples/`, `profiles/` ve `outputs/` altındaki gerçek ses dosyaları GitHub'a yüklenmemelidir. Bu klasörler local çalışma verileri içindir. `profiles/.gitkeep`, boş `profiles/` klasörünün GitHub'da görünür kalması için tutulur.
+Not: `samples/`, `profiles/`, `datasets/` ve `outputs/` altındaki gerçek ses dosyaları GitHub'a yüklenmemelidir. Bu klasörler local çalışma verileri içindir. `profiles/.gitkeep` ve `datasets/.gitkeep`, boş klasör niyetinin GitHub'da görünür kalması için tutulur.
 
 ## 6. Kurulum notları
 
@@ -202,6 +215,18 @@ Ham ve ön işlenmiş referans ses A/B karşılaştırması:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_compare_reference_quality.ps1
+```
+
+Fine-tuning dataset iskeleti oluşturma:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
+```
+
+Fine-tuning dataset doğrulama:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
 ## 9. Test / kontrol
@@ -298,7 +323,29 @@ Güvenli ön işleme varsayılan olarak `safe_normalized` yaklaşımını kullan
 
 Daha ayrıntılı profil dokümanı için `docs/VOICE_PROFILES.md` dosyasına bakın.
 
-## 12. Kalite raporu sistemi
+## 12. Fine-tuning hazırlığı
+
+Bu projede fine-tuning henüz uygulanmamıştır. Mevcut çalışma reference-based / zero-shot voice cloning MVP'sidir. Bu bölüm yalnızca ileride kullanılabilecek local dataset hazırlığını anlatır; model eğitimi, model indirme veya XTTS fine-tuning çalıştırma yapmaz.
+
+Boş dataset iskeleti oluşturmak için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
+```
+
+Bu komut `datasets/<dataset_slug>/`, `datasets/<dataset_slug>/wavs/` ve başlığı `audio_path|text` olan boş `metadata.csv` dosyasını oluşturur. Aynı dataset zaten varsa üzerine yazmaz.
+
+Dataset doğrulamak için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Doğrulama scripti `metadata.csv` satırlarını, WAV dosyalarını, süreyi, sample rate değerini, mono kanal durumunu ve kalite analizini kontrol eder. Rapor local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır; bu rapor ve gerçek dataset dosyaları GitHub'a yüklenmez.
+
+Ayrıntılı hazırlık rehberi için `docs/FINE_TUNING_PREP.md` dosyasına bakın.
+
+## 13. Kalite raporu sistemi
 
 VoxForge, referans ses dosyası için basit bir kalite analizi üretir. Analiz; dosya varlığı, süre, sample rate, kanal sayısı, codec, ortalama ses seviyesi, maksimum ses seviyesi, clipping riski ve kısa/uzun kayıt uyarıları gibi bilgileri kontrol eder.
 
@@ -316,28 +363,30 @@ outputs/reports/gradio_quality_reports/
 
 Kalite sonucu `GOOD`, `WARNING` veya `BAD` olabilir. `BAD` sonuç, her zaman ses üretiminin teknik olarak imkansız olduğu anlamına gelmez; ancak çıktının mutlaka dinlenerek kontrol edilmesi gerektiğini gösterir.
 
-## 13. Etik kullanım notu
+## 14. Etik kullanım notu
 
 VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle denenmelidir. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
 
 Gradio arayüzündeki izin checkbox'ı bu sınırı kullanıcıya açık şekilde hatırlatmak için vardır. Kullanıcı, ses üretmeden önce referans ses üzerinde hakkı veya açık izni olduğunu onaylamalıdır.
 
-## 14. Bilinen sınırlamalar
+## 15. Bilinen sınırlamalar
 
 - Proje şu anda Windows odaklıdır.
 - Proje sadece local çalışma için tasarlanmıştır.
 - Gerçek ses dosyaları GitHub'a yüklenmemelidir.
 - Yerel voice profile klasörleri GitHub'a yüklenmemelidir.
+- Yerel fine-tuning dataset klasörleri GitHub'a yüklenmemelidir.
 - `outputs/` klasörü üretilen sesleri ve raporları yerelde tutar; GitHub'a yüklenmez.
 - `.venv/`, model dosyaları, cache dosyaları ve büyük çıktılar repoya dahil edilmez.
 - Ses benzerliği garanti değildir; model, kayıt kalitesi, referans süresi ve metin içeriğine bağlıdır.
 - Bu aşama zero-shot/reference-based voice cloning MVP'sidir.
 - Fine-tuning henüz uygulanmamıştır; daha sonraki gelişmiş aşama olarak planlanmıştır.
+- Fine-tuning dataset hazırlığı eğitim başlatmaz; sadece local veri iskeleti ve doğrulama sağlar.
 - Yerel voice profile sistemi fine-tuning değildir; sadece referans ses seçimini ve tekrar kullanımını düzenler.
 - Gradio demo local arayüzdür; ürünleşmiş bir web uygulaması değildir.
 - Kalite raporu teknik sinyaller verir, nihai ses kalitesini tek başına garanti etmez.
 
-## 15. Sonraki adımlar
+## 16. Sonraki adımlar
 
 Planlanan geliştirme yönleri:
 
@@ -349,7 +398,7 @@ Planlanan geliştirme yönleri:
 - Farklı referans süreleriyle karşılaştırma yapmak
 - Fine-tuning aşamasını ayrı ve daha gelişmiş bir hedef olarak değerlendirmek
 
-## 16. Portfolyo değeri
+## 17. Portfolyo değeri
 
 VoxForge, local yapay zeka modeli kullanımı, Python tabanlı ses işleme, Gradio ile hızlı demo arayüzü, Windows PowerShell otomasyonu, FFmpeg tabanlı ses ön işleme ve hassas dosya yönetimi gibi alanlarda somut bir MVP örneği sunar.
 
@@ -360,5 +409,6 @@ Portfolyo açısından proje şu noktaları gösterir:
 - Kullanıcı izni ve etik sınır kontrolü
 - Ses ön işleme ve kalite raporu akışı
 - Yerel voice profile yönetimi
+- Fine-tuning öncesi local dataset hazırlığı ve doğrulama yaklaşımı
 - Üretilen dosyaları GitHub dışında tutan repo hijyeni
 - MVP kapsamında sade ama çalışan bir local demo yapısı
