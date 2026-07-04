@@ -78,6 +78,9 @@ VoxForge/
 |-- scripts/
 |   |-- first_xtts_test.py
 |   |-- create_voice_profile.py
+|   |-- list_voice_profiles.py
+|   |-- voice_profile_utils.py
+|   |-- smoke_check.py
 |   |-- prepare_reference_audio.py
 |   |-- compare_reference_quality.py
 |   |-- analyze_reference_audio.py
@@ -103,11 +106,14 @@ VoxForge/
 |-- run_first_xtts_test.ps1
 |-- run_gradio_demo.ps1
 |-- run_create_voice_profile.ps1
+|-- run_list_voice_profiles.ps1
+|-- run_smoke_check.ps1
 |-- run_audio_quality_report.ps1
 |-- run_compare_reference_quality.ps1
 |-- docs/
 |   |-- DEMO_SCRIPT.md
 |   |-- SETUP_WINDOWS.md
+|   |-- TEST_CHECKLIST.md
 |   |-- VOICE_REFERENCE_GUIDE.md
 |   `-- VOICE_PROFILES.md
 |-- .gitignore
@@ -158,6 +164,12 @@ Local Gradio web demosu:
 powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 ```
 
+Hızlı smoke test:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_smoke_check.ps1
+```
+
 Terminalden yerel voice profile oluşturma (Gradio içindeki web akışına alternatif yöntem):
 
 ```powershell
@@ -176,7 +188,19 @@ Ham ve ön işlenmiş referans ses A/B karşılaştırması:
 powershell -ExecutionPolicy Bypass -File .\run_compare_reference_quality.ps1
 ```
 
-## 9. Referans ses hazırlama
+## 9. Test / kontrol
+
+Hızlı smoke test, model ağırlıklarını yüklemeden ve ses üretmeden temel proje sağlığını kontrol eder. Dosya yapısını, `.gitignore` kurallarını, gerekli Python importlarını, FFmpeg/FFprobe erişimini ve yerel profil klasörlerini raporlar.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_smoke_check.ps1
+```
+
+Smoke test sonucu terminalde `SMOKE CHECK PASSED`, `SMOKE CHECK PASSED WITH WARNINGS` veya `SMOKE CHECK FAILED` olarak görünür. JSON raporu local olarak `outputs/reports/smoke_check_report.json` dosyasına yazılır; bu rapor GitHub'a yüklenmemelidir.
+
+Manuel demo kontrol listesi için `docs/TEST_CHECKLIST.md` dosyasına bakın.
+
+## 10. Referans ses hazırlama
 
 Varsayılan referans ses yolu:
 
@@ -200,7 +224,7 @@ Referans ses için pratik notlar:
 - Mikrofona çok yakın konuşup clipping oluşturmayın.
 - Ses benzerliği model davranışına, kayıt kalitesine ve referans süresine bağlıdır.
 
-## 10. Voice profile sistemi
+## 11. Voice profile sistemi
 
 Voice profile sistemi, sık kullanılan bir referans sesi yerel bir profil klasörü olarak saklama akışıdır. Bu sistem yeni bir model eğitmez ve fine-tuning yapmaz; mevcut aşama hâlâ reference-based / zero-shot voice cloning MVP'sidir.
 
@@ -256,7 +280,7 @@ Güvenli ön işleme varsayılan olarak `safe_normalized` yaklaşımını kullan
 
 Daha ayrıntılı profil dokümanı için `docs/VOICE_PROFILES.md` dosyasına bakın.
 
-## 11. Kalite raporu sistemi
+## 12. Kalite raporu sistemi
 
 VoxForge, referans ses dosyası için basit bir kalite analizi üretir. Analiz; dosya varlığı, süre, sample rate, kanal sayısı, codec, ortalama ses seviyesi, maksimum ses seviyesi, clipping riski ve kısa/uzun kayıt uyarıları gibi bilgileri kontrol eder.
 
@@ -274,13 +298,13 @@ outputs/reports/gradio_quality_reports/
 
 Kalite sonucu `GOOD`, `WARNING` veya `BAD` olabilir. `BAD` sonuç, her zaman ses üretiminin teknik olarak imkansız olduğu anlamına gelmez; ancak çıktının mutlaka dinlenerek kontrol edilmesi gerektiğini gösterir.
 
-## 12. Etik kullanım notu
+## 13. Etik kullanım notu
 
 VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle denenmelidir. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
 
 Gradio arayüzündeki izin checkbox'ı bu sınırı kullanıcıya açık şekilde hatırlatmak için vardır. Kullanıcı, ses üretmeden önce referans ses üzerinde hakkı veya açık izni olduğunu onaylamalıdır.
 
-## 13. Bilinen sınırlamalar
+## 14. Bilinen sınırlamalar
 
 - Proje şu anda Windows odaklıdır.
 - Proje sadece local çalışma için tasarlanmıştır.
@@ -295,7 +319,7 @@ Gradio arayüzündeki izin checkbox'ı bu sınırı kullanıcıya açık şekild
 - Gradio demo local arayüzdür; ürünleşmiş bir web uygulaması değildir.
 - Kalite raporu teknik sinyaller verir, nihai ses kalitesini tek başına garanti etmez.
 
-## 14. Sonraki adımlar
+## 15. Sonraki adımlar
 
 Planlanan geliştirme yönleri:
 
@@ -307,7 +331,7 @@ Planlanan geliştirme yönleri:
 - Farklı referans süreleriyle karşılaştırma yapmak
 - Fine-tuning aşamasını ayrı ve daha gelişmiş bir hedef olarak değerlendirmek
 
-## 15. Portfolyo değeri
+## 16. Portfolyo değeri
 
 VoxForge, local yapay zeka modeli kullanımı, Python tabanlı ses işleme, Gradio ile hızlı demo arayüzü, Windows PowerShell otomasyonu, FFmpeg tabanlı ses ön işleme ve hassas dosya yönetimi gibi alanlarda somut bir MVP örneği sunar.
 
