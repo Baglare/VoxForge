@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import inspect
 import json
 import re
@@ -153,21 +154,29 @@ def import_training_api() -> dict[str, Any]:
         api["load_tts_samples"] = load_tts_samples
         print("Import OK: load_tts_samples")
 
-    try:
-        from TTS.tts.layers.xtts.trainer.gpt_trainer import (
-            GPTArgs,
-            GPTTrainer,
-            GPTTrainerConfig,
-            XttsAudioConfig,
+    for symbol_name in ("GPTArgs", "GPTTrainer", "GPTTrainerConfig"):
+        imported_symbol, error = import_symbol(
+            "TTS.tts.layers.xtts.trainer.gpt_trainer",
+            symbol_name,
         )
-    except ImportError as exc:
-        missing.append(f"GPTArgs / GPTTrainer / GPTTrainerConfig / XttsAudioConfig: {exc}")
+        if error:
+            missing.append(error)
+            continue
+
+        api[symbol_name] = imported_symbol
+        print(f"Import OK: {symbol_name}")
+
+    audio_config_class, audio_config_source, audio_config_errors = import_xtts_audio_config()
+    if audio_config_class is None:
+        missing.append(
+            "XttsAudioConfig import edilemedi. Denenen moduller:\n"
+            + "\n".join(f"  - {error}" for error in audio_config_errors)
+        )
     else:
-        api["GPTArgs"] = GPTArgs
-        api["GPTTrainer"] = GPTTrainer
-        api["GPTTrainerConfig"] = GPTTrainerConfig
-        api["XttsAudioConfig"] = XttsAudioConfig
-        print("Import OK: GPTArgs, GPTTrainer, GPTTrainerConfig, XttsAudioConfig")
+        api["XttsAudioConfig"] = audio_config_class
+        api["XttsAudioConfigSource"] = audio_config_source
+        print("Import OK: XttsAudioConfig")
+        print(f"XttsAudioConfig import source: {audio_config_source}")
 
     if missing:
         detail = "\n".join(f"- {item}" for item in missing)
@@ -178,6 +187,38 @@ def import_training_api() -> dict[str, Any]:
         )
 
     return api
+
+
+def import_symbol(module_name: str, symbol_name: str) -> tuple[Any | None, str | None]:
+    """Tek bir sembolu import eder; AttributeError zinciri diger importlari bozmaz."""
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        return None, f"{symbol_name}: {module_name}: {exc}"
+
+    try:
+        return getattr(module, symbol_name), None
+    except AttributeError:
+        return None, f"{symbol_name}: {module_name} icinde bulunamadi"
+
+
+def import_xtts_audio_config() -> tuple[Any | None, str | None, list[str]]:
+    """XttsAudioConfig sinifini Coqui surumleri arasinda fallback ile bulur."""
+    candidate_modules = (
+        "TTS.tts.layers.xtts.trainer.gpt_trainer",
+        "TTS.tts.models.xtts",
+        "TTS.tts.configs.xtts_config",
+    )
+    errors: list[str] = []
+
+    for module_name in candidate_modules:
+        imported_symbol, error = import_symbol(module_name, "XttsAudioConfig")
+        if error:
+            errors.append(error)
+            continue
+        return imported_symbol, module_name, errors
+
+    return None, None, errors
 
 
 def get_signature(callable_object: Any) -> inspect.Signature | None:
@@ -254,7 +295,15 @@ def instantiate_supported(
 ) -> Any:
     """Signature kontroluyle nesne olusturur ve API farklarini acik raporlar."""
     supported_kwargs = filter_supported_kwargs(callable_object, kwargs, context)
+    return instantiate_filtered(callable_object, supported_kwargs, context)
 
+
+def instantiate_filtered(
+    callable_object: Any,
+    supported_kwargs: dict[str, Any],
+    context: str,
+) -> Any:
+    """Onceden filtrelenmis kwargs ile nesne olusturur."""
     while True:
         try:
             return callable_object(**supported_kwargs)
@@ -268,9 +317,14 @@ def instantiate_supported(
                 supported_kwargs.pop(unexpected_keyword)
                 continue
 
+            keyword_detail = (
+                f"\nPatlayan keyword: {unexpected_keyword}"
+                if unexpected_keyword
+                else ""
+            )
             raise TrainingError(
                 f"{context} olusturulamadi.\n"
-                f"Hata: TypeError: {exc}\n"
+                f"Hata: TypeError: {exc}{keyword_detail}\n"
                 "Kurulu Coqui TTS API'si official XTTS GPT training recipe ile farkli olabilir."
             ) from exc
 
@@ -508,7 +562,17 @@ def build_audio_config(api: dict[str, Any]) -> Any:
         "dvae_sample_rate": 22050,
         "output_sample_rate": 24000,
     }
-    return instantiate_supported(api["XttsAudioConfig"], kwargs, "XttsAudioConfig")
+    audio_config_class = api["XttsAudioConfig"]
+    audio_config_source = api.get("XttsAudioConfigSource", "bilinmiyor")
+    supported_kwargs = filter_supported_kwargs(
+        audio_config_class,
+        kwargs,
+        "XttsAudioConfig",
+    )
+    supported_names = ", ".join(supported_kwargs.keys()) if supported_kwargs else "yok"
+    print(f"DEBUG: XttsAudioConfig source: {audio_config_source}")
+    print(f"DEBUG: XttsAudioConfig desteklenen alanlar: {supported_names}")
+    return instantiate_filtered(audio_config_class, supported_kwargs, "XttsAudioConfig")
 
 
 def build_gpt_trainer_config(

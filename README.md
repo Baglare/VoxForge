@@ -435,7 +435,7 @@ Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-r
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
 ```
 
-Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ve `XttsAudioConfig` yolunu kullanır; desteklenmeyen config argümanlarını uyarı olarak yazar.
+Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. Bazı `coqui-tts` sürümlerinde `XttsAudioConfig` farklı modülde bulunduğu için script fallback import kullanır ve import kaynağını terminalde yazar; desteklenmeyen config argümanlarını da uyarı olarak gösterir.
 
 Training başlatmak için:
 

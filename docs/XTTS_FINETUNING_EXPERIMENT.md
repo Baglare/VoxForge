@@ -106,12 +106,12 @@ Gerekirse `-GradAccum` değerini artırarak efektif batch davranışı korunabil
 
 ### Coqui import hataları
 
-Kurulu `coqui-tts`, `TTS` veya `trainer` API'si beklenen recipe ile aynı değilse script hangi importun eksik olduğunu terminalde açık yazar. Dry-run şu importları özellikle kontrol eder:
+Kurulu `coqui-tts`, `TTS` veya `trainer` API'si beklenen recipe ile aynı değilse script hangi importun eksik olduğunu terminalde açık yazar. Dry-run şu importları özellikle ayrı ayrı kontrol eder:
 
 - `GPTArgs`
 - `GPTTrainer`
 - `GPTTrainerConfig`
-- `XttsAudioConfig`
+- `XttsAudioConfig` ve bulunduğu import kaynağı
 - `Trainer`
 - `TrainerArgs`
 - `BaseDatasetConfig`
@@ -119,9 +119,21 @@ Kurulu `coqui-tts`, `TTS` veya `trainer` API'si beklenen recipe ile aynı değil
 
 Bu durumda kurulu paket sürümü ve resmi XTTS GPT training recipe kontrol edilmelidir.
 
+### XttsAudioConfig uyumluluğu
+
+Bazı `coqui-tts` sürümlerinde `XttsAudioConfig`, `TTS.tts.layers.xtts.trainer.gpt_trainer` içinde bulunmaz. Script bu sınıfı sırayla şu modüllerde arar:
+
+- `TTS.tts.layers.xtts.trainer.gpt_trainer`
+- `TTS.tts.models.xtts`
+- `TTS.tts.configs.xtts_config`
+
+Bulunan kaynak terminalde `XttsAudioConfig import source: ...` satırıyla yazılır. Fallback ile bulunması hata değildir; yalnızca kurulu Coqui sürümünün sınıfı farklı modülde tuttuğunu gösterir.
+
+`XttsAudioConfig` oluşturulurken `sample_rate`, `dvae_sample_rate` ve `output_sample_rate` alanları constructor imzasına göre filtrelenir. Kurulu sürüm bu alanlardan birini desteklemiyorsa script o alanı vermeden devam eder ve desteklenen alanları `DEBUG: XttsAudioConfig desteklenen alanlar: ...` satırıyla gösterir.
+
 ### XttsArgs unexpected keyword hatası
 
-`TypeError: XttsArgs.__init__() got an unexpected keyword argument 'max_conditioning_length'` hatası, XTTS GPT training için genel `XttsArgs` sınıfının yanlış yerde kullanılmasından kaynaklanır. Training scripti bu aşamada `TTS.tts.layers.xtts.trainer.gpt_trainer` içindeki `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ve `XttsAudioConfig` yolunu kullanır.
+`TypeError: XttsArgs.__init__() got an unexpected keyword argument 'max_conditioning_length'` hatası, XTTS GPT training için genel `XttsArgs` sınıfının yanlış yerde kullanılmasından kaynaklanır. Training scripti bu aşamada `TTS.tts.layers.xtts.trainer.gpt_trainer` içindeki `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. `XttsAudioConfig` ise kurulu `coqui-tts` sürümüne göre fallback import ile bulunur.
 
 Script, kurulu Coqui sürümünün desteklemediği config argümanlarını terminalde uyarı olarak gösterip atlamaya çalışır. Zorunlu bir argüman eksikse training başlamadan anlaşılır hata verir.
 
