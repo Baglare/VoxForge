@@ -80,6 +80,8 @@ VoxForge/
 |   |-- create_voice_profile.py
 |   |-- list_voice_profiles.py
 |   |-- voice_profile_utils.py
+|   |-- delete_voice_profile.py
+|   |-- recreate_voice_profile.py
 |   |-- smoke_check.py
 |   |-- prepare_reference_audio.py
 |   |-- compare_reference_quality.py
@@ -107,6 +109,8 @@ VoxForge/
 |-- run_gradio_demo.ps1
 |-- run_create_voice_profile.ps1
 |-- run_list_voice_profiles.ps1
+|-- run_delete_voice_profile.ps1
+|-- run_recreate_voice_profile.ps1
 |-- run_smoke_check.ps1
 |-- run_audio_quality_report.ps1
 |-- run_compare_reference_quality.ps1
@@ -174,6 +178,18 @@ Terminalden yerel voice profile oluşturma (Gradio içindeki web akışına alte
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
+```
+
+Yerel voice profile silme:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_delete_voice_profile.ps1 -Slug baglare -Yes
+```
+
+Yerel voice profile yenileme:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_recreate_voice_profile.ps1 -Slug baglare
 ```
 
 Referans ses kalite raporu:
@@ -276,6 +292,8 @@ Profil seçilmezse mevcut davranış korunur. Referans öncelik sırası şudur:
 
 `profiles/` altındaki gerçek dosyalar GitHub'a yüklenmez. Bu klasörde kişisel ses kayıtları, ön işlenmiş sesler ve kalite metadata'sı bulunabilir; bunlar hem mahremiyet hem de repo boyutu nedeniyle local kalmalıdır. `.gitignore` içinde `profiles/*` kuralı gerçek profil içeriklerini dışarıda bırakır, `!profiles/.gitkeep` kuralı ise boş klasör niyetinin repoda görünmesini sağlar.
 
+Seçili profil Gradio arayüzünden veya terminal komutlarıyla yönetilebilir. Profil yenileme işlemi `original_reference.wav` dosyasını korur, `preprocessed_reference.wav` dosyasını safe preprocessing ile yeniden üretir ve `profile.json` içindeki kalite bilgisini günceller. Profil silme işlemi yalnızca ilgili `profiles/<slug>/` klasörünü kaldırır; `profiles/.gitkeep` dosyasına dokunmaz.
+
 Güvenli ön işleme varsayılan olarak `safe_normalized` yaklaşımını kullanır. Bu yaklaşım sesi mono, 24000 Hz, `pcm_s16le` WAV formatına getirir ve ses seviyesini dengeler. Agresif sessizlik kırpma varsayılan akışta kullanılmaz; çünkü bazı referans sesleri fazla kısaltıp konuşmacı karakterini zayıflatabilir.
 
 Daha ayrıntılı profil dokümanı için `docs/VOICE_PROFILES.md` dosyasına bakın.
@@ -325,7 +343,7 @@ Planlanan geliştirme yönleri:
 
 - Windows kurulum deneyimini daha net hale getirmek
 - Referans ses hazırlama notlarını güçlendirmek
-- Voice profile silme, yenileme ve kalite geçmişi akışlarını eklemek
+- Voice profile kalite geçmişi akışını eklemek
 - Demo anlatımı ve ekran görüntüleriyle portfolyo sunumunu desteklemek
 - Daha ayrıntılı kalite metrikleri eklemek
 - Farklı referans süreleriyle karşılaştırma yapmak

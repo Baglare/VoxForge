@@ -76,7 +76,60 @@ Aynı profil adı tekrar kullanılırsa mevcut profilin üzerine yazılmaz. Bu d
 
 Aynı kişi veya aynı referans için yeni bir deneme yapmak gerekiyorsa farklı bir profil adı seçilmelidir. Örneğin `baglare`, `baglare_clean` veya `baglare_test_02` gibi ayrı adlar kullanılabilir.
 
-## 7. Gradio profil seçimi nasıl çalışır?
+## 7. Profil silme
+
+Yerel profil Gradio arayüzünden veya terminalden silinebilir. Silme işlemi yalnızca ilgili `profiles/<profile_slug>/` klasörünü kaldırır.
+
+Terminal komutu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_delete_voice_profile.ps1 -Slug baglare -Yes
+```
+
+`-Yes` verilmezse silme yapılmaz. Bu güvenlik adımı, yanlışlıkla kişisel referans ses klasörünü kaldırmayı önlemek içindir.
+
+Silme işleminden sonra:
+
+- `profiles/<profile_slug>/` klasörü silinir.
+- `profiles/.gitkeep` dosyasına dokunulmaz.
+- Gradio dropdown'ı güncellenir.
+- Seçili profil temizlenir.
+
+Silinen profil klasörü local dosyaları kaldırır. Profil GitHub'a yüklenmediği için silme işlemi GitHub geçmişinden dosya temizleme işlemi değildir; sadece yerel çalışma klasörünü etkiler.
+
+## 8. Profil yenileme
+
+Profil yenileme, mevcut profilin `original_reference.wav` dosyasını koruyarak `preprocessed_reference.wav` ve `profile.json` dosyalarını yeniden üretir.
+
+Terminal komutu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_recreate_voice_profile.ps1 -Slug baglare
+```
+
+Yenileme sırasında:
+
+- `original_reference.wav` korunur.
+- Safe preprocessing tekrar çalışır.
+- `preprocessed_reference.wav` yeniden yazılır.
+- Ham ve ön işlenmiş kalite raporları yeniden oluşturulur.
+- `profile.json` güncellenir.
+
+Bu işlem XTTS modelini yüklemez ve ses üretimi yapmaz. Sadece yerel profilin referans hazırlama ve kalite metadata kısmını yeniler.
+
+## 9. Profil yeniden oluşturma ile yeni profil oluşturma farkı
+
+Yeni profil oluşturma, kullanıcıdan yeni profil adı ve referans ses alarak yeni bir `profiles/<profile_slug>/` klasörü oluşturur. Aynı profil adı zaten varsa üzerine yazmaz.
+
+Profil yeniden oluşturma veya yenileme ise mevcut profil klasörünü kullanır. Kaynak olarak aynı klasördeki `original_reference.wav` dosyasını alır ve sadece `preprocessed_reference.wav` ile `profile.json` dosyasını günceller.
+
+Kısaca:
+
+- Yeni profil oluşturma: Yeni profil klasörü açar.
+- Profil yenileme: Mevcut profil klasörünü korur, ön işlenmiş referansı ve kalite bilgisini günceller.
+- Profil silme: Mevcut profil klasörünü yerelden kaldırır.
+
+## 10. Gradio profil seçimi nasıl çalışır?
 
 Gradio arayüzü açıldığında `profiles/` klasörünü tarar. Kullanıcı bir profil seçerse Gradio:
 
@@ -91,13 +144,13 @@ Referans ses seçimi şu öncelikle yapılır:
 2. Yüklenen referans ses
 3. Varsayılan ses: `samples/my_voice.wav`
 
-## 8. Profil seçiliyken yüklenen ses dosyası neden yok sayılır?
+## 11. Profil seçiliyken yüklenen ses dosyası neden yok sayılır?
 
 Profil seçildiğinde yüklenen ses dosyası bilinçli olarak yok sayılır. Çünkü seçili profil, kullanıcının daha önce hazırlanmış, kalite raporu alınmış ve güvenli şekilde ön işlenmiş referansı kullanmak istediği anlamına gelir.
 
 Bu kural önceliği net tutar. Eğer kullanıcı yüklediği yeni sesi kullanmak istiyorsa profil seçimini boş bırakmalıdır. Eğer kullanıcı hazırlanmış yerel profili kullanmak istiyorsa dropdown'dan profil seçmelidir.
 
-## 9. Yerel veri gizliliği
+## 12. Yerel veri gizliliği
 
 Voice profile dosyaları kişisel veya açık izinli ses kayıtları içerebilir. Bu nedenle gerçek profil klasörleri GitHub'a yüklenmez ve local çalışma verisi olarak kalır.
 
@@ -112,7 +165,7 @@ Bu kurallar gerçek profil içeriklerini dışarıda bırakır, fakat klasörün
 
 Profil klasörleri dışında `samples/` altındaki gerçek referans sesler ve `outputs/` altındaki üretilen sesler de GitHub'a eklenmemelidir.
 
-## 10. Profil oluşturma sırasında kalite raporu nasıl kullanılır?
+## 13. Profil oluşturma sırasında kalite raporu nasıl kullanılır?
 
 Profil oluşturulurken hem orijinal referans hem de ön işlenmiş referans için kalite raporu alınır. Raporlar `profile.json` içine yazılır ve Gradio tarafında kullanıcıya gösterilebilir.
 
@@ -129,7 +182,7 @@ Kalite raporları şu konularda sinyal verir:
 
 Kalite raporu tek başına nihai ses benzerliğini garanti etmez. Son karar için üretilen ses mutlaka dinlenerek kontrol edilmelidir.
 
-## 11. Profil oluşturma ile fine-tuning arasındaki fark
+## 14. Profil oluşturma ile fine-tuning arasındaki fark
 
 Voice profile oluşturma, yeni bir model eğitmek değildir. Bu akışta XTTS-v2 modeli aynı kalır; sadece seçilen referans ses yerel bir klasörde düzenli şekilde saklanır ve üretim sırasında `speaker_wav` olarak kullanılır.
 
@@ -142,7 +195,7 @@ Kısaca:
 
 VoxForge'un bu aşaması reference-based / zero-shot voice cloning MVP'sidir.
 
-## 12. Güvenli ön işleme neden tercih edildi?
+## 15. Güvenli ön işleme neden tercih edildi?
 
 Varsayılan profil oluşturma akışı `safe_normalized` yaklaşımını kullanır. Bu yaklaşımın amacı referans sesi XTTS için tutarlı formata getirmek ve ses seviyesini dengelemektir.
 
@@ -155,22 +208,19 @@ Güvenli yaklaşım şu yüzden tercih edilir:
 - Mono, 24000 Hz WAV çıktısı üretir.
 - Kalite raporuyla birlikte daha kontrollü bir profil oluşturur.
 
-## 13. Bilinen sınırlamalar
+## 16. Bilinen sınırlamalar
 
 - Voice profile sistemi fine-tuning değildir.
 - Profil seçimi yeni bir model oluşturmaz.
 - Profil kalitesi kaynak sesin kalitesine bağlıdır.
 - `profile.json` kalite sinyali verir, nihai ses benzerliğini garanti etmez.
-- Profil silme ve yenileme için ayrı otomasyon henüz yoktur.
 - Profil kalite geçmişi henüz tutulmaz.
 - Gerçek profil dosyaları local kalmalıdır ve GitHub'a eklenmemelidir.
 
-## 14. Sonraki adımlar
+## 17. Sonraki adımlar
 
 Planlanan geliştirme yönleri:
 
-- Profil silme
-- Profil yenileme
 - Profil kalite geçmişi
 - Fine-tuning hazırlığı
 

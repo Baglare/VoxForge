@@ -34,49 +34,61 @@ Adım: Gradio profil dropdown'ından oluşturulan profili seç.
 
 Beklenen sonuç: Seçili profil üretimde öncelikli referans olur. Profil seçiliyken ayrıca yüklenen ses dosyası kullanılmaz.
 
-## 5. Profil yenileme testi
+## 5. Profil dropdown yenileme testi
 
 Adım: Yeni profil oluşturduktan sonra profil dropdown'ının güncellenip güncellenmediğini kontrol et.
 
 Beklenen sonuç: Dropdown yeni profili gösterir ve mümkünse yeni profil seçili hale gelir.
 
-## 6. Varsayılan referans ses testi
+## 6. Seçili profil yenileme testi
+
+Adım: Gradio'da bir profil seç ve `Seçili profili yenile` butonuna bas.
+
+Beklenen sonuç: `original_reference.wav` korunur, `preprocessed_reference.wav` yeniden üretilir ve `profile.json` içindeki kalite bilgisi güncellenir. XTTS modeli yüklenmez ve ses üretimi yapılmaz.
+
+## 7. Seçili profil silme testi
+
+Adım: Gradio'da bir profil seç, silme onay checkbox'ını işaretle ve `Seçili profili sil` butonuna bas.
+
+Beklenen sonuç: `profiles/<profile_slug>/` klasörü silinir, dropdown güncellenir, seçim temizlenir ve `profiles/.gitkeep` dosyası korunur. Onay checkbox'ı işaretli değilse silme yapılmaz.
+
+## 8. Varsayılan referans ses testi
 
 Adım: Profil seçmeden ve harici ses yüklemeden kısa bir metinle üretim denemesi yap.
 
 Beklenen sonuç: Sistem varsayılan `samples/my_voice.wav` referansını kullanmaya çalışır. Dosya yoksa kullanıcıya anlaşılır hata gösterilir.
 
-## 7. Harici referans ses yükleme testi
+## 9. Harici referans ses yükleme testi
 
 Adım: Profil seçmeden Gradio üzerinden açık izinli bir referans ses yükle ve metin seslendir.
 
 Beklenen sonuç: Yüklenen referans ses ön işlenir ve üretimde kullanılır.
 
-## 8. İzin checkbox testi
+## 10. İzin checkbox testi
 
 Adım: İzin checkbox'ını işaretlemeden üretim veya profil oluşturma denemesi yap.
 
 Beklenen sonuç: İşlem başlamaz ve kullanıcıdan ses üzerinde hakkı veya açık izni olduğunu onaylaması istenir.
 
-## 9. Boş metin testi
+## 11. Boş metin testi
 
 Adım: Metin alanını boş bırakıp ses üretmeyi dene.
 
 Beklenen sonuç: Ses üretimi başlamaz ve boş metin için anlaşılır uyarı verilir.
 
-## 10. Kalite raporu testi
+## 12. Kalite raporu testi
 
 Adım: Profil oluşturma veya ses üretimi sonrasında kalite raporu alanını kontrol et.
 
 Beklenen sonuç: Ham ve/veya ön işlenmiş referans için `GOOD`, `WARNING` veya `BAD` sonucu görünür. Rapor teknik sinyal verir; nihai kalite dinlenerek kontrol edilir.
 
-## 11. Çıktı dosyaları testi
+## 13. Çıktı dosyaları testi
 
 Adım: Üretimden sonra local çıktı klasörlerini kontrol et.
 
 Beklenen sonuç: Gradio çıktıları `outputs/gradio_outputs/`, kalite raporları `outputs/reports/`, ön işlenmiş referanslar `outputs/preprocessed_references/` altında tutulur.
 
-## 12. GitHub'a gitmemesi gereken dosyalar kontrolü
+## 14. GitHub'a gitmemesi gereken dosyalar kontrolü
 
 Adım: GitHub Desktop değişiklik listesini kontrol et.
 

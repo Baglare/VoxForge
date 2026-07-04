@@ -39,6 +39,8 @@ from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
     create_voice_profile,
+    delete_voice_profile,
+    recreate_voice_profile,
 )
 
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -416,6 +418,25 @@ def build_created_profile_status(result: VoiceProfileResult) -> str:
     )
 
 
+def build_recreated_profile_status(result: VoiceProfileResult) -> str:
+    """Basarili profil yenileme sonucunu Gradio icin ozetler."""
+    warning = result.preprocessing_warning or "yok"
+    return "\n".join(
+        [
+            "Profil yenilendi.",
+            f"- Profil adı: {result.profile_name}",
+            f"- Profil slug: `{result.profile_slug}`",
+            f"- Korunan orijinal referans: `{result.original_reference}`",
+            f"- Yenilenen ön işlenmiş referans: `{result.preprocessed_reference}`",
+            f"- original_quality: {quality_summary(result.original_quality)}",
+            f"- preprocessed_quality: {quality_summary(result.preprocessed_quality)}",
+            "- selected_preprocessing_variant: "
+            f"`{result.selected_preprocessing_variant}`",
+            f"- preprocessing_warning: {warning}",
+        ]
+    )
+
+
 def build_profile_create_error_outputs(
     current_profile_slug: str | None,
     message: str,
@@ -494,6 +515,143 @@ def create_profile_from_gradio(
         build_profile_refresh_message(profile_scan),
         build_selected_profile_info(next_value),
         created_status,
+    )
+
+
+def build_profile_management_error_outputs(
+    current_profile_slug: str | None,
+    message: str,
+):
+    """Profil silme/yenileme hatasinda secili durumu korur."""
+    profile_scan = scan_local_profiles()
+    choices = build_profile_dropdown_choices(profile_scan)
+    valid_values = {value for _, value in choices if value != NO_PROFILE_VALUE}
+    next_value = (
+        current_profile_slug
+        if current_profile_slug in valid_values
+        else NO_PROFILE_VALUE
+    )
+    return (
+        gr.update(choices=choices, value=next_value),
+        build_profile_refresh_message(profile_scan),
+        build_selected_profile_info(next_value),
+        message,
+    )
+
+
+def recreate_selected_profile_from_gradio(selected_profile_slug: str | None):
+    """Secili profili model yuklemeden original_reference.wav uzerinden yeniler."""
+    if not selected_profile_slug or selected_profile_slug == NO_PROFILE_VALUE:
+        return build_profile_management_error_outputs(
+            selected_profile_slug,
+            "Uyarı: Yenilemek için önce bir profil seçmelisiniz.",
+        )
+
+    try:
+        result = recreate_voice_profile(str(selected_profile_slug))
+    except VoiceProfileError as exc:
+        print(f"Profil yenileme hatasi: {exc}")
+        return build_profile_management_error_outputs(
+            selected_profile_slug,
+            f"HATA: {exc}",
+        )
+    except Exception:
+        print("Profil yenileme sirasinda beklenmeyen teknik hata olustu.")
+        traceback.print_exc()
+        return build_profile_management_error_outputs(
+            selected_profile_slug,
+            "HATA: Profil yenileme sırasında teknik bir sorun oluştu. "
+            "Ayrıntı terminale yazıldı.",
+        )
+
+    profile_scan = scan_local_profiles()
+    choices = build_profile_dropdown_choices(profile_scan)
+    valid_values = {value for _, value in choices if value != NO_PROFILE_VALUE}
+    next_value = (
+        result.profile_slug
+        if result.profile_slug in valid_values
+        else NO_PROFILE_VALUE
+    )
+    status = build_recreated_profile_status(result)
+    if next_value == NO_PROFILE_VALUE:
+        status += (
+            "\n\nUyarı: Profil yenilendi ancak geçerli profil listesinde "
+            "görünmedi. Lütfen profil dosyalarını kontrol edin."
+        )
+
+    return (
+        gr.update(choices=choices, value=next_value),
+        build_profile_refresh_message(profile_scan),
+        build_selected_profile_info(next_value),
+        status,
+    )
+
+
+def delete_selected_profile_from_gradio(
+    selected_profile_slug: str | None,
+    delete_confirmed: bool,
+):
+    """Onaylanan secili profili siler ve dropdown secimini temizler."""
+    if not selected_profile_slug or selected_profile_slug == NO_PROFILE_VALUE:
+        return (
+            *build_profile_management_error_outputs(
+                selected_profile_slug,
+                "Uyarı: Silmek için önce bir profil seçmelisiniz.",
+            ),
+            gr.update(value=False),
+        )
+
+    if not delete_confirmed:
+        return (
+            *build_profile_management_error_outputs(
+                selected_profile_slug,
+                "Uyarı: Profil silinmedi. Önce silme onay checkbox'ını işaretleyin.",
+            ),
+            gr.update(value=False),
+        )
+
+    try:
+        result = delete_voice_profile(str(selected_profile_slug))
+    except VoiceProfileError as exc:
+        print(f"Profil silme hatasi: {exc}")
+        return (
+            *build_profile_management_error_outputs(
+                selected_profile_slug,
+                f"HATA: {exc}",
+            ),
+            gr.update(value=False),
+        )
+    except Exception:
+        print("Profil silme sirasinda beklenmeyen teknik hata olustu.")
+        traceback.print_exc()
+        return (
+            *build_profile_management_error_outputs(
+                selected_profile_slug,
+                "HATA: Profil silme sırasında teknik bir sorun oluştu. "
+                "Ayrıntı terminale yazıldı.",
+            ),
+            gr.update(value=False),
+        )
+
+    profile_scan = scan_local_profiles()
+    status = "\n".join(
+        [
+            result.message,
+            f"- Profil slug: `{result.profile_slug}`",
+            f"- Silinen klasör: `{result.profile_dir}`",
+            "- Seçim temizlendi.",
+        ]
+    )
+
+    return (
+        gr.update(
+            choices=build_profile_dropdown_choices(profile_scan),
+            value=NO_PROFILE_VALUE,
+        ),
+        build_profile_refresh_message(profile_scan),
+        build_selected_profile_info(NO_PROFILE_VALUE),
+        status,
+        gr.update(value=False),
     )
 
 
@@ -889,6 +1047,16 @@ def build_demo() -> gr.Blocks:
         gr.Markdown(
             "Profil seçerseniz yüklenen ses dosyası yerine profilin ön işlenmiş referansı kullanılır."
         )
+        gr.Markdown("## Seçili profil yönetimi")
+        recreate_selected_profile_button = gr.Button("Seçili profili yenile")
+        delete_profile_confirm_checkbox = gr.Checkbox(
+            label="Seçili profili silmeyi onaylıyorum",
+            value=False,
+        )
+        delete_selected_profile_button = gr.Button("Seçili profili sil")
+        profile_management_status = gr.Markdown(
+            value="Profil yönetimi sonucu burada görünecek."
+        )
 
         gr.Markdown("## Yeni yerel ses profili oluştur")
         new_profile_name_input = gr.Textbox(
@@ -949,6 +1117,32 @@ def build_demo() -> gr.Blocks:
             fn=build_selected_profile_info,
             inputs=[profile_dropdown],
             outputs=[selected_profile_info],
+        )
+
+        recreate_selected_profile_button.click(
+            fn=recreate_selected_profile_from_gradio,
+            inputs=[profile_dropdown],
+            outputs=[
+                profile_dropdown,
+                profile_refresh_status,
+                selected_profile_info,
+                profile_management_status,
+            ],
+        )
+
+        delete_selected_profile_button.click(
+            fn=delete_selected_profile_from_gradio,
+            inputs=[
+                profile_dropdown,
+                delete_profile_confirm_checkbox,
+            ],
+            outputs=[
+                profile_dropdown,
+                profile_refresh_status,
+                selected_profile_info,
+                profile_management_status,
+                delete_profile_confirm_checkbox,
+            ],
         )
 
         create_profile_button.click(
