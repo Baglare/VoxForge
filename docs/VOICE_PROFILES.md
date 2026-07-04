@@ -15,9 +15,21 @@ Bir profil şunları sağlar:
 - Hangi ön işleme varyantının seçildiği
 - Ön işleme sırasında oluşan uyarılar
 
-## 2. Profil nasıl oluşturulur?
+## 2. Web arayüzünden profil oluşturma
 
-Profil oluşturmak için proje kök dizininde şu komut çalıştırılır:
+Gradio demosu içinde yeni bir yerel voice profile oluşturulabilir. Bunun için kullanıcı şu alanları doldurur:
+
+1. Profil adı
+2. Referans ses dosyası
+3. Ses üzerinde hakkı veya açık izni olduğunu onaylayan izin checkbox'ı
+
+Bu bilgiler girildikten sonra `Profil oluştur` butonuna basılır. Başarılı oluşturma sonrasında profil yerelde `profiles/<profile_slug>/` klasörüne yazılır.
+
+Gradio, profil oluşturulduktan sonra profil dropdown'ını günceller ve mümkünse yeni profili seçili hale getirir. Böylece kullanıcı aynı demo oturumu içinde yeni oluşturduğu profili seçip metin seslendirmeye devam edebilir.
+
+## 3. Terminalden profil oluşturma
+
+Web arayüzü dışında terminalden profil oluşturma hâlâ alternatif yöntem olarak durur. Proje kök dizininde şu komut çalıştırılır:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
@@ -28,9 +40,9 @@ Bu komutta:
 - `-Name baglare`, profil adını belirtir.
 - `-InputPath .\samples\my_voice.wav`, profil için kullanılacak kaynak referans sesi belirtir.
 
-Script profil adını güvenli bir klasör adına çevirir. Örneğin `baglare` adı için profil klasörü `profiles/baglare/` olur. Aynı slug ile profil zaten varsa üzerine yazılmaz.
+Script profil adını güvenli bir klasör adına çevirir. Örneğin `baglare` adı için profil klasörü `profiles/baglare/` olur.
 
-## 3. Profil klasör yapısı
+## 4. Profil klasör yapısı
 
 Örnek profil yapısı:
 
@@ -43,63 +55,51 @@ profiles/
     `-- profile.json
 ```
 
+`original_reference.wav`, kullanıcıdan alınan giriş sesinin profil klasöründeki kopyasıdır. `preprocessed_reference.wav`, XTTS'e verilecek hazırlanmış referanstır. `profile.json`, profil adı, slug, dosya yolları, kalite raporları ve ön işleme bilgilerini tutar.
+
 `profiles/.gitkeep`, `profiles/` klasörünün GitHub üzerinde boş halde de görünür kalmasını sağlar. Gerçek profil klasörleri ve ses dosyaları GitHub'a yüklenmez.
 
-## 4. profile.json içinde ne tutulur?
+## 5. Gradio'da oluşturulan profilin kalıcı olması
 
-`profile.json`, profil hakkında taşınabilir metadata tutar. İçerik genel olarak şu alanlardan oluşur:
+Gradio arayüzünde oluşturulan profil geçici bir oturum verisi değildir. Profil dosyaları `profiles/<profile_slug>/` altına yazıldığı için Gradio kapatılsa bile profil silinmez.
 
-- `profile_name`: Kullanıcının verdiği profil adı
-- `profile_slug`: Güvenli klasör adı
-- `created_at`: Profilin oluşturulma zamanı
-- `original_reference_path`: Orijinal referans sesin proje içi yolu
-- `preprocessed_reference_path`: Ön işlenmiş referans sesin proje içi yolu
-- `original_quality`: Orijinal referans kalite raporu
-- `preprocessed_quality`: Ön işlenmiş referans kalite raporu
-- `selected_preprocessing_variant`: Seçilen ön işleme varyantı
-- `preprocessing_warning`: Ön işleme uyarısı
-- `preprocessing_candidate_reports`: Denenen ön işleme adaylarının raporları
-- `notes`: Profilin local kullanımına dair kısa notlar
-
-Bu dosya, Gradio arayüzünün profil adını göstermesine ve kalite raporunu yeniden üretmeden mevcut profil bilgisini kullanmasına yardım eder.
-
-## 5. Orijinal referans ve ön işlenmiş referans farkı
-
-`original_reference.wav`, kullanıcıdan alınan giriş sesinin profil klasöründeki kopyasıdır. Bu dosya kaynak kayıt olarak saklanır.
-
-`preprocessed_reference.wav`, XTTS'e verilecek hazırlanmış referanstır. Varsayılan güvenli ön işleme akışı sesi mono, 24000 Hz, `pcm_s16le` WAV formatına getirir ve ses seviyesini dengeler.
-
-Gradio profil seçildiğinde doğrudan `preprocessed_reference.wav` dosyasını kullanır. Böylece her üretimde aynı hazırlanmış referansla tutarlı deneme yapılır.
-
-## 6. Gradio profil seçimi nasıl çalışır?
-
-Gradio arayüzü açıldığında `profiles/` klasörünü tarar. Bir klasörün dropdown'da görünmesi için içinde şu dosyalar olmalıdır:
+Sonraki çalıştırmada Gradio tekrar `profiles/` klasörünü tarar. Geçerli bir profil klasöründe en az şu dosyalar bulunmalıdır:
 
 - `profile.json`
 - `preprocessed_reference.wav`
 
-Kullanıcı bir profil seçerse Gradio:
+Bu dosyalar varsa profil dropdown'da tekrar listelenebilir.
+
+## 6. Aynı profil adıyla tekrar oluşturma davranışı
+
+Aynı profil adı tekrar kullanılırsa mevcut profilin üzerine yazılmaz. Bu davranış bilinçlidir; çünkü profil klasörleri kişisel veya izinli referans sesleri içerir ve yanlışlıkla değiştirilmeleri istenmez.
+
+Aynı kişi veya aynı referans için yeni bir deneme yapmak gerekiyorsa farklı bir profil adı seçilmelidir. Örneğin `baglare`, `baglare_clean` veya `baglare_test_02` gibi ayrı adlar kullanılabilir.
+
+## 7. Gradio profil seçimi nasıl çalışır?
+
+Gradio arayüzü açıldığında `profiles/` klasörünü tarar. Kullanıcı bir profil seçerse Gradio:
 
 1. Profil metadata dosyasını okur.
 2. `profiles/<slug>/preprocessed_reference.wav` dosyasını seçer.
 3. Bu dosyayı XTTS `speaker_wav` girdisi olarak kullanır.
 4. Profilin kalite raporlarını Gradio kalite raporu alanında gösterir.
 
-Profil seçildiğinde yüklenen ses dosyası yok sayılır. Bu davranış kasıtlıdır; çünkü seçili profil, kullanıcının daha önce hazırlanmış ve kalite raporu alınmış yerel referansı kullanmak istediği anlamına gelir.
+Referans ses seçimi şu öncelikle yapılır:
 
-## 7. Öncelik sırası: profil > yüklenen ses > varsayılan ses
+1. Seçili profil
+2. Yüklenen referans ses
+3. Varsayılan ses: `samples/my_voice.wav`
 
-Gradio referans ses seçimini şu sırayla yapar:
+## 8. Profil seçiliyken yüklenen ses dosyası neden yok sayılır?
 
-1. Seçili yerel profil varsa profilin `preprocessed_reference.wav` dosyası kullanılır.
-2. Profil seçilmemişse ve kullanıcı ses yüklediyse yüklenen referans ses kullanılır.
-3. Profil seçilmemişse ve kullanıcı ses yüklememişse `samples/my_voice.wav` kullanılır.
+Profil seçildiğinde yüklenen ses dosyası bilinçli olarak yok sayılır. Çünkü seçili profil, kullanıcının daha önce hazırlanmış, kalite raporu alınmış ve güvenli şekilde ön işlenmiş referansı kullanmak istediği anlamına gelir.
 
-Bu sıra, profil davranışını açık ve tahmin edilebilir tutar.
+Bu kural önceliği net tutar. Eğer kullanıcı yüklediği yeni sesi kullanmak istiyorsa profil seçimini boş bırakmalıdır. Eğer kullanıcı hazırlanmış yerel profili kullanmak istiyorsa dropdown'dan profil seçmelidir.
 
-## 8. Profiller neden GitHub'a yüklenmez?
+## 9. Yerel veri gizliliği
 
-Voice profile dosyaları kişisel veya izinli ses kayıtları içerebilir. Bu dosyalar hem mahremiyet hem de repo boyutu nedeniyle GitHub'a yüklenmez.
+Voice profile dosyaları kişisel veya açık izinli ses kayıtları içerebilir. Bu nedenle gerçek profil klasörleri GitHub'a yüklenmez ve local çalışma verisi olarak kalır.
 
 `.gitignore` içinde bu amaçla şu kurallar bulunur:
 
@@ -110,9 +110,11 @@ profiles/*
 
 Bu kurallar gerçek profil içeriklerini dışarıda bırakır, fakat klasörün projede var olması gerektiğini gösteren `.gitkeep` dosyasını korur.
 
-## 9. Kalite raporları profil oluşturma sürecinde nasıl kullanılır?
+Profil klasörleri dışında `samples/` altındaki gerçek referans sesler ve `outputs/` altındaki üretilen sesler de GitHub'a eklenmemelidir.
 
-Profil oluşturulurken hem orijinal referans hem de ön işlenmiş referans için kalite raporu alınır. Raporlar `profile.json` içine yazılır.
+## 10. Profil oluşturma sırasında kalite raporu nasıl kullanılır?
+
+Profil oluşturulurken hem orijinal referans hem de ön işlenmiş referans için kalite raporu alınır. Raporlar `profile.json` içine yazılır ve Gradio tarafında kullanıcıya gösterilebilir.
 
 Kalite raporları şu konularda sinyal verir:
 
@@ -123,9 +125,24 @@ Kalite raporları şu konularda sinyal verir:
 - Clipping riski var mı?
 - Sonuç `GOOD`, `WARNING` veya `BAD` mı?
 
-Kalite raporu teknik bir yardımcıdır. Son karar için üretilen ses yine dinlenerek kontrol edilmelidir.
+`GOOD`, referansın teknik olarak daha temiz göründüğünü gösterir. `WARNING`, kullanılabilir ama dikkat edilmesi gereken bir durum olduğunu anlatır. `BAD`, kaydın yeniden alınmasının veya daha temiz bir referansla denenmesinin daha doğru olabileceğini gösterir.
 
-## 10. Güvenli ön işleme neden tercih edildi?
+Kalite raporu tek başına nihai ses benzerliğini garanti etmez. Son karar için üretilen ses mutlaka dinlenerek kontrol edilmelidir.
+
+## 11. Profil oluşturma ile fine-tuning arasındaki fark
+
+Voice profile oluşturma, yeni bir model eğitmek değildir. Bu akışta XTTS-v2 modeli aynı kalır; sadece seçilen referans ses yerel bir klasörde düzenli şekilde saklanır ve üretim sırasında `speaker_wav` olarak kullanılır.
+
+Fine-tuning ise modelin ek veriyle yeniden eğitildiği veya uyumlandığı daha gelişmiş bir süreçtir. Bu projedeki mevcut MVP fine-tuning yapmaz, yeni ağırlık dosyası üretmez ve kişiye özel model eğitmez.
+
+Kısaca:
+
+- Voice profile: Referans sesi saklar, ön işler ve tekrar kullanır.
+- Fine-tuning: Modelin davranışını eğitimle değiştirir.
+
+VoxForge'un bu aşaması reference-based / zero-shot voice cloning MVP'sidir.
+
+## 12. Güvenli ön işleme neden tercih edildi?
 
 Varsayılan profil oluşturma akışı `safe_normalized` yaklaşımını kullanır. Bu yaklaşımın amacı referans sesi XTTS için tutarlı formata getirmek ve ses seviyesini dengelemektir.
 
@@ -138,7 +155,7 @@ Güvenli yaklaşım şu yüzden tercih edilir:
 - Mono, 24000 Hz WAV çıktısı üretir.
 - Kalite raporuyla birlikte daha kontrollü bir profil oluşturur.
 
-## 11. Bilinen sınırlamalar
+## 13. Bilinen sınırlamalar
 
 - Voice profile sistemi fine-tuning değildir.
 - Profil seçimi yeni bir model oluşturmaz.
@@ -146,10 +163,9 @@ Güvenli yaklaşım şu yüzden tercih edilir:
 - `profile.json` kalite sinyali verir, nihai ses benzerliğini garanti etmez.
 - Profil silme ve yenileme için ayrı otomasyon henüz yoktur.
 - Profil kalite geçmişi henüz tutulmaz.
-- Gradio dropdown'ı demo açılırken mevcut profilleri listeler; yeni profil oluşturulduysa demoyu yeniden başlatmak gerekebilir.
 - Gerçek profil dosyaları local kalmalıdır ve GitHub'a eklenmemelidir.
 
-## 12. Sonraki adımlar
+## 14. Sonraki adımlar
 
 Planlanan geliştirme yönleri:
 

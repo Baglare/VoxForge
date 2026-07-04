@@ -15,8 +15,13 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Gradio tabanlı local web demo vardır.
 - Varsayılan referans ses yolu `samples/my_voice.wav` olarak kullanılır.
 - Kullanıcı Gradio arayüzünden harici referans ses yükleyebilir.
+- Kullanıcı Gradio arayüzünden profil adı, referans ses ve izin checkbox'ı ile yeni yerel voice profile oluşturabilir.
 - Yerel voice profile sistemi ile sık kullanılan referans sesler `profiles/` altında saklanabilir.
 - Gradio arayüzünde yerel ses profili dropdown'ı vardır.
+- Profil oluşturulduktan sonra dropdown güncellenir ve mümkünse yeni profil seçili hale gelir.
+- Oluşturulan profil `profiles/<profile_slug>/` altında kalıcı kalır; Gradio kapanınca silinmez.
+- Aynı profil adı tekrar kullanılırsa mevcut profilin üzerine yazılmaz.
+- Gradio üretim önceliği açıkça şudur: seçili profil > yüklenen referans ses > varsayılan `samples/my_voice.wav`.
 - Ses üretimi için izin checkbox kontrolü vardır.
 - Boş metin girişi kontrol edilir.
 - FFmpeg ile referans ses ön işleme yapılır.
@@ -36,7 +41,9 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - Local Gradio demo arayüzü
 - Varsayılan referans ses kullanımı: `samples/my_voice.wav`
 - Harici referans ses yükleme desteği
-- Yerel voice profile oluşturma ve Gradio'da profil seçme desteği
+- Web arayüzünden yerel voice profile oluşturma desteği
+- Terminalden yerel voice profile oluşturma alternatifi
+- Gradio'da profil seçme ve profil dropdown'ını güncelleme desteği
 - İzin checkbox kontrolü
 - Boş metin kontrolü
 - FFmpeg ile mono, 24000 Hz WAV referans hazırlama
@@ -50,15 +57,17 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 2. Python sanal ortamını oluşturun ve bağımlılıkları kurun.
 3. Kendi sesinizi veya açık izinli bir referans sesi `samples/my_voice.wav` olarak ekleyin.
 4. İlk terminal denemesini çalıştırarak XTTS akışını doğrulayın.
-5. İsterseniz `profiles/` altında yerel bir voice profile oluşturun.
-6. Gradio demosunu başlatın.
-7. Türkçe metni girin.
-8. Gradio'da bir yerel profil seçin veya profil seçmeden harici referans ses yükleyin.
-9. Sesin size ait olduğunu veya kullanma izniniz olduğunu checkbox ile onaylayın.
-10. Ses üretimini başlatın.
-11. Üretilen sesi Gradio arayüzünde dinleyin.
-12. Ham ve ön işlenmiş referans kalite raporlarını kontrol edin.
-13. Local çıktı dosyalarını `outputs/` altında inceleyin.
+5. Gradio demosunu başlatın.
+6. İsterseniz web arayüzünden yeni bir yerel voice profile oluşturun.
+7. Profil oluşturmak için profil adını girin, referans ses yükleyin, izin checkbox'ını işaretleyin ve `Profil oluştur` butonuna basın.
+8. Oluşturulan profil `profiles/<profile_slug>/` altında kalıcı olarak saklanır; Gradio kapansa bile silinmez.
+9. Türkçe metni girin.
+10. Gradio'da bir yerel profil seçin veya profil seçmeden harici referans ses yükleyin.
+11. Sesin size ait olduğunu veya kullanma izniniz olduğunu checkbox ile onaylayın.
+12. Ses üretimini başlatın.
+13. Üretilen sesi Gradio arayüzünde dinleyin.
+14. Ham ve ön işlenmiş referans kalite raporlarını kontrol edin.
+15. Local çıktı dosyalarını `outputs/` altında inceleyin.
 
 ## 5. Proje yapısı
 
@@ -97,6 +106,7 @@ VoxForge/
 |-- run_audio_quality_report.ps1
 |-- run_compare_reference_quality.ps1
 |-- docs/
+|   |-- DEMO_SCRIPT.md
 |   |-- SETUP_WINDOWS.md
 |   |-- VOICE_REFERENCE_GUIDE.md
 |   `-- VOICE_PROFILES.md
@@ -148,7 +158,7 @@ Local Gradio web demosu:
 powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 ```
 
-Yerel voice profile oluşturma:
+Terminalden yerel voice profile oluşturma (Gradio içindeki web akışına alternatif yöntem):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
@@ -194,7 +204,26 @@ Referans ses için pratik notlar:
 
 Voice profile sistemi, sık kullanılan bir referans sesi yerel bir profil klasörü olarak saklama akışıdır. Bu sistem yeni bir model eğitmez ve fine-tuning yapmaz; mevcut aşama hâlâ reference-based / zero-shot voice cloning MVP'sidir.
 
-Profil oluşturma komutu:
+Gradio arayüzünden profil oluşturmak için kullanıcı şu alanları doldurur:
+
+1. Profil adı
+2. Referans ses dosyası
+3. Ses üzerinde hakkı veya açık izni olduğunu onaylayan izin checkbox'ı
+
+Bu alanlar tamamlandıktan sonra `Profil oluştur` butonuna basılır. Başarılı oluşturulan profil `profiles/<profile_slug>/` altında kalıcı olarak tutulur. Gradio kapatıldığında profil silinmez; sonraki çalıştırmada aynı klasörden tekrar listelenir.
+
+Profil klasöründe şu dosyalar bulunur:
+
+```text
+profiles/<profile_slug>/
+|-- original_reference.wav
+|-- preprocessed_reference.wav
+`-- profile.json
+```
+
+Profil oluşturulduktan sonra Gradio profil dropdown'ı güncellenir ve mümkünse yeni profil seçili hale gelir. Aynı profil adı tekrar oluşturulursa mevcut profilin üzerine yazılmaz; bu davranış kişisel referans seslerin yanlışlıkla değiştirilmesini engeller.
+
+Terminalden profil oluşturma hâlâ alternatif yöntem olarak kullanılabilir:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
@@ -217,9 +246,9 @@ Gradio arayüzünde yerel ses profili dropdown'ı vardır. Bir profil seçilirse
 
 Profil seçilmezse mevcut davranış korunur. Referans öncelik sırası şudur:
 
-1. Seçili yerel profil
+1. Seçili profil
 2. Yüklenen referans ses
-3. Varsayılan `samples/my_voice.wav`
+3. Varsayılan ses: `samples/my_voice.wav`
 
 `profiles/` altındaki gerçek dosyalar GitHub'a yüklenmez. Bu klasörde kişisel ses kayıtları, ön işlenmiş sesler ve kalite metadata'sı bulunabilir; bunlar hem mahremiyet hem de repo boyutu nedeniyle local kalmalıdır. `.gitignore` içinde `profiles/*` kuralı gerçek profil içeriklerini dışarıda bırakır, `!profiles/.gitkeep` kuralı ise boş klasör niyetinin repoda görünmesini sağlar.
 
@@ -256,6 +285,7 @@ Gradio arayüzündeki izin checkbox'ı bu sınırı kullanıcıya açık şekild
 - Proje şu anda Windows odaklıdır.
 - Proje sadece local çalışma için tasarlanmıştır.
 - Gerçek ses dosyaları GitHub'a yüklenmemelidir.
+- Yerel voice profile klasörleri GitHub'a yüklenmemelidir.
 - `outputs/` klasörü üretilen sesleri ve raporları yerelde tutar; GitHub'a yüklenmez.
 - `.venv/`, model dosyaları, cache dosyaları ve büyük çıktılar repoya dahil edilmez.
 - Ses benzerliği garanti değildir; model, kayıt kalitesi, referans süresi ve metin içeriğine bağlıdır.
@@ -272,7 +302,7 @@ Planlanan geliştirme yönleri:
 - Windows kurulum deneyimini daha net hale getirmek
 - Referans ses hazırlama notlarını güçlendirmek
 - Voice profile silme, yenileme ve kalite geçmişi akışlarını eklemek
-- Demo ekran görüntüleriyle portfolyo sunumunu desteklemek
+- Demo anlatımı ve ekran görüntüleriyle portfolyo sunumunu desteklemek
 - Daha ayrıntılı kalite metrikleri eklemek
 - Farklı referans süreleriyle karşılaştırma yapmak
 - Fine-tuning aşamasını ayrı ve daha gelişmiş bir hedef olarak değerlendirmek
