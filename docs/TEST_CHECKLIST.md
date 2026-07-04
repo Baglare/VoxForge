@@ -132,7 +132,17 @@ powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Expe
 
 Beklenen sonuç: Script `training_output/` altında `best_model.pth`, en yeni `best_model_*.pth` veya en yüksek numaralı `checkpoint_*.pth` adaylarından birini seçer ve seçilen checkpoint yolunu terminale yazar. Speaker wav olarak varsa `profiles/baglare/preprocessed_reference.wav`, yoksa `samples/my_voice.wav`, o da yoksa dataset içinden kısa bir WAV kullanılır. Fine-tuned inference başarılıysa `outputs/finetuned_eval/finetuned_test.wav` oluşur. Base output başarılıysa `outputs/finetuned_eval/base_test.wav` oluşur; base output başarısızlığı fine-tuned denemeyi engellemez. Rapor `outputs/reports/finetuned_eval_report.json` dosyasına yazılır. Bu test deneysel pipeline kontrolüdür; `best_model.pth` kalite garantisi değildir. Base ve fine-tuned çıktı dinlenerek karşılaştırılmalı, küçük dataset nedeniyle ses benzerliğinin sınırlı olabileceği unutulmamalıdır.
 
-## 15. Gradio demo açılış testi
+## 15. Checkpoint matrix evaluation testi
+
+Adım: Tek cümlelik fine-tuned testten sonra daha sistematik dinleme karşılaştırması için şu komut çalıştırılır:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
+```
+
+Beklenen sonuç: Script `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantlarını listeler. Aynı checkpoint iki kez seçilmez; eksik varyantlar rapora hata/not olarak yazılır. Her varyant için `outputs/finetuned_eval/matrix/<timestamp>/<variant>/test_01.wav` gibi dosyalar oluşur ve her üretilen dosya terminale yazılır. JSON rapor `outputs/reports/finetuned_matrix_report.json`, Markdown rapor `outputs/reports/finetuned_matrix_report.md` dosyasına yazılır. Bu test kaliteyi otomatik ölçmez; önce `base` klasörü, sonra fine-tuned varyantlar dinlenir. Benzerlik, doğallık, telaffuz ve robotiklik için 1-5 puan verilmelidir. Robotiklik varsa daha fazla training başlatmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
+
+## 16. Gradio demo açılış testi
 
 Adım:
 
@@ -142,73 +152,73 @@ powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 
 Beklenen sonuç: Local Gradio arayüzü açılır. Demo public paylaşım açmadan local makinede çalışır.
 
-## 16. Web üzerinden profil oluşturma testi
+## 17. Web üzerinden profil oluşturma testi
 
 Adım: Gradio arayüzünde profil adı gir, referans ses yükle, izin checkbox'ını işaretle ve `Profil oluştur` butonuna bas.
 
 Beklenen sonuç: Yeni profil `profiles/<profile_slug>/` altında oluşur. Profil klasöründe `original_reference.wav`, `preprocessed_reference.wav` ve `profile.json` bulunur.
 
-## 17. Profil seçme testi
+## 18. Profil seçme testi
 
 Adım: Gradio profil dropdown'ından oluşturulan profili seç.
 
 Beklenen sonuç: Seçili profil üretimde öncelikli referans olur. Profil seçiliyken ayrıca yüklenen ses dosyası kullanılmaz.
 
-## 18. Profil dropdown yenileme testi
+## 19. Profil dropdown yenileme testi
 
 Adım: Yeni profil oluşturduktan sonra profil dropdown'ının güncellenip güncellenmediğini kontrol et.
 
 Beklenen sonuç: Dropdown yeni profili gösterir ve mümkünse yeni profil seçili hale gelir.
 
-## 19. Seçili profil yenileme testi
+## 20. Seçili profil yenileme testi
 
 Adım: Gradio'da bir profil seç ve `Seçili profili yenile` butonuna bas.
 
 Beklenen sonuç: `original_reference.wav` korunur, `preprocessed_reference.wav` yeniden üretilir ve `profile.json` içindeki kalite bilgisi güncellenir. XTTS modeli yüklenmez ve ses üretimi yapılmaz.
 
-## 20. Seçili profil silme testi
+## 21. Seçili profil silme testi
 
 Adım: Gradio'da bir profil seç, silme onay checkbox'ını işaretle ve `Seçili profili sil` butonuna bas.
 
 Beklenen sonuç: `profiles/<profile_slug>/` klasörü silinir, dropdown güncellenir, seçim temizlenir ve `profiles/.gitkeep` dosyası korunur. Onay checkbox'ı işaretli değilse silme yapılmaz.
 
-## 21. Varsayılan referans ses testi
+## 22. Varsayılan referans ses testi
 
 Adım: Profil seçmeden ve harici ses yüklemeden kısa bir metinle üretim denemesi yap.
 
 Beklenen sonuç: Sistem varsayılan `samples/my_voice.wav` referansını kullanmaya çalışır. Dosya yoksa kullanıcıya anlaşılır hata gösterilir.
 
-## 22. Harici referans ses yükleme testi
+## 23. Harici referans ses yükleme testi
 
 Adım: Profil seçmeden Gradio üzerinden açık izinli bir referans ses yükle ve metin seslendir.
 
 Beklenen sonuç: Yüklenen referans ses ön işlenir ve üretimde kullanılır.
 
-## 23. İzin checkbox testi
+## 24. İzin checkbox testi
 
 Adım: İzin checkbox'ını işaretlemeden üretim veya profil oluşturma denemesi yap.
 
 Beklenen sonuç: İşlem başlamaz ve kullanıcıdan ses üzerinde hakkı veya açık izni olduğunu onaylaması istenir.
 
-## 24. Boş metin testi
+## 25. Boş metin testi
 
 Adım: Metin alanını boş bırakıp ses üretmeyi dene.
 
 Beklenen sonuç: Ses üretimi başlamaz ve boş metin için anlaşılır uyarı verilir.
 
-## 25. Kalite raporu testi
+## 26. Kalite raporu testi
 
 Adım: Profil oluşturma veya ses üretimi sonrasında kalite raporu alanını kontrol et.
 
 Beklenen sonuç: Ham ve/veya ön işlenmiş referans için `GOOD`, `WARNING` veya `BAD` sonucu görünür. Rapor teknik sinyal verir; nihai kalite dinlenerek kontrol edilir.
 
-## 26. Çıktı dosyaları testi
+## 27. Çıktı dosyaları testi
 
 Adım: Üretimden sonra local çıktı klasörlerini kontrol et.
 
 Beklenen sonuç: Gradio çıktıları `outputs/gradio_outputs/`, kalite raporları `outputs/reports/`, ön işlenmiş referanslar `outputs/preprocessed_references/` altında tutulur.
 
-## 27. GitHub'a gitmemesi gereken dosyalar kontrolü
+## 28. GitHub'a gitmemesi gereken dosyalar kontrolü
 
 Adım: GitHub Desktop değişiklik listesini kontrol et.
 

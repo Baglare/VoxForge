@@ -266,6 +266,59 @@ Base output üretimi başarısız olursa fine-tuned deneme yine devam eder; hata
 
 `best_model.pth` kalite garantisi değildir. Base output ve fine-tuned output mutlaka dinlenerek karşılaştırılmalıdır. Mevcut 72 train / 8 eval örnekli küçük dataset nedeniyle ses benzerliği, telaffuz ve stabilite sınırlı olabilir.
 
+## Checkpoint matrix evaluation
+
+Tek cümlelik testte fine-tuned ses robotik gelirse hemen yeni training başlatmadan önce birden fazla checkpoint ve birden fazla Türkçe test cümlesiyle karşılaştırma yapılmalıdır. Matrix evaluation akışı kaliteyi otomatik ölçmez; insan kulağıyla base ve fine-tuned çıktılar karşılaştırılır.
+
+Matrix testi için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
+```
+
+Opsiyonel özel referans ses vermek için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01 -SpeakerWav .\profiles\baglare\preprocessed_reference.wav
+```
+
+Script şu varyantları dener:
+
+- `base`
+- `best_model.pth`
+- `best_model_72.pth`, varsa
+- En yüksek numaralı `checkpoint_*.pth`, varsa
+
+Aynı checkpoint iki kez seçilmez. Eksik checkpoint varyantı atlanır ve rapora yazılır.
+
+Çıktılar zaman damgalı klasöre yazılır:
+
+```text
+outputs/finetuned_eval/matrix/<timestamp>/
+|-- base/
+|   |-- test_01.wav
+|   `-- test_02.wav
+|-- best_model/
+|-- best_model_72/
+`-- checkpoint_71/
+```
+
+Rapor dosyaları:
+
+```text
+outputs/reports/finetuned_matrix_report.json
+outputs/reports/finetuned_matrix_report.md
+```
+
+Dinleme sırası:
+
+1. Önce `base` klasörünü dinleyin.
+2. Sonra fine-tuned varyantları sırayla dinleyin.
+3. Benzerlik, doğallık, telaffuz ve robotiklik açısından 1-5 puan verin.
+4. Fine-tuned çıktı base'den kötüyse daha fazla training basmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
+
+Robotiklik duyuluyorsa bunun nedeni yalnızca checkpoint olmayabilir. Kayıt temizliği, referans ses seçimi, dataset çeşitliliği, transkript uyumu ve kısa dataset sınırı birlikte incelenmelidir.
+
 ## Training sonrası model nasıl değerlendirilecek?
 
 İlk inference scripti yalnızca teknik pipeline kontrolüdür. Kalite değerlendirmesi için şu kontroller ayrıca yapılmalıdır:
