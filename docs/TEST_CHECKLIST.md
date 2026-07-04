@@ -30,7 +30,13 @@ Adım:
 powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
 ```
 
-Beklenen sonuç: `recording_plan.csv` oluşur. Dosyada `clip_id|target_audio_path|text|status|notes` başlığı bulunur, ilk 80 kayıt metni listelenir ve tüm satırların `status` alanı `TODO` olur. Dosya zaten varsa üzerine yazılmaz.
+Beklenen sonuç: `recording_plan.csv` oluşur. Dosyada `clip_id;target_audio_path;text;status;notes` başlığı bulunur, ilk 80 kayıt metni listelenir ve tüm satırların `status` alanı `TODO` olur. Dosya `utf-8-sig` encoding ve noktalı virgül (`;`) delimiter ile yazılır. Dosya zaten varsa üzerine yazılmaz.
+
+Excel kontrolü: `recording_plan.csv` dosyasını Excel'de çift tıklayarak aç. `Bugün` gibi Türkçe karakterler bozulmadan görünmeli ve alanlar ayrı sütunlara bölünmelidir. Eski dosya bozuk görünüyorsa şu komutla kontrollü yeniden üret:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80 -Overwrite
+```
 
 ## 4. Fine-tuning metadata oluşturma testi
 

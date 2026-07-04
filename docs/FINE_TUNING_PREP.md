@@ -67,17 +67,25 @@ Kayıt planı üretme:
 powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
 ```
 
+Varsayılan davranış güvenlidir: `recording_plan.csv` zaten varsa üzerine yazılmaz. Planı bilinçli olarak yeniden üretmek için `-Overwrite` eklenir:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80 -Overwrite
+```
+
 `recording_plan.csv` formatı:
 
 ```text
-clip_id|target_audio_path|text|status|notes
-VF_TR_001|wavs/VF_TR_001.wav|Bugün hava sakin ve çalışmak için uygun görünüyor.|TODO|
+clip_id;target_audio_path;text;status;notes
+VF_TR_001;wavs/VF_TR_001.wav;Bugün hava sakin ve çalışmak için uygun görünüyor.;TODO;
 ```
+
+Excel notu: `recording_plan.csv` artık `utf-8-sig` encoding ve noktalı virgül (`;`) delimiter ile yazılır. Bu, Windows'ta Excel ile çift tıklayarak açıldığında Türkçe karakterlerin bozulmamasına ve sütunların düzgün ayrılmasına yardımcı olur. Eski bir kayıt planı Excel'de bozuk görünüyor veya bozuk açılıp kaydedildiyse dosyayı `-Overwrite` ile yeniden üretin.
 
 Kayıt tamamlandığında ilgili satırdaki `status` alanı `DONE` yapılır:
 
 ```text
-VF_TR_001|wavs/VF_TR_001.wav|Bugün hava sakin ve çalışmak için uygun görünüyor.|DONE|
+VF_TR_001;wavs/VF_TR_001.wav;Bugün hava sakin ve çalışmak için uygun görünüyor.;DONE;
 ```
 
 DONE satırlardan metadata üretme:

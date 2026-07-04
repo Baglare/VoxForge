@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 import sys
 
@@ -11,7 +12,10 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PLAN_FILE_NAME = "recording_plan.csv"
 METADATA_FILE_NAME = "metadata.csv"
-PLAN_HEADER = "clip_id|target_audio_path|text|status|notes"
+PLAN_FIELDS = ["clip_id", "target_audio_path", "text", "status", "notes"]
+PIPE_PLAN_HEADER = "|".join(PLAN_FIELDS)
+SEMICOLON_PLAN_HEADER = ";".join(PLAN_FIELDS)
+PLAN_ENCODING = "utf-8-sig"
 METADATA_HEADER = "audio_path|text"
 
 
@@ -27,45 +31,63 @@ def resolve_dataset_path(dataset_arg: str) -> Path:
     return dataset_path.resolve()
 
 
+def detect_plan_delimiter(header_line: str) -> str:
+    """recording_plan.csv başlığına göre eski veya yeni ayırıcıyı seçer."""
+    header = header_line.strip()
+    if header == SEMICOLON_PLAN_HEADER:
+        return ";"
+    if header == PIPE_PLAN_HEADER:
+        return "|"
+
+    raise MetadataBuildError(
+        "recording_plan.csv başlığı hatalı. Beklenen başlık: "
+        f"{SEMICOLON_PLAN_HEADER} veya {PIPE_PLAN_HEADER}"
+    )
+
+
 def read_plan_rows(plan_path: Path) -> list[dict[str, str]]:
-    """recording_plan.csv dosyasını pipe ayracıyla okur."""
+    """recording_plan.csv dosyasını eski pipe veya yeni semicolon formatıyla okur."""
     try:
-        lines = plan_path.read_text(encoding="utf-8").splitlines()
+        with plan_path.open("r", encoding=PLAN_ENCODING, newline="") as plan_file:
+            first_line = plan_file.readline()
+            if not first_line:
+                raise MetadataBuildError("recording_plan.csv boş.")
+
+            delimiter = detect_plan_delimiter(first_line)
+            plan_file.seek(0)
+            reader = csv.reader(plan_file, delimiter=delimiter)
+            header = next(reader, None)
+            if header != PLAN_FIELDS:
+                raise MetadataBuildError(
+                    "recording_plan.csv başlığı hatalı. Beklenen alanlar: "
+                    f"{', '.join(PLAN_FIELDS)}"
+                )
+
+            rows: list[dict[str, str]] = []
+            for row in reader:
+                line_number = reader.line_num
+                if not row or not any(cell.strip() for cell in row):
+                    continue
+
+                if len(row) != len(PLAN_FIELDS):
+                    raise MetadataBuildError(
+                        f"recording_plan.csv satır {line_number} hatalı: "
+                        f"{len(PLAN_FIELDS)} alan bekleniyor."
+                    )
+
+                cleaned_row = [cell.strip() for cell in row]
+                rows.append(
+                    {
+                        "line_number": str(line_number),
+                        "clip_id": cleaned_row[0],
+                        "target_audio_path": cleaned_row[1],
+                        "text": cleaned_row[2],
+                        "status": cleaned_row[3],
+                        "notes": cleaned_row[4],
+                    }
+                )
     except OSError as exc:
         raise MetadataBuildError(f"recording_plan.csv okunamadı: {plan_path}") from exc
-
-    if not lines:
-        raise MetadataBuildError("recording_plan.csv boş.")
-
-    header = lines[0].strip()
-    if header != PLAN_HEADER:
-        raise MetadataBuildError(
-            "recording_plan.csv başlığı hatalı. Beklenen başlık: "
-            f"{PLAN_HEADER}"
-        )
-
-    rows: list[dict[str, str]] = []
-    for line_number, raw_line in enumerate(lines[1:], start=2):
-        if not raw_line.strip():
-            continue
-
-        parts = raw_line.split("|", 4)
-        if len(parts) != 5:
-            raise MetadataBuildError(
-                f"recording_plan.csv satır {line_number} hatalı: 5 alan bekleniyor."
-            )
-
-        clip_id, target_audio_path, text, status, notes = [part.strip() for part in parts]
-        rows.append(
-            {
-                "line_number": str(line_number),
-                "clip_id": clip_id,
-                "target_audio_path": target_audio_path,
-                "text": text,
-                "status": status,
-                "notes": notes,
-            }
-        )
 
     return rows
 

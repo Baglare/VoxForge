@@ -366,6 +366,8 @@ Kayıt toplama için `docs/RECORDING_TEXT_SET_TR.md` içinde özgün Türkçe me
 powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
 ```
 
+`recording_plan.csv`, Excel'de Türkçe karakterlerin bozulmadan ve sütunların düzgün ayrılarak açılabilmesi için `utf-8-sig` encoding ve noktalı virgül (`;`) delimiter ile yazılır. Dosya zaten varsa varsayılan olarak üzerine yazılmaz; bilinçli yeniden üretim için `-Overwrite` eklenebilir.
+
 Kayıtlar tamamlandığında `recording_plan.csv` içindeki ilgili satırların `status` alanı `DONE` yapılır. DONE satırlardan `metadata.csv` oluşturmak için:
 
 ```powershell

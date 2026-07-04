@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Dataset,
 
-    [int]$Count = 80
+    [int]$Count = 80,
+
+    [switch]$Overwrite
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,8 +33,14 @@ if (-not (Test-Path -LiteralPath $GeneratePlanScript -PathType Leaf)) {
 Write-Host "Python yolu: $PythonExe"
 Write-Host "Dataset yolu: $Dataset"
 Write-Host "Kayit sayisi: $Count"
+Write-Host "Overwrite: $Overwrite"
 Write-Host "Calistirilacak script: $GeneratePlanScript"
 
 Set-Location -LiteralPath $ProjectRoot
-& $PythonExe $GeneratePlanScript --dataset $Dataset --count $Count
+$PythonArgs = @($GeneratePlanScript, "--dataset", $Dataset, "--count", $Count)
+if ($Overwrite) {
+    $PythonArgs += "--overwrite"
+}
+
+& $PythonExe @PythonArgs
 exit $LASTEXITCODE

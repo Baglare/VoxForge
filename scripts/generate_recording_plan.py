@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -13,7 +14,9 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEXT_SET_PATH = PROJECT_ROOT / "docs" / "RECORDING_TEXT_SET_TR.md"
 PLAN_FILE_NAME = "recording_plan.csv"
-PLAN_HEADER = "clip_id|target_audio_path|text|status|notes"
+PLAN_HEADER = ["clip_id", "target_audio_path", "text", "status", "notes"]
+PLAN_ENCODING = "utf-8-sig"
+PLAN_DELIMITER = ";"
 RECORD_PATTERN = re.compile(r"^\s*-\s*(VF_TR_\d{3})\s*\|\s*(.+?)\s*$")
 
 
@@ -59,7 +62,7 @@ def read_recording_texts() -> list[RecordingText]:
     return records
 
 
-def write_recording_plan(dataset_path: Path, count: int) -> Path:
+def write_recording_plan(dataset_path: Path, count: int, overwrite: bool) -> Path:
     """İlk N kayıt metninden recording_plan.csv dosyasını oluşturur."""
     if count <= 0:
         raise RecordingPlanError("--count pozitif bir sayı olmalıdır.")
@@ -68,10 +71,11 @@ def write_recording_plan(dataset_path: Path, count: int) -> Path:
         raise RecordingPlanError(f"Dataset klasörü bulunamadı: {dataset_path}")
 
     plan_path = dataset_path / PLAN_FILE_NAME
-    if plan_path.exists():
+    if plan_path.exists() and not overwrite:
         raise RecordingPlanError(
             "recording_plan.csv zaten var; üzerine yazılmadı.\n"
-            f"Mevcut dosya: {plan_path}"
+            f"Mevcut dosya: {plan_path}\n"
+            "Yeniden oluşturmak için --overwrite parametresini kullanın."
         )
 
     records = read_recording_texts()
@@ -80,13 +84,20 @@ def write_recording_plan(dataset_path: Path, count: int) -> Path:
             f"İstenen kayıt sayısı ({count}) mevcut metin sayısından fazla ({len(records)})."
         )
 
-    selected_records = records[:count]
-    lines = [PLAN_HEADER]
-    for record in selected_records:
-        target_audio_path = f"wavs/{record.clip_id}.wav"
-        lines.append(f"{record.clip_id}|{target_audio_path}|{record.text}|TODO|")
+    # utf-8-sig, Excel'in dosyayı çift tıklamayla açarken Türkçe karakterleri
+    # doğru algılamasına yardımcı olur. Semicolon ayırıcı da TR Excel için daha uygundur.
+    with plan_path.open("w", encoding=PLAN_ENCODING, newline="") as plan_file:
+        writer = csv.writer(
+            plan_file,
+            delimiter=PLAN_DELIMITER,
+            quoting=csv.QUOTE_MINIMAL,
+            lineterminator="\n",
+        )
+        writer.writerow(PLAN_HEADER)
+        for record in records[:count]:
+            target_audio_path = f"wavs/{record.clip_id}.wav"
+            writer.writerow([record.clip_id, target_audio_path, record.text, "TODO", ""])
 
-    plan_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return plan_path
 
 
@@ -105,6 +116,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=80,
         help="Planlanacak ilk kayıt sayısı. Varsayılan: 80",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Var olan recording_plan.csv dosyasını yeniden oluştur.",
+    )
     return parser.parse_args(argv)
 
 
@@ -113,7 +129,7 @@ def main(argv: list[str]) -> int:
     dataset_path = resolve_dataset_path(args.dataset)
 
     try:
-        plan_path = write_recording_plan(dataset_path, args.count)
+        plan_path = write_recording_plan(dataset_path, args.count, args.overwrite)
     except RecordingPlanError as exc:
         print(f"HATA: {exc}", file=sys.stderr)
         return 1
@@ -122,6 +138,8 @@ def main(argv: list[str]) -> int:
     print(f"Dataset: {dataset_path}")
     print(f"Kayıt planı: {plan_path}")
     print(f"Planlanan kayıt sayısı: {args.count}")
+    print(f"encoding: {PLAN_ENCODING}")
+    print(f"delimiter: {PLAN_DELIMITER}")
     return 0
 
 
