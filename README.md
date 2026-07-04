@@ -34,6 +34,7 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training başlatma altyapısı vardır; bu akış kalite garantisi vermez ve Gradio UI'a bağlı değildir.
 - Deneysel fine-tuned checkpoint için ilk inference ve base XTTS karşılaştırma çıktısı üretme akışı vardır.
 - Fine-tuned checkpoint kalitesini birden fazla checkpoint ve Türkçe test cümlesiyle karşılaştıran matrix evaluation akışı vardır.
+- Fine-tuned matrix çıktıları için manuel dinleme scorecard raporu oluşturma akışı vardır.
 
 Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
 
@@ -56,6 +57,7 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - Deneysel XTTS fine-tuning dataset export ve training runner scriptleri
 - Deneysel fine-tuned checkpoint değerlendirme runner scripti
 - Çoklu checkpoint matrix evaluation runner scripti
+- Manuel human evaluation scorecard runner scripti
 - Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
 - Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
 
@@ -97,6 +99,7 @@ VoxForge/
 |   |-- train_xtts_gpt_experiment.py
 |   |-- evaluate_xtts_finetuned_checkpoint.py
 |   |-- evaluate_xtts_checkpoint_matrix.py
+|   |-- create_human_eval_report.py
 |   |-- generate_recording_plan.py
 |   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
@@ -148,6 +151,7 @@ VoxForge/
 |-- run_train_xtts_experiment.ps1
 |-- run_evaluate_xtts_finetuned.ps1
 |-- run_evaluate_xtts_matrix.ps1
+|-- run_create_human_eval_report.ps1
 |-- run_generate_recording_plan.ps1
 |-- run_build_metadata.ps1
 |-- docs/
@@ -289,6 +293,12 @@ Checkpoint matrix karşılaştırması:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
+```
+
+Manuel kalite değerlendirme scorecard raporu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
 ```
 
 Fine-tuning kayıt planı üretme:
@@ -470,6 +480,8 @@ Not: `EPOCH: 0/0`, yalnızca evaluation çalışması veya checkpoint oluşmamas
 Fine-tuned checkpoint değerlendirme komutu training başlatmaz. `training_output/` altında `best_model.pth`, en yeni `best_model_*.pth` veya en yüksek numaralı `checkpoint_*.pth` dosyasını seçer; base XTTS ve fine-tuned çıktılarını `outputs/finetuned_eval/` altına yazar. `best_model.pth` kalite garantisi değildir. Base ve fine-tuned çıktı dinlenerek karşılaştırılmalı, küçük dataset nedeniyle ses benzerliğinin sınırlı olabileceği unutulmamalıdır.
 
 Checkpoint matrix karşılaştırması, `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantlarını en az 6 Türkçe test cümlesiyle dener. Bu akış kaliteyi otomatik ölçmez; insan kulağıyla base ve fine-tuned çıktılar karşılaştırılır. Robotiklik varsa daha fazla training başlatmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
+
+Manuel kalite değerlendirme scorecard akışı, matrix klasörleri dinlendikten sonra verilen 1-5 puanları `outputs/reports/human_eval_scorecard.csv`, `outputs/reports/human_eval_summary.json` ve `outputs/reports/human_eval_summary.md` dosyalarına yazar. Bu otomatik kalite ölçümü değildir; ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır.
 
 Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
 

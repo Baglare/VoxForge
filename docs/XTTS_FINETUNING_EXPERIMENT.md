@@ -319,6 +319,32 @@ Dinleme sırası:
 
 Robotiklik duyuluyorsa bunun nedeni yalnızca checkpoint olmayabilir. Kayıt temizliği, referans ses seçimi, dataset çeşitliliği, transkript uyumu ve kısa dataset sınırı birlikte incelenmelidir.
 
+## Human evaluation scorecard
+
+Matrix evaluation çıktıları dinlendikten sonra manuel puanları tek bir scorecard dosyasına kaydetmek için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
+```
+
+Bu komut training başlatmaz, yeni model eğitmez ve Gradio UI'a dokunmaz. `-UseDefaultScores`, ilk manuel dinleme puanlarını kullanarak şu dosyaları üretir:
+
+```text
+outputs/reports/human_eval_scorecard.csv
+outputs/reports/human_eval_summary.json
+outputs/reports/human_eval_summary.md
+```
+
+CSV dosyası noktalı virgül (`;`) ile ayrılır ve sonradan elle düzenlenebilir:
+
+```text
+variant;naturalness;similarity;pronunciation;human_likeness;text_accuracy;total_score;notes
+```
+
+Puanlama 1 kötü, 5 iyi olacak şekilde yorumlanır. `human_likeness` alanında 1 daha robotik, 5 daha insan gibi kabul edilir.
+
+Bu otomatik kalite ölçümü değildir. Ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır. İlk puanlara göre fine-tuning pipeline teknik olarak başarılıdır; kalite artışı sınırlıdır. `best_model` base'e göre küçük iyileşme gösterir. `checkpoint_71` daha yüksek puan alsa da bazı kayıtlarda cümle erken kesiliyor gibi olduğu için güvenilir kabul edilmemelidir. Daha fazla veri, daha iyi referans kayıt ve inference ayarı değerlendirilmelidir.
+
 ## Training sonrası model nasıl değerlendirilecek?
 
 İlk inference scripti yalnızca teknik pipeline kontrolüdür. Kalite değerlendirmesi için şu kontroller ayrıca yapılmalıdır:
