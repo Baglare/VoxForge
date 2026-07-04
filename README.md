@@ -86,6 +86,8 @@ VoxForge/
 |   |-- recreate_voice_profile.py
 |   |-- init_finetune_dataset.py
 |   |-- validate_finetune_dataset.py
+|   |-- generate_recording_plan.py
+|   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
 |   |-- prepare_reference_audio.py
 |   |-- compare_reference_quality.py
@@ -126,9 +128,12 @@ VoxForge/
 |-- run_compare_reference_quality.ps1
 |-- run_init_finetune_dataset.ps1
 |-- run_validate_finetune_dataset.ps1
+|-- run_generate_recording_plan.ps1
+|-- run_build_metadata.ps1
 |-- docs/
 |   |-- DEMO_SCRIPT.md
 |   |-- FINE_TUNING_PREP.md
+|   |-- RECORDING_TEXT_SET_TR.md
 |   |-- SETUP_WINDOWS.md
 |   |-- TEST_CHECKLIST.md
 |   |-- VOICE_REFERENCE_GUIDE.md
@@ -227,6 +232,18 @@ Fine-tuning dataset doğrulama:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Fine-tuning kayıt planı üretme:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
+```
+
+Kayıt planından metadata oluşturma:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
 ## 9. Test / kontrol
@@ -342,6 +359,18 @@ powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Da
 ```
 
 Doğrulama scripti `metadata.csv` satırlarını, WAV dosyalarını, süreyi, sample rate değerini, mono kanal durumunu ve kalite analizini kontrol eder. Rapor local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır; bu rapor ve gerçek dataset dosyaları GitHub'a yüklenmez.
+
+Kayıt toplama için `docs/RECORDING_TEXT_SET_TR.md` içinde özgün Türkçe metinler bulunur. Bu metinlerden kayıt planı üretmek için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
+```
+
+Kayıtlar tamamlandığında `recording_plan.csv` içindeki ilgili satırların `status` alanı `DONE` yapılır. DONE satırlardan `metadata.csv` oluşturmak için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
 
 Ayrıntılı hazırlık rehberi için `docs/FINE_TUNING_PREP.md` dosyasına bakın.
 

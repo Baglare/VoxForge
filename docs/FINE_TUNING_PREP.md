@@ -23,6 +23,7 @@ datasets/<dataset_slug>/
 |-- wavs/
 |   |-- sample_001.wav
 |   `-- sample_002.wav
+|-- recording_plan.csv
 |-- metadata.csv
 `-- dataset_report.json
 ```
@@ -40,6 +41,52 @@ wavs/sample_002.wav|Bu kayıt temiz ve doğal bir konuşma içermelidir.
 ```
 
 `audio_path`, dataset klasörüne göre göreli yol olmalıdır. `text`, ses dosyasında gerçekten söylenen metinle eşleşmelidir.
+
+## Kayıt planı üretme akışı
+
+Kayıt planı, hangi metnin hangi dosya adıyla kaydedileceğini önceden belirler. Böylece kayıt sırasında dosya adları ve transkriptler karışmaz.
+
+Önerilen akış:
+
+1. Dataset iskeletini oluştur.
+2. `docs/RECORDING_TEXT_SET_TR.md` içindeki özgün Türkçe metinlerden `recording_plan.csv` üret.
+3. Her satırdaki `target_audio_path` değerine göre sesleri `wavs/` klasörüne kaydet.
+4. Kaydı tamamlanan satırların `status` alanını `DONE` yap.
+5. DONE satırlardan `metadata.csv` oluştur.
+6. Dataset doğrulama scriptini çalıştır.
+
+Dataset iskeleti:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
+```
+
+Kayıt planı üretme:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
+```
+
+`recording_plan.csv` formatı:
+
+```text
+clip_id|target_audio_path|text|status|notes
+VF_TR_001|wavs/VF_TR_001.wav|Bugün hava sakin ve çalışmak için uygun görünüyor.|TODO|
+```
+
+Kayıt tamamlandığında ilgili satırdaki `status` alanı `DONE` yapılır:
+
+```text
+VF_TR_001|wavs/VF_TR_001.wav|Bugün hava sakin ve çalışmak için uygun görünüyor.|DONE|
+```
+
+DONE satırlardan metadata üretme:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Bu komut yalnızca `DONE` satırları işler. Ses dosyası eksikse ilgili satır `metadata.csv` içine yazılmaz ve terminalde uyarı gösterilir.
 
 ## İyi eğitim kaydı nasıl alınır?
 
@@ -90,7 +137,7 @@ Doğrulama uyarısı her zaman dosyanın kullanılamaz olduğu anlamına gelmez;
 powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
 ```
 
-Sonra `metadata.csv` doldurulur ve WAV dosyaları `wavs/` altına local olarak eklenir. Doğrulama şu komutla çalıştırılır:
+Sonra kayıt planı üzerinden WAV dosyaları `wavs/` altına local olarak eklenir, DONE satırlardan `metadata.csv` oluşturulur ve doğrulama şu komutla çalıştırılır:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
@@ -115,7 +162,7 @@ Bu yapı gerçek dataset içeriklerini dışarıda bırakır, ama `datasets/` kl
 
 Sonraki aşamada şu işler ayrı bir kapsam olarak ele alınabilir:
 
-- Dataset parçaleme ve transkript temizleme akışı
+- Dataset parçalama ve transkript temizleme akışı
 - Daha ayrıntılı dataset kalite raporu
 - Eğitim konfigürasyonu taslağı
 - Fine-tuning deneme komutları
