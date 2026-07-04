@@ -262,13 +262,13 @@ powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 
 Deneysel XTTS training dry-run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8 -DryRun
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
 ```
 
 Deneysel XTTS training başlatma:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
 ```
 
 Fine-tuning kayıt planı üretme:
@@ -432,18 +432,18 @@ powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 
 Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-run ile manifest, dataset dosyaları, checkpoint varlığı, CUDA, GPT trainer importları ve config oluşturma kontrolü yapılabilir:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8 -DryRun
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
 ```
 
-Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. Bazı `coqui-tts` sürümlerinde `XttsAudioConfig` farklı modülde bulunduğu için script fallback import kullanır ve import kaynağını terminalde yazar; desteklenmeyen config argümanlarını da uyarı olarak gösterir. Dry-run ayrıca `limit_mode` bilgisini yazar: `max_steps`, `epochs_fallback` veya `unsupported`. Gerçek training, güvenli bir `max_steps` veya `epochs/num_epochs` sınırı bulunamazsa başlatılmaz.
+Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. Bazı `coqui-tts` sürümlerinde `XttsAudioConfig` farklı modülde bulunduğu için script fallback import kullanır ve import kaynağını terminalde yazar; desteklenmeyen config argümanlarını da uyarı olarak gösterir. Dry-run ayrıca `limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints` ve `save_n_checkpoints` bilgisini yazar. Gerçek training, güvenli bir `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı bulunamazsa başlatılmaz.
 
 Training başlatmak için:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
 ```
 
-Mevcut yaklaşık 7.45 dakikalık dataset teknik olarak geçerlidir, ancak gerçek fine-tuning kalitesi için küçük kabul edilir. Deney çıktıları, checkpointler, trainer logları ve model dosyaları `experiments/` veya `fine_tuned_models/` altında local kalmalı ve GitHub'a yüklenmemelidir.
+Training bittikten sonra script `training_output/` klasörünü recursive tarar. `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunmazsa işlem başarısız sayılır ve exit code `1` ile biter. Mevcut yaklaşık 7.45 dakikalık dataset teknik olarak geçerlidir, ancak gerçek fine-tuning kalitesi için küçük kabul edilir. Deney çıktıları, checkpointler, trainer logları ve model dosyaları `experiments/` veya `fine_tuned_models/` altında local kalmalı ve GitHub'a yüklenmemelidir.
 
 Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
 

@@ -10,6 +10,8 @@ param(
 
     [int]$GradAccum = 8,
 
+    [int]$SaveStep = 1,
+
     [switch]$DryRun
 )
 
@@ -129,6 +131,7 @@ Write-Host "Max steps: $MaxSteps"
 Write-Host "Epoch fallback: $Epochs"
 Write-Host "Batch size: $BatchSize"
 Write-Host "Grad accumulation: $GradAccum"
+Write-Host "Save step: $SaveStep"
 Write-Host "Dry run: $DryRun"
 Write-Host "Calistirilacak script: $TrainScript"
 
@@ -141,7 +144,8 @@ $PythonArgs = @(
     "--max-steps", $MaxSteps,
     "--epochs", $Epochs,
     "--batch-size", $BatchSize,
-    "--grad-accum", $GradAccum
+    "--grad-accum", $GradAccum,
+    "--save-step", $SaveStep
 )
 
 if ($DryRun) {

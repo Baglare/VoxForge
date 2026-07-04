@@ -30,6 +30,8 @@ REQUIRED_XTTS_FILES = (
     "dvae.pth",
     "mel_stats.pth",
 )
+CHECKPOINT_ARTIFACT_SUFFIXES = {".pth", ".pt", ".ckpt", ".safetensors"}
+CHECKPOINT_ARTIFACT_MARKERS = ("checkpoint",)
 
 # Coqui XTTS-v2 ana dosyalari. Script bunlari kullanici training komutunu
 # calistirdiginda experiments/<run_slug>/checkpoints altina indirmeyi dener.
@@ -100,6 +102,7 @@ def print_preflight(
     epochs: int,
     batch_size: int,
     grad_accum: int,
+    save_step: int,
 ) -> None:
     """Training baslamadan once kritik bilgileri terminale basar."""
     dataset_path = experiment_path / "dataset"
@@ -115,6 +118,7 @@ def print_preflight(
     print(f"Epoch fallback: {epochs}")
     print(f"Batch size: {batch_size}")
     print(f"Grad accumulation: {grad_accum}")
+    print(f"Save step: {save_step}")
     print(f"CUDA available: {cuda_available}")
     print(f"CUDA device name: {cuda_device_name}")
     print("")
@@ -450,6 +454,109 @@ def report_and_enforce_limit_mode(limit_mode: str, dry_run: bool) -> None:
     )
 
 
+def set_config_field(config: Any, field_name: str, value: Any) -> bool:
+    """Config attribute varsa degeri set eder."""
+    if not hasattr(config, field_name):
+        return False
+    setattr(config, field_name, value)
+    return True
+
+
+def config_field_value(config: Any, field_name: str) -> Any:
+    """Config attribute degerini okunabilir sekilde dondurur."""
+    if not hasattr(config, field_name):
+        return "yok"
+    return getattr(config, field_name)
+
+
+def set_checkpoint_config_fields(config: Any, save_step: int) -> None:
+    """Checkpoint yazma ayarlarini config uzerinde mumkunse kesinlestirir."""
+    checkpoint_fields = {
+        "save_step": save_step,
+        "save_checkpoints": True,
+        "save_n_checkpoints": 1,
+    }
+    for field_name, value in checkpoint_fields.items():
+        if set_config_field(config, field_name, value):
+            print(f"{field_name} config uzerinde ayarlandi: {value}")
+        else:
+            print(f"UYARI: Config {field_name} alani desteklemiyor.")
+
+
+def verify_epoch_fallback_on_config(config: Any, epochs: int, dry_run: bool) -> None:
+    """Epoch fallback kullaniliyorsa config uzerinde gorunur epoch alani ister."""
+    for field_name in ("epochs", "num_epochs"):
+        if set_config_field(config, field_name, epochs):
+            print(f"Epoch fallback config uzerinde dogrulandi: {field_name}={epochs}")
+
+    visible_epoch_values = []
+    for field_name in ("epochs", "num_epochs"):
+        value = getattr(config, field_name, None)
+        if isinstance(value, (int, float)) and value >= 1:
+            visible_epoch_values.append((field_name, value))
+
+    if visible_epoch_values:
+        return
+
+    print("UYARI: Epoch fallback config uzerinde dogrulanamadi.")
+    if dry_run:
+        print("Dry-run devam ediyor; gercek training bu config ile baslatilmayacak.")
+        return
+
+    raise TrainingError("Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.")
+
+
+def report_training_config(config: Any, max_steps: int, epochs: int, limit_mode: str) -> None:
+    """Dry-run ve training oncesi kritik config degerlerini terminale basar."""
+    print("Training config ozeti")
+    print(f"requested max_steps: {max_steps}")
+    print(f"requested epochs: {epochs}")
+    print(f"resolved limit_mode: {limit_mode}")
+    print(f"config.epochs: {config_field_value(config, 'epochs')}")
+    print(f"config.num_epochs: {config_field_value(config, 'num_epochs')}")
+    print(f"save_step: {config_field_value(config, 'save_step')}")
+    print(f"save_checkpoints: {config_field_value(config, 'save_checkpoints')}")
+    print(f"save_n_checkpoints: {config_field_value(config, 'save_n_checkpoints')}")
+
+
+def is_checkpoint_artifact(path: Path) -> bool:
+    """Trainer ciktilari icinde checkpoint/model artifact adaylarini secer."""
+    suffix = path.suffix.lower()
+    lower_name = path.name.lower()
+    if suffix in CHECKPOINT_ARTIFACT_SUFFIXES:
+        return True
+    return any(marker in lower_name for marker in CHECKPOINT_ARTIFACT_MARKERS)
+
+
+def find_checkpoint_artifacts(output_path: Path) -> list[Path]:
+    """Training output klasorunu recursive tarayip checkpoint artifact bulur."""
+    if not output_path.is_dir():
+        return []
+
+    artifacts = [
+        path
+        for path in output_path.rglob("*")
+        if path.is_file() and is_checkpoint_artifact(path)
+    ]
+    return sorted(artifacts, key=lambda item: str(item).lower())
+
+
+def verify_checkpoint_artifacts(output_path: Path) -> None:
+    """Training sonunda checkpoint bulunmazsa basari saymaz."""
+    artifacts = find_checkpoint_artifacts(output_path)
+
+    if artifacts:
+        print("Checkpoint artifacts:")
+        for artifact_path in artifacts:
+            print(f"- {artifact_path}")
+        print("Training completed and checkpoint artifacts were found.")
+        return
+
+    print("UYARI: Training output icinde checkpoint artifact bulunamadi.")
+    print("Training finished but no checkpoint artifact was found.")
+    raise TrainingError("Training finished but no checkpoint artifact was found.")
+
+
 def download_file(url: str, target_path: Path) -> None:
     """Tek checkpoint dosyasini stdlib ile indirir."""
     print(f"Indiriliyor: {target_path.name}")
@@ -705,13 +812,13 @@ def build_gpt_trainer_config(
     batch_size: int,
     max_steps: int,
     epochs: int,
+    save_step: int,
     speaker_wav: Path,
 ) -> tuple[Any, dict[str, Any]]:
     """GPTTrainerConfig nesnesini kucuk deneysel varsayilanlarla olusturur."""
     model_args = build_gpt_args(api, checkpoint_files)
     audio_config = build_audio_config(api)
     test_sentences = make_test_sentences(speaker_wav)
-    save_step = max(25, min(max_steps, 100))
 
     kwargs = {
         "output_path": str(output_path),
@@ -752,6 +859,7 @@ def build_gpt_trainer_config(
     kwargs.update(limit_kwargs)
 
     config = instantiate_supported(api["GPTTrainerConfig"], kwargs, "GPTTrainerConfig")
+    set_checkpoint_config_fields(config, save_step)
 
     # Bazı Coqui surumleri constructor'da desteklemedigi alanlari daha sonra
     # attribute olarak kabul eder. Kritik alanlari burada da set etmeyi deneriz.
@@ -861,6 +969,7 @@ def prepare_training_objects(
     epochs: int,
     batch_size: int,
     grad_accum: int,
+    save_step: int,
     dry_run: bool,
 ) -> tuple[dict[str, Any], Any, Any, Any, Path, bool]:
     """Dry-run ve training icin ortak import/config kontrollerini yapar."""
@@ -885,6 +994,7 @@ def prepare_training_objects(
         batch_size,
         max_steps,
         epochs,
+        save_step,
         speaker_wav,
     )
     trainer_args, trainer_limit = build_trainer_args(
@@ -896,6 +1006,9 @@ def prepare_training_objects(
     )
     limit_mode = resolve_limit_mode(config_limit, trainer_limit)
     report_and_enforce_limit_mode(limit_mode, dry_run=dry_run)
+    if limit_mode == "epochs_fallback":
+        verify_epoch_fallback_on_config(config, epochs=epochs, dry_run=dry_run)
+    report_training_config(config, max_steps=max_steps, epochs=epochs, limit_mode=limit_mode)
 
     print("GPT trainer config olusturma OK.")
     if dry_run:
@@ -911,6 +1024,7 @@ def run_dry_run(
     epochs: int,
     batch_size: int,
     grad_accum: int,
+    save_step: int,
 ) -> None:
     """Training baslatmadan dosya/import/config kontrollerini yapar."""
     checkpoint_files = check_checkpoint_files(experiment_path / CHECKPOINT_DIR_NAME)
@@ -922,6 +1036,7 @@ def run_dry_run(
         epochs=epochs,
         batch_size=batch_size,
         grad_accum=grad_accum,
+        save_step=save_step,
         dry_run=True,
     )
     print("XTTS fine-tuning dry-run completed successfully")
@@ -934,6 +1049,7 @@ def run_training(
     epochs: int,
     batch_size: int,
     grad_accum: int,
+    save_step: int,
 ) -> None:
     """Coqui Trainer ile deneysel XTTS GPT training baslatir."""
     checkpoint_files = ensure_xtts_files(experiment_path / CHECKPOINT_DIR_NAME)
@@ -945,6 +1061,7 @@ def run_training(
         epochs=epochs,
         batch_size=batch_size,
         grad_accum=grad_accum,
+        save_step=save_step,
         dry_run=False,
     )
 
@@ -962,6 +1079,7 @@ def run_training(
         eval_samples=eval_samples,
     )
     trainer.fit()
+    verify_checkpoint_artifacts(output_path)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -977,6 +1095,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--save-step", type=int, default=1)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -985,7 +1104,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def validate_cli_args(max_steps: int, epochs: int, batch_size: int, grad_accum: int) -> None:
+def validate_cli_args(
+    max_steps: int,
+    epochs: int,
+    batch_size: int,
+    grad_accum: int,
+    save_step: int,
+) -> None:
     """Temel CLI sayisal degerlerini kontrol eder."""
     if max_steps <= 0:
         raise TrainingError("--max-steps 0'dan buyuk olmali.")
@@ -995,6 +1120,8 @@ def validate_cli_args(max_steps: int, epochs: int, batch_size: int, grad_accum: 
         raise TrainingError("--batch-size 0'dan buyuk olmali.")
     if grad_accum <= 0:
         raise TrainingError("--grad-accum 0'dan buyuk olmali.")
+    if save_step <= 0:
+        raise TrainingError("--save-step 0'dan buyuk olmali.")
 
 
 def main(argv: list[str]) -> int:
@@ -1002,7 +1129,13 @@ def main(argv: list[str]) -> int:
     experiment_path = resolve_experiment_path(args.experiment)
 
     try:
-        validate_cli_args(args.max_steps, args.epochs, args.batch_size, args.grad_accum)
+        validate_cli_args(
+            args.max_steps,
+            args.epochs,
+            args.batch_size,
+            args.grad_accum,
+            args.save_step,
+        )
         manifest = read_manifest(experiment_path)
         print_preflight(
             experiment_path,
@@ -1011,6 +1144,7 @@ def main(argv: list[str]) -> int:
             epochs=args.epochs,
             batch_size=args.batch_size,
             grad_accum=args.grad_accum,
+            save_step=args.save_step,
         )
         if args.dry_run:
             run_dry_run(
@@ -1020,6 +1154,7 @@ def main(argv: list[str]) -> int:
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 grad_accum=args.grad_accum,
+                save_step=args.save_step,
             )
             return 0
 
@@ -1030,7 +1165,9 @@ def main(argv: list[str]) -> int:
             epochs=args.epochs,
             batch_size=args.batch_size,
             grad_accum=args.grad_accum,
+            save_step=args.save_step,
         )
+        return 0
     except RuntimeError as exc:
         error_text = str(exc).lower()
         if "out of memory" in error_text or "cuda" in error_text:
@@ -1059,7 +1196,6 @@ def main(argv: list[str]) -> int:
         print(f"HATA: {exc}", file=sys.stderr)
         return 1
 
-    print("Training tamamlandi veya trainer sureci normal bitti.")
     return 0
 
 
