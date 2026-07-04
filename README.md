@@ -35,6 +35,7 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Deneysel fine-tuned checkpoint için ilk inference ve base XTTS karşılaştırma çıktısı üretme akışı vardır.
 - Fine-tuned checkpoint kalitesini birden fazla checkpoint ve Türkçe test cümlesiyle karşılaştıran matrix evaluation akışı vardır.
 - Fine-tuned matrix çıktıları için manuel dinleme scorecard raporu oluşturma akışı vardır.
+- Fine-tuned checkpointlerde görülebilecek erken kesilme riskini inference parametreleriyle karşılaştıran param sweep akışı vardır.
 
 Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
 
@@ -58,6 +59,7 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - Deneysel fine-tuned checkpoint değerlendirme runner scripti
 - Çoklu checkpoint matrix evaluation runner scripti
 - Manuel human evaluation scorecard runner scripti
+- Erken kesilme / inference ayarı param sweep runner scripti
 - Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
 - Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
 
@@ -100,6 +102,7 @@ VoxForge/
 |   |-- evaluate_xtts_finetuned_checkpoint.py
 |   |-- evaluate_xtts_checkpoint_matrix.py
 |   |-- create_human_eval_report.py
+|   |-- evaluate_xtts_inference_params.py
 |   |-- generate_recording_plan.py
 |   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
@@ -152,6 +155,7 @@ VoxForge/
 |-- run_evaluate_xtts_finetuned.ps1
 |-- run_evaluate_xtts_matrix.ps1
 |-- run_create_human_eval_report.ps1
+|-- run_evaluate_xtts_inference_params.ps1
 |-- run_generate_recording_plan.ps1
 |-- run_build_metadata.ps1
 |-- docs/
@@ -299,6 +303,12 @@ Manuel kalite değerlendirme scorecard raporu:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
+```
+
+Erken kesilme / inference ayarı testi:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
 ```
 
 Fine-tuning kayıt planı üretme:
@@ -482,6 +492,8 @@ Fine-tuned checkpoint değerlendirme komutu training başlatmaz. `training_outpu
 Checkpoint matrix karşılaştırması, `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantlarını en az 6 Türkçe test cümlesiyle dener. Bu akış kaliteyi otomatik ölçmez; insan kulağıyla base ve fine-tuned çıktılar karşılaştırılır. Robotiklik varsa daha fazla training başlatmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
 
 Manuel kalite değerlendirme scorecard akışı, matrix klasörleri dinlendikten sonra verilen 1-5 puanları `outputs/reports/human_eval_scorecard.csv`, `outputs/reports/human_eval_summary.json` ve `outputs/reports/human_eval_summary.md` dosyalarına yazar. Bu otomatik kalite ölçümü değildir; ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır.
+
+Erken kesilme / inference ayarı testi, `checkpoint_71` veya `best_model` gibi seçilen bir varyantı `default`, `conservative`, `stable` ve `longer_attempt` parametre setleriyle dener. Bu akış kalite garantisi vermez; cümlenin erken kesilip kesilmediğini anlamak için base ve fine-tuned çıktılar karşılaştırmalı dinlenmelidir. Daha fazla training başlatmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
 
 Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
 

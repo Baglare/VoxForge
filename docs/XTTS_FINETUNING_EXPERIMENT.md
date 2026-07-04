@@ -345,6 +345,62 @@ Puanlama 1 kötü, 5 iyi olacak şekilde yorumlanır. `human_likeness` alanında
 
 Bu otomatik kalite ölçümü değildir. Ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır. İlk puanlara göre fine-tuning pipeline teknik olarak başarılıdır; kalite artışı sınırlıdır. `best_model` base'e göre küçük iyileşme gösterir. `checkpoint_71` daha yüksek puan alsa da bazı kayıtlarda cümle erken kesiliyor gibi olduğu için güvenilir kabul edilmemelidir. Daha fazla veri, daha iyi referans kayıt ve inference ayarı değerlendirilmelidir.
 
+## Inference parameter sweep
+
+`checkpoint_71` gibi daha iyi puan alan ama bazı kayıtlarda cümleyi erken kesiyor gibi duran checkpointler için training başlatmadan önce inference parametreleri karşılaştırılabilir. Bu akış yeni model eğitmez, model indirme başlatmaz ve Gradio UI'a dokunmaz.
+
+Varsayılan test:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
+```
+
+Opsiyonel özel referans ses vermek için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71 -SpeakerWav .\profiles\baglare\preprocessed_reference.wav
+```
+
+Desteklenen varyantlar:
+
+- `base`
+- `best_model`
+- `best_model_72`
+- `checkpoint_71`
+
+Script seçilen varyant için şu parametre setlerini dener:
+
+- `default`: ekstra parametre yok
+- `conservative`: `temperature=0.65`, `top_p=0.8`, `top_k=50`
+- `stable`: `temperature=0.7`, `top_p=0.85`, `top_k=50`, `repetition_penalty=5.0`
+- `longer_attempt`: `temperature=0.75`, `top_p=0.9`, `top_k=80`, `length_penalty=1.0`
+
+Çıktılar şu klasör yapısına yazılır:
+
+```text
+outputs/finetuned_eval/param_sweep/<timestamp>/<variant>/<param_set>/test_01.wav
+```
+
+Seçilen varyant `base` değilse script aynı metinleri `base/default` ile de üretmeye çalışır. Base üretim başarısız olursa seçilen checkpoint testi engellenmez; hata rapora yazılır.
+
+Rapor dosyaları:
+
+```text
+outputs/reports/inference_param_sweep_report.json
+outputs/reports/inference_param_sweep_report.md
+```
+
+Her çıktı için `ffprobe` ile süre ölçülür. Uzun metinde çıktı 2 saniyeden kısaysa `likely_cutoff`, aynı testin base çıktısına göre belirgin kısa kalırsa `possibly_cutoff` işareti yazılır. Bu işaretler otomatik kalite garantisi değildir; erken kesilmeyi anlamak için karşılaştırmalı dinleme gerekir.
+
+Dinleme sırası:
+
+1. Önce `default` parametrelerini dinleyin.
+2. Sonra `stable` ve `longer_attempt` çıktılarıyla karşılaştırın.
+3. Erken kesilme azalıyorsa o parametre setini not alın.
+4. Kalite bozuluyorsa checkpoint yerine `best_model` veya daha fazla veri tercih edilmelidir.
+
+Daha fazla training basmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
+
 ## Training sonrası model nasıl değerlendirilecek?
 
 İlk inference scripti yalnızca teknik pipeline kontrolüdür. Kalite değerlendirmesi için şu kontroller ayrıca yapılmalıdır:
