@@ -31,6 +31,7 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Ham ve ön işlenmiş referans kalite raporları Gradio'da gösterilir.
 - Kalite raporları `outputs/reports/gradio_quality_reports/` altına JSON olarak kaydedilir.
 - Fine-tuning'e geçmeden önce local dataset iskeleti oluşturma ve doğrulama desteği vardır.
+- Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training başlatma altyapısı vardır; bu akış kalite garantisi vermez ve Gradio UI'a bağlı değildir.
 
 Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
 
@@ -50,6 +51,7 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - FFmpeg ile mono, 24000 Hz WAV referans hazırlama
 - Ham ve ön işlenmiş referans kalite raporu
 - Yerel fine-tuning dataset hazırlığı ve doğrulama scriptleri
+- Deneysel XTTS fine-tuning dataset export ve training runner scriptleri
 - Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
 - Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
 
@@ -87,6 +89,8 @@ VoxForge/
 |   |-- init_finetune_dataset.py
 |   |-- validate_finetune_dataset.py
 |   |-- finetune_readiness_report.py
+|   |-- export_xtts_finetune_dataset.py
+|   |-- train_xtts_gpt_experiment.py
 |   |-- generate_recording_plan.py
 |   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
@@ -109,6 +113,10 @@ VoxForge/
 |       |-- wavs/
 |       |-- metadata.csv
 |       `-- dataset_report.json
+|-- experiments/
+|   `-- .gitkeep
+|-- fine_tuned_models/
+|   `-- .gitkeep
 |-- outputs/
 |   |-- .gitkeep
 |   |-- gradio_outputs/
@@ -130,6 +138,8 @@ VoxForge/
 |-- run_init_finetune_dataset.ps1
 |-- run_validate_finetune_dataset.ps1
 |-- run_finetune_readiness_report.ps1
+|-- run_export_xtts_finetune_dataset.ps1
+|-- run_train_xtts_experiment.ps1
 |-- run_generate_recording_plan.ps1
 |-- run_build_metadata.ps1
 |-- docs/
@@ -139,12 +149,13 @@ VoxForge/
 |   |-- SETUP_WINDOWS.md
 |   |-- TEST_CHECKLIST.md
 |   |-- VOICE_REFERENCE_GUIDE.md
+|   |-- XTTS_FINETUNING_EXPERIMENT.md
 |   `-- VOICE_PROFILES.md
 |-- .gitignore
 `-- README.md
 ```
 
-Not: `samples/`, `profiles/`, `datasets/` ve `outputs/` altındaki gerçek ses dosyaları GitHub'a yüklenmemelidir. Bu klasörler local çalışma verileri içindir. `profiles/.gitkeep` ve `datasets/.gitkeep`, boş klasör niyetinin GitHub'da görünür kalması için tutulur.
+Not: `samples/`, `profiles/`, `datasets/`, `experiments/`, `fine_tuned_models/` ve `outputs/` altındaki gerçek ses, dataset, checkpoint, model ve rapor dosyaları GitHub'a yüklenmemelidir. Bu klasörler local çalışma verileri içindir. `.gitkeep` dosyaları, boş klasör niyetinin GitHub'da görünür kalması için tutulur.
 
 ## 6. Kurulum notları
 
@@ -240,6 +251,24 @@ Fine-tuning readiness report:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Deneysel XTTS fine-tuning dataset export:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
+```
+
+Deneysel XTTS training dry-run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
+```
+
+Deneysel XTTS training başlatma:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8
 ```
 
 Fine-tuning kayıt planı üretme:
@@ -350,7 +379,7 @@ Daha ayrıntılı profil dokümanı için `docs/VOICE_PROFILES.md` dosyasına ba
 
 ## 12. Fine-tuning hazırlığı
 
-Bu projede fine-tuning henüz uygulanmamıştır. Mevcut çalışma reference-based / zero-shot voice cloning MVP'sidir. Bu bölüm yalnızca ileride kullanılabilecek local dataset hazırlığını anlatır; model eğitimi, model indirme veya XTTS fine-tuning çalıştırma yapmaz.
+Bu projede fine-tuning ürünleşmiş bir kullanıcı özelliği değildir. Mevcut ana çalışma hâlâ reference-based / zero-shot voice cloning MVP'sidir. Bu bölüm local dataset hazırlığını anlatır; dataset export ve deneysel training başlatma akışı bir sonraki bölümde ayrı olarak açıklanır.
 
 Boş dataset iskeleti oluşturmak için:
 
@@ -390,7 +419,33 @@ powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\dat
 
 Ayrıntılı hazırlık rehberi için `docs/FINE_TUNING_PREP.md` dosyasına bakın.
 
-## 13. Kalite raporu sistemi
+## 13. Deneysel XTTS fine-tuning
+
+VoxForge artık mevcut geçerli datasetten deneysel XTTS-v2 GPT encoder fine-tuning denemesi için export ve training başlatma altyapısı içerir. Bu, ürünleşmiş veya kalite garantili bir fine-tuned model akışı değildir; amaç önce local training pipeline'ın başlayıp başlamadığını görmektir.
+
+Export adımı kaynak dataset dosyalarını değiştirmez. `experiments/<run_slug>/dataset/` altında LJSpeech uyumlu `metadata_train.csv`, varsa `metadata_eval.csv`, WAV kopyaları ve `experiment_manifest.json` üretir:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
+```
+
+Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-run ile manifest, CUDA ve parametre kontrolü yapılabilir:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
+```
+
+Training başlatmak için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8
+```
+
+Mevcut yaklaşık 7.45 dakikalık dataset teknik olarak geçerlidir, ancak gerçek fine-tuning kalitesi için küçük kabul edilir. Deney çıktıları, checkpointler, trainer logları ve model dosyaları `experiments/` veya `fine_tuned_models/` altında local kalmalı ve GitHub'a yüklenmemelidir.
+
+Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
+
+## 14. Kalite raporu sistemi
 
 VoxForge, referans ses dosyası için basit bir kalite analizi üretir. Analiz; dosya varlığı, süre, sample rate, kanal sayısı, codec, ortalama ses seviyesi, maksimum ses seviyesi, clipping riski ve kısa/uzun kayıt uyarıları gibi bilgileri kontrol eder.
 
@@ -408,30 +463,30 @@ outputs/reports/gradio_quality_reports/
 
 Kalite sonucu `GOOD`, `WARNING` veya `BAD` olabilir. `BAD` sonuç, her zaman ses üretiminin teknik olarak imkansız olduğu anlamına gelmez; ancak çıktının mutlaka dinlenerek kontrol edilmesi gerektiğini gösterir.
 
-## 14. Etik kullanım notu
+## 15. Etik kullanım notu
 
 VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle denenmelidir. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
 
 Gradio arayüzündeki izin checkbox'ı bu sınırı kullanıcıya açık şekilde hatırlatmak için vardır. Kullanıcı, ses üretmeden önce referans ses üzerinde hakkı veya açık izni olduğunu onaylamalıdır.
 
-## 15. Bilinen sınırlamalar
+## 16. Bilinen sınırlamalar
 
 - Proje şu anda Windows odaklıdır.
 - Proje sadece local çalışma için tasarlanmıştır.
 - Gerçek ses dosyaları GitHub'a yüklenmemelidir.
 - Yerel voice profile klasörleri GitHub'a yüklenmemelidir.
-- Yerel fine-tuning dataset klasörleri GitHub'a yüklenmemelidir.
+- Yerel fine-tuning dataset, experiment ve model klasörleri GitHub'a yüklenmemelidir.
 - `outputs/` klasörü üretilen sesleri ve raporları yerelde tutar; GitHub'a yüklenmez.
 - `.venv/`, model dosyaları, cache dosyaları ve büyük çıktılar repoya dahil edilmez.
 - Ses benzerliği garanti değildir; model, kayıt kalitesi, referans süresi ve metin içeriğine bağlıdır.
 - Bu aşama zero-shot/reference-based voice cloning MVP'sidir.
-- Fine-tuning henüz uygulanmamıştır; daha sonraki gelişmiş aşama olarak planlanmıştır.
-- Fine-tuning dataset hazırlığı eğitim başlatmaz; sadece local veri iskeleti ve doğrulama sağlar.
+- Fine-tuning ürünleşmiş bir kullanıcı özelliği değildir; yalnızca deneysel local XTTS training altyapısı vardır.
+- Fine-tuning dataset exportu eğitim başlatmaz; training yalnızca kullanıcı ilgili komutu çalıştırırsa başlar.
 - Yerel voice profile sistemi fine-tuning değildir; sadece referans ses seçimini ve tekrar kullanımını düzenler.
 - Gradio demo local arayüzdür; ürünleşmiş bir web uygulaması değildir.
 - Kalite raporu teknik sinyaller verir, nihai ses kalitesini tek başına garanti etmez.
 
-## 16. Sonraki adımlar
+## 17. Sonraki adımlar
 
 Planlanan geliştirme yönleri:
 
@@ -441,9 +496,9 @@ Planlanan geliştirme yönleri:
 - Demo anlatımı ve ekran görüntüleriyle portfolyo sunumunu desteklemek
 - Daha ayrıntılı kalite metrikleri eklemek
 - Farklı referans süreleriyle karşılaştırma yapmak
-- Fine-tuning aşamasını ayrı ve daha gelişmiş bir hedef olarak değerlendirmek
+- Deneysel fine-tuning sonuçlarını base XTTS çıktılarıyla karşılaştırmak
 
-## 17. Portfolyo değeri
+## 18. Portfolyo değeri
 
 VoxForge, local yapay zeka modeli kullanımı, Python tabanlı ses işleme, Gradio ile hızlı demo arayüzü, Windows PowerShell otomasyonu, FFmpeg tabanlı ses ön işleme ve hassas dosya yönetimi gibi alanlarda somut bir MVP örneği sunar.
 
@@ -455,5 +510,6 @@ Portfolyo açısından proje şu noktaları gösterir:
 - Ses ön işleme ve kalite raporu akışı
 - Yerel voice profile yönetimi
 - Fine-tuning öncesi local dataset hazırlığı ve doğrulama yaklaşımı
+- Deneysel XTTS fine-tuning export, manifest ve training başlatma altyapısı
 - Üretilen dosyaları GitHub dışında tutan repo hijyeni
 - MVP kapsamında sade ama çalışan bir local demo yapısı

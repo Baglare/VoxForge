@@ -34,6 +34,14 @@ profiles/*
 datasets/*
 !datasets/.gitkeep
 
+# Local fine-tuning experiments
+experiments/*
+!experiments/.gitkeep
+
+# Local fine-tuned model outputs
+fine_tuned_models/*
+!fine_tuned_models/.gitkeep
+
 # Generated outputs
 outputs/*
 !outputs/.gitkeep
