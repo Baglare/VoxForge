@@ -232,9 +232,43 @@ Training scripti eksik XTTS dosyalarını `experiments/<run_slug>/checkpoints/` 
 
 Training runner, Gyan.FFmpeg.Shared yolunu PATH başına eklemeye çalışır. Ses okuma tarafında FFmpeg, TorchCodec veya PyTorch/CUDA uyumsuzluğu çıkarsa önce FFmpeg yolu ve PyTorch CUDA kurulumu kontrol edilmelidir.
 
+## Training sonrası inference testi
+
+Training başarıyla checkpoint ürettiyse ilk amaç kalite iddiası değildir; fine-tuned checkpoint ile inference pipeline çalışıyor mu bunu görmektir. Bu adım yeni training başlatmaz, Gradio UI değiştirmez ve yeni paket eklemez.
+
+İlk fine-tuned checkpoint inference denemesi için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Merhaba, bu ilk fine-tuned testidir."
+```
+
+Script `training_output/` altında checkpointi şu öncelikle seçer:
+
+1. `best_model.pth`
+2. En yeni `best_model_*.pth`
+3. En yüksek numaralı `checkpoint_*.pth`
+
+Base XTTS dosyaları `experiments/<run_slug>/checkpoints/` içinden okunur. Fine-tuned GPT checkpoint olarak seçilen training output checkpointi kullanılır. Speaker wav verilmezse öncelik sırası şudur:
+
+1. `profiles/baglare/preprocessed_reference.wav`
+2. `samples/my_voice.wav`
+3. Experiment dataset içinden kısa bir WAV
+
+Başarılı denemede şu dosyalar oluşur:
+
+```text
+outputs/finetuned_eval/base_test.wav
+outputs/finetuned_eval/finetuned_test.wav
+outputs/reports/finetuned_eval_report.json
+```
+
+Base output üretimi başarısız olursa fine-tuned deneme yine devam eder; hata JSON raporuna yazılır. Fine-tuned output başarısız olursa script exit code `1` ile biter ve hangi import, checkpoint yükleme veya synthesize çağrısında patladığını sade şekilde yazar.
+
+`best_model.pth` kalite garantisi değildir. Base output ve fine-tuned output mutlaka dinlenerek karşılaştırılmalıdır. Mevcut 72 train / 8 eval örnekli küçük dataset nedeniyle ses benzerliği, telaffuz ve stabilite sınırlı olabilir.
+
 ## Training sonrası model nasıl değerlendirilecek?
 
-Bu aşamada otomatik model değerlendirme eklenmemiştir. Training sonrası ayrı bir kapsamda şu kontroller yapılabilir:
+İlk inference scripti yalnızca teknik pipeline kontrolüdür. Kalite değerlendirmesi için şu kontroller ayrıca yapılmalıdır:
 
 - Aynı test metinlerini base XTTS ve fine-tuned checkpoint ile karşılaştırmak
 - Ses benzerliğini kulakla değerlendirmek

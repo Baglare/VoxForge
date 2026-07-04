@@ -32,6 +32,7 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Kalite raporları `outputs/reports/gradio_quality_reports/` altına JSON olarak kaydedilir.
 - Fine-tuning'e geçmeden önce local dataset iskeleti oluşturma ve doğrulama desteği vardır.
 - Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training başlatma altyapısı vardır; bu akış kalite garantisi vermez ve Gradio UI'a bağlı değildir.
+- Deneysel fine-tuned checkpoint için ilk inference ve base XTTS karşılaştırma çıktısı üretme akışı vardır.
 
 Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
 
@@ -52,6 +53,7 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - Ham ve ön işlenmiş referans kalite raporu
 - Yerel fine-tuning dataset hazırlığı ve doğrulama scriptleri
 - Deneysel XTTS fine-tuning dataset export ve training runner scriptleri
+- Deneysel fine-tuned checkpoint değerlendirme runner scripti
 - Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
 - Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
 
@@ -91,6 +93,7 @@ VoxForge/
 |   |-- finetune_readiness_report.py
 |   |-- export_xtts_finetune_dataset.py
 |   |-- train_xtts_gpt_experiment.py
+|   |-- evaluate_xtts_finetuned_checkpoint.py
 |   |-- generate_recording_plan.py
 |   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
@@ -140,6 +143,7 @@ VoxForge/
 |-- run_finetune_readiness_report.ps1
 |-- run_export_xtts_finetune_dataset.ps1
 |-- run_train_xtts_experiment.ps1
+|-- run_evaluate_xtts_finetuned.ps1
 |-- run_generate_recording_plan.ps1
 |-- run_build_metadata.ps1
 |-- docs/
@@ -269,6 +273,12 @@ Deneysel XTTS training başlatma:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
+```
+
+Fine-tuned checkpoint değerlendirme:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Merhaba, bu ilk fine-tuned testidir."
 ```
 
 Fine-tuning kayıt planı üretme:
@@ -446,6 +456,8 @@ powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experi
 Training bittikten sonra script `training_output/` klasörünü recursive tarar. `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunmazsa işlem başarısız sayılır ve exit code `1` ile biter. Mevcut yaklaşık 7.45 dakikalık dataset teknik olarak geçerlidir, ancak gerçek fine-tuning kalitesi için küçük kabul edilir. Deney çıktıları, checkpointler, trainer logları ve model dosyaları `experiments/` veya `fine_tuned_models/` altında local kalmalı ve GitHub'a yüklenmemelidir.
 
 Not: `EPOCH: 0/0`, yalnızca evaluation çalışması veya checkpoint oluşmaması başarı sayılmaz. Bu durumda `-StartWithEval` kullanılmadığını, epoch fallback değerinin `1` veya daha büyük olduğunu ve kısa denemede `-SaveStep 1` kullanıldığını kontrol edin.
+
+Fine-tuned checkpoint değerlendirme komutu training başlatmaz. `training_output/` altında `best_model.pth`, en yeni `best_model_*.pth` veya en yüksek numaralı `checkpoint_*.pth` dosyasını seçer; base XTTS ve fine-tuned çıktılarını `outputs/finetuned_eval/` altına yazar. `best_model.pth` kalite garantisi değildir. Base ve fine-tuned çıktı dinlenerek karşılaştırılmalı, küçük dataset nedeniyle ses benzerliğinin sınırlı olabileceği unutulmamalıdır.
 
 Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
 
