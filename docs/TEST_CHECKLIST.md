@@ -86,7 +86,7 @@ Adım:
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
 ```
 
-Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, batch size, grad accumulation ve CUDA bilgisi görünür. `-DryRun` kullanıldığı için training başlamaz, checkpoint indirme yapılmaz.
+Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, batch size, grad accumulation ve CUDA bilgisi görünür. Dataset klasörü, `metadata_train.csv`, varsa `metadata_eval.csv`, checkpoint dosyaları ve GPT trainer importları kontrol edilir. Config oluşturma başarılı olursa terminal sonunda `XTTS fine-tuning dry-run completed successfully` görünür. `-DryRun` kullanıldığı için training başlamaz, `load_tts_samples` çalıştırılmaz ve checkpoint indirme yapılmaz.
 
 ## 9. Deneysel XTTS training başlatma kontrolü
 

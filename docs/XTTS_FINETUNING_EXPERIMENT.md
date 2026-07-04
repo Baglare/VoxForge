@@ -61,10 +61,16 @@ Bu, pipeline denemesi için anlamlıdır; ancak gerçek fine-tuning kalitesi iç
 powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
 ```
 
-Training başlatmadan önce dry-run ile manifest ve ortam bilgisi kontrol edilebilir:
+Training başlatmadan önce dry-run ile manifest, dataset klasörü, train/eval metadata dosyaları, checkpoint dosyaları, CUDA bilgisi, GPT trainer importları ve config oluşturma adımı kontrol edilebilir:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
+```
+
+Dry-run modeli eğitmez, `load_tts_samples` çalıştırmaz ve checkpoint indirme başlatmaz. Başarılı olduğunda terminalin sonunda şu satır görünmelidir:
+
+```text
+XTTS fine-tuning dry-run completed successfully
 ```
 
 Training başlatmak için:
@@ -100,7 +106,28 @@ Gerekirse `-GradAccum` değerini artırarak efektif batch davranışı korunabil
 
 ### Coqui import hataları
 
-Kurulu `coqui-tts`, `TTS` veya `trainer` API'si beklenen recipe ile aynı değilse script hangi importun eksik olduğunu terminalde açık yazar. Bu durumda kurulu paket sürümü ve resmi XTTS GPT training recipe kontrol edilmelidir.
+Kurulu `coqui-tts`, `TTS` veya `trainer` API'si beklenen recipe ile aynı değilse script hangi importun eksik olduğunu terminalde açık yazar. Dry-run şu importları özellikle kontrol eder:
+
+- `GPTArgs`
+- `GPTTrainer`
+- `GPTTrainerConfig`
+- `XttsAudioConfig`
+- `Trainer`
+- `TrainerArgs`
+- `BaseDatasetConfig`
+- `load_tts_samples`
+
+Bu durumda kurulu paket sürümü ve resmi XTTS GPT training recipe kontrol edilmelidir.
+
+### XttsArgs unexpected keyword hatası
+
+`TypeError: XttsArgs.__init__() got an unexpected keyword argument 'max_conditioning_length'` hatası, XTTS GPT training için genel `XttsArgs` sınıfının yanlış yerde kullanılmasından kaynaklanır. Training scripti bu aşamada `TTS.tts.layers.xtts.trainer.gpt_trainer` içindeki `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ve `XttsAudioConfig` yolunu kullanır.
+
+Script, kurulu Coqui sürümünün desteklemediği config argümanlarını terminalde uyarı olarak gösterip atlamaya çalışır. Zorunlu bir argüman eksikse training başlamadan anlaşılır hata verir.
+
+### Max steps sınırı
+
+`-MaxSteps` küçük deneylerin uzun çalışmasını önlemek için kullanılır. Kurulu `trainer` veya `GPTTrainerConfig` sürümü `max_steps` alanını destekliyorsa script bunu ayarlar. Desteklemiyorsa terminalde açık uyarı verir; bu durumda eğitim süresi ilgili Coqui trainer sürümünün epoch/step davranışına bağlı olabilir.
 
 ### Checkpoint indirme hataları
 

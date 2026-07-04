@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import re
 import shutil
 import sys
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_FILE = "experiment_manifest.json"
 CHECKPOINT_DIR_NAME = "checkpoints"
 TRAINING_OUTPUT_DIR_NAME = "training_output"
+METADATA_TRAIN_FILE = "metadata_train.csv"
+METADATA_EVAL_FILE = "metadata_eval.csv"
+REQUIRED_XTTS_FILES = (
+    "model.pth",
+    "config.json",
+    "vocab.json",
+    "dvae.pth",
+    "mel_stats.pth",
+)
 
 # Coqui XTTS-v2 ana dosyalari. Script bunlari kullanici training komutunu
 # calistirdiginda experiments/<run_slug>/checkpoints altina indirmeyi dener.
@@ -49,9 +60,19 @@ def read_manifest(experiment_path: Path) -> dict[str, Any]:
         raise TrainingError(f"experiment_manifest.json bulunamadi: {manifest_path}")
 
     try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise TrainingError(f"experiment_manifest.json okunamadi: {exc}") from exc
+
+    required_keys = ("run_slug", "train_samples", "language")
+    missing_keys = [key for key in required_keys if key not in manifest]
+    if missing_keys:
+        raise TrainingError(
+            "experiment_manifest.json icinde kritik alan eksik: "
+            + ", ".join(missing_keys)
+        )
+
+    return manifest
 
 
 def get_cuda_info() -> tuple[bool, str]:
@@ -104,10 +125,11 @@ def import_training_api() -> dict[str, Any]:
     try:
         from trainer import Trainer, TrainerArgs
     except ImportError as exc:
-        missing.append(f"trainer.Trainer / TrainerArgs: {exc}")
+        missing.append(f"Trainer / TrainerArgs: {exc}")
     else:
         api["Trainer"] = Trainer
         api["TrainerArgs"] = TrainerArgs
+        print("Import OK: Trainer, TrainerArgs")
 
     try:
         from TTS.config.shared_configs import BaseDatasetConfig
@@ -118,31 +140,139 @@ def import_training_api() -> dict[str, Any]:
             missing.append(f"BaseDatasetConfig: {exc}")
         else:
             api["BaseDatasetConfig"] = BaseDatasetConfig
+            print("Import OK: BaseDatasetConfig")
     else:
         api["BaseDatasetConfig"] = BaseDatasetConfig
+        print("Import OK: BaseDatasetConfig")
 
     try:
-        from TTS.tts.configs.xtts_config import XttsConfig
         from TTS.tts.datasets import load_tts_samples
-        from TTS.tts.models.xtts import Xtts, XttsArgs, XttsAudioConfig
     except ImportError as exc:
-        missing.append(f"XTTS training importlari: {exc}")
+        missing.append(f"load_tts_samples: {exc}")
     else:
-        api["XttsConfig"] = XttsConfig
         api["load_tts_samples"] = load_tts_samples
-        api["Xtts"] = Xtts
-        api["XttsArgs"] = XttsArgs
+        print("Import OK: load_tts_samples")
+
+    try:
+        from TTS.tts.layers.xtts.trainer.gpt_trainer import (
+            GPTArgs,
+            GPTTrainer,
+            GPTTrainerConfig,
+            XttsAudioConfig,
+        )
+    except ImportError as exc:
+        missing.append(f"GPTArgs / GPTTrainer / GPTTrainerConfig / XttsAudioConfig: {exc}")
+    else:
+        api["GPTArgs"] = GPTArgs
+        api["GPTTrainer"] = GPTTrainer
+        api["GPTTrainerConfig"] = GPTTrainerConfig
         api["XttsAudioConfig"] = XttsAudioConfig
+        print("Import OK: GPTArgs, GPTTrainer, GPTTrainerConfig, XttsAudioConfig")
 
     if missing:
         detail = "\n".join(f"- {item}" for item in missing)
         raise TrainingError(
             "Coqui TTS / trainer importlari eksik veya mevcut paket API'si farkli.\n"
             f"{detail}\n"
-            "Kurulu coqui-tts surumunu ve TTS official XTTS GPT training recipe'sini kontrol edin."
+            "Kurulu coqui-tts surumunu ve official XTTS GPT training recipe'sini kontrol edin."
         )
 
     return api
+
+
+def get_signature(callable_object: Any) -> inspect.Signature | None:
+    """Signature okunamiyorsa None dondurur."""
+    try:
+        return inspect.signature(callable_object)
+    except (TypeError, ValueError):
+        return None
+
+
+def filter_supported_kwargs(
+    callable_object: Any,
+    kwargs: dict[str, Any],
+    context: str,
+) -> dict[str, Any]:
+    """Kurulu API'nin desteklemedigi kwargs degerlerini terminale yazip atlar."""
+    signature = get_signature(callable_object)
+    if signature is None:
+        print(f"UYARI: {context} signature okunamadi; tum kwargs deneniyor.")
+        return dict(kwargs)
+
+    accepts_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_var_kwargs:
+        return dict(kwargs)
+
+    supported: dict[str, Any] = {}
+    unsupported: list[str] = []
+    for key, value in kwargs.items():
+        if key in signature.parameters:
+            supported[key] = value
+        else:
+            unsupported.append(key)
+
+    for key in unsupported:
+        print(f"UYARI: {context} desteklemeyen arguman atlandi: {key}")
+
+    missing_required = []
+    for name, parameter in signature.parameters.items():
+        if name in {"self", "args", "kwargs"}:
+            continue
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            continue
+        if parameter.default is inspect.Parameter.empty and name not in supported:
+            missing_required.append(name)
+
+    if missing_required:
+        raise TrainingError(
+            f"{context} icin kritik zorunlu arguman eksik: "
+            + ", ".join(missing_required)
+        )
+
+    return supported
+
+
+def unexpected_keyword_from_type_error(exc: TypeError) -> str | None:
+    """TypeError icinden beklenmeyen keyword adini yakalar."""
+    match = re.search(r"unexpected keyword argument '([^']+)'", str(exc))
+    if match:
+        return match.group(1)
+    return None
+
+
+def instantiate_supported(
+    callable_object: Any,
+    kwargs: dict[str, Any],
+    context: str,
+) -> Any:
+    """Signature kontroluyle nesne olusturur ve API farklarini acik raporlar."""
+    supported_kwargs = filter_supported_kwargs(callable_object, kwargs, context)
+
+    while True:
+        try:
+            return callable_object(**supported_kwargs)
+        except TypeError as exc:
+            unexpected_keyword = unexpected_keyword_from_type_error(exc)
+            if unexpected_keyword and unexpected_keyword in supported_kwargs:
+                print(
+                    f"UYARI: {context} TypeError verdi; "
+                    f"desteklenmeyen arguman atlandi: {unexpected_keyword}"
+                )
+                supported_kwargs.pop(unexpected_keyword)
+                continue
+
+            raise TrainingError(
+                f"{context} olusturulamadi.\n"
+                f"Hata: TypeError: {exc}\n"
+                "Kurulu Coqui TTS API'si official XTTS GPT training recipe ile farkli olabilir."
+            ) from exc
 
 
 def download_file(url: str, target_path: Path) -> None:
@@ -162,10 +292,36 @@ def download_file(url: str, target_path: Path) -> None:
         ) from exc
 
 
+def checkpoint_paths(checkpoint_dir: Path) -> dict[str, Path]:
+    """Gerekli checkpoint dosya yollarini dondurur."""
+    return {name: checkpoint_dir / name for name in REQUIRED_XTTS_FILES}
+
+
+def check_checkpoint_files(checkpoint_dir: Path) -> dict[str, Path]:
+    """Dry-run icin checkpoint dosyalarinin mevcut oldugunu kontrol eder."""
+    paths = checkpoint_paths(checkpoint_dir)
+    missing_files = []
+
+    for name, path in paths.items():
+        if path.is_file():
+            print(f"Checkpoint OK: {path}")
+        else:
+            print(f"Checkpoint eksik: {path}")
+            missing_files.append(name)
+
+    if missing_files:
+        raise TrainingError(
+            "Dry-run config kontrolu icin checkpoint dosyalari eksik: "
+            + ", ".join(missing_files)
+        )
+
+    return paths
+
+
 def ensure_xtts_files(checkpoint_dir: Path) -> dict[str, Path]:
     """Gerekli XTTS dosyalari yoksa checkpoints klasorune indirir."""
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    paths = {name: checkpoint_dir / name for name in XTTS_FILE_URLS}
+    paths = checkpoint_paths(checkpoint_dir)
 
     for name, url in XTTS_FILE_URLS.items():
         target_path = paths[name]
@@ -177,177 +333,421 @@ def ensure_xtts_files(checkpoint_dir: Path) -> dict[str, Path]:
     return paths
 
 
-def make_dataset_config(api: dict[str, Any], experiment_path: Path, manifest: dict[str, Any]) -> Any:
+def validate_experiment_layout(experiment_path: Path) -> tuple[Path, Path, Path | None]:
+    """Dataset klasoru ve metadata dosyalarini kontrol eder."""
+    dataset_path = experiment_path / "dataset"
+    train_metadata_path = dataset_path / METADATA_TRAIN_FILE
+    eval_metadata_path = dataset_path / METADATA_EVAL_FILE
+    wavs_path = dataset_path / "wavs"
+
+    if not experiment_path.is_dir():
+        raise TrainingError(f"Experiment klasoru bulunamadi: {experiment_path}")
+    if not dataset_path.is_dir():
+        raise TrainingError(f"Experiment dataset klasoru bulunamadi: {dataset_path}")
+    if not wavs_path.is_dir():
+        raise TrainingError(f"Experiment WAV klasoru bulunamadi: {wavs_path}")
+    if not train_metadata_path.is_file():
+        raise TrainingError(f"Train metadata bulunamadi: {train_metadata_path}")
+
+    print(f"Dataset OK: {dataset_path}")
+    print(f"Train metadata OK: {train_metadata_path}")
+
+    if eval_metadata_path.is_file():
+        print(f"Eval metadata OK: {eval_metadata_path}")
+        return dataset_path, train_metadata_path, eval_metadata_path
+
+    print(
+        "UYARI: metadata_eval.csv bulunamadi; "
+        "train metadata uzerinden eval split kullanilacak."
+    )
+    return dataset_path, train_metadata_path, None
+
+
+def make_dataset_config(
+    api: dict[str, Any],
+    experiment_path: Path,
+    manifest: dict[str, Any],
+    eval_metadata_path: Path | None,
+) -> tuple[Any, bool]:
     """Coqui LJSpeech dataset config nesnesini olusturur."""
     dataset_path = experiment_path / "dataset"
-    eval_metadata_path = dataset_path / "metadata_eval.csv"
     kwargs = {
         "formatter": "ljspeech",
         "dataset_name": manifest["run_slug"],
         "path": str(dataset_path),
-        "meta_file_train": "metadata_train.csv",
+        "meta_file_train": METADATA_TRAIN_FILE,
         "language": manifest.get("language", "tr"),
     }
-    if eval_metadata_path.is_file():
-        kwargs["meta_file_val"] = "metadata_eval.csv"
+    if eval_metadata_path is not None:
+        kwargs["meta_file_val"] = METADATA_EVAL_FILE
 
-    BaseDatasetConfig = api["BaseDatasetConfig"]
-    try:
-        return BaseDatasetConfig(**kwargs)
-    except TypeError:
-        kwargs.pop("meta_file_val", None)
-        try:
-            return BaseDatasetConfig(**kwargs)
-        except TypeError:
-            kwargs.pop("dataset_name", None)
-            return BaseDatasetConfig(**kwargs)
-
-
-def accepts_argument(callable_object: Any, argument_name: str) -> bool:
-    """Bir sinif/fonksiyonun arguman kabul edip etmedigini guvenli kontrol eder."""
-    try:
-        signature = inspect.signature(callable_object)
-    except (TypeError, ValueError):
-        return True
-    return argument_name in signature.parameters or any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in signature.parameters.values()
+    supported_kwargs = filter_supported_kwargs(
+        api["BaseDatasetConfig"],
+        kwargs,
+        "BaseDatasetConfig",
+    )
+    dataset_config = instantiate_supported(
+        api["BaseDatasetConfig"],
+        supported_kwargs,
+        "BaseDatasetConfig",
     )
 
+    eval_metadata_used = eval_metadata_path is not None and "meta_file_val" in supported_kwargs
+    if eval_metadata_path is not None and not eval_metadata_used:
+        print(
+            "UYARI: BaseDatasetConfig meta_file_val desteklemiyor; "
+            "train metadata uzerinden eval split kullanilacak."
+        )
 
-def make_trainer_args(TrainerArgs: Any, max_steps: int, grad_accum: int, start_with_eval: bool) -> Any:
+    return dataset_config, eval_metadata_used
+
+
+def read_ljspeech_audio_ids(metadata_path: Path) -> list[str]:
+    """Basliksiz LJSpeech metadata dosyasindan audio id listesi okur."""
+    audio_ids: list[str] = []
+    for line in metadata_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        audio_id = stripped.split("|", 1)[0].strip()
+        if audio_id:
+            audio_ids.append(audio_id)
+    return audio_ids
+
+
+def wav_duration_seconds(wav_path: Path) -> float | None:
+    """WAV suresini stdlib wave moduluyle okumayi dener."""
+    try:
+        with wave.open(str(wav_path), "rb") as wav_file:
+            sample_rate = wav_file.getframerate()
+            if sample_rate <= 0:
+                return None
+            return wav_file.getnframes() / float(sample_rate)
+    except (OSError, wave.Error):
+        return None
+
+
+def pick_speaker_wav(dataset_path: Path, train_metadata_path: Path) -> Path:
+    """Test sentences icin dataset icinden kisa ve temiz bir WAV secer."""
+    wavs_path = dataset_path / "wavs"
+    candidates: list[tuple[float, Path]] = []
+
+    for audio_id in read_ljspeech_audio_ids(train_metadata_path):
+        wav_path = wavs_path / f"{audio_id}.wav"
+        if not wav_path.is_file():
+            continue
+        duration = wav_duration_seconds(wav_path)
+        if duration is None:
+            continue
+        candidates.append((duration, wav_path))
+
+    if candidates:
+        preferred = [
+            (abs(duration - 5.0), duration, wav_path)
+            for duration, wav_path in candidates
+            if 2.5 <= duration <= 15.0
+        ]
+        if preferred:
+            _score, duration, wav_path = sorted(preferred, key=lambda item: item[0])[0]
+            print(f"Test speaker_wav: {wav_path} ({duration:.2f} sn)")
+            return wav_path
+
+        duration, wav_path = sorted(candidates, key=lambda item: item[0])[0]
+        print(f"Test speaker_wav: {wav_path} ({duration:.2f} sn)")
+        return wav_path
+
+    fallback_wavs = sorted(wavs_path.glob("*.wav"))
+    if fallback_wavs:
+        print(f"Test speaker_wav: {fallback_wavs[0]}")
+        return fallback_wavs[0]
+
+    raise TrainingError(f"Test speaker_wav icin WAV bulunamadi: {wavs_path}")
+
+
+def make_test_sentences(speaker_wav: Path) -> list[dict[str, str]]:
+    """XTTS config icin kisa Turkce test cumleleri olusturur."""
+    return [
+        {
+            "text": "Bugun VoxForge ile deneysel bir fine tuning denemesi yapiyorum.",
+            "speaker_wav": str(speaker_wav),
+            "language": "tr",
+        },
+        {
+            "text": "Bu cikti yalnizca yerel ve deneysel degerlendirme icindir.",
+            "speaker_wav": str(speaker_wav),
+            "language": "tr",
+        },
+    ]
+
+
+def build_gpt_args(api: dict[str, Any], checkpoint_files: dict[str, Path]) -> Any:
+    """GPTArgs nesnesini official GPT trainer recipe mantigiyla olusturur."""
+    kwargs = {
+        "max_conditioning_length": 132300,
+        "min_conditioning_length": 66150,
+        "debug_loading_failures": False,
+        "max_wav_length": 255995,
+        "max_text_length": 200,
+        "mel_norm_file": str(checkpoint_files["mel_stats.pth"]),
+        "dvae_checkpoint": str(checkpoint_files["dvae.pth"]),
+        "xtts_checkpoint": str(checkpoint_files["model.pth"]),
+        "tokenizer_file": str(checkpoint_files["vocab.json"]),
+        "gpt_num_audio_tokens": 1026,
+        "gpt_start_audio_token": 1024,
+        "gpt_stop_audio_token": 1025,
+        "gpt_use_masking_gt_prompt_approach": True,
+        "gpt_use_perceiver_resampler": True,
+    }
+    return instantiate_supported(api["GPTArgs"], kwargs, "GPTArgs")
+
+
+def build_audio_config(api: dict[str, Any]) -> Any:
+    """XTTS audio config nesnesini olusturur."""
+    kwargs = {
+        "sample_rate": 22050,
+        "dvae_sample_rate": 22050,
+        "output_sample_rate": 24000,
+    }
+    return instantiate_supported(api["XttsAudioConfig"], kwargs, "XttsAudioConfig")
+
+
+def build_gpt_trainer_config(
+    api: dict[str, Any],
+    manifest: dict[str, Any],
+    dataset_config: Any,
+    checkpoint_files: dict[str, Path],
+    output_path: Path,
+    batch_size: int,
+    max_steps: int,
+    speaker_wav: Path,
+) -> Any:
+    """GPTTrainerConfig nesnesini kucuk deneysel varsayilanlarla olusturur."""
+    model_args = build_gpt_args(api, checkpoint_files)
+    audio_config = build_audio_config(api)
+    test_sentences = make_test_sentences(speaker_wav)
+    save_step = max(25, min(max_steps, 100))
+
+    kwargs = {
+        "output_path": str(output_path),
+        "model_args": model_args,
+        "run_name": f"{manifest['run_slug']}_gpt",
+        "project_name": "VoxForge_XTTS_GPT_Experiment",
+        "run_description": "Experimental local XTTS-v2 GPT encoder fine-tuning.",
+        "dashboard_logger": "tensorboard",
+        "logger_uri": None,
+        "audio": audio_config,
+        "batch_size": batch_size,
+        "eval_batch_size": batch_size,
+        "batch_group_size": 16,
+        "num_loader_workers": 0,
+        "num_eval_loader_workers": 0,
+        "eval_split_max_size": 256,
+        "print_step": 25,
+        "plot_step": 100,
+        "log_model_step": 100,
+        "save_step": save_step,
+        "save_n_checkpoints": 1,
+        "save_checkpoints": True,
+        "print_eval": False,
+        "optimizer": "AdamW",
+        "optimizer_wd_only_on_weights": True,
+        "optimizer_params": {"betas": [0.9, 0.96], "eps": 1e-8, "weight_decay": 1e-2},
+        "lr": 5e-6,
+        "lr_scheduler": "MultiStepLR",
+        "lr_scheduler_params": {"milestones": [max_steps + 1], "gamma": 0.5, "last_epoch": -1},
+        "datasets": [dataset_config],
+        "test_sentences": test_sentences,
+    }
+
+    config = instantiate_supported(api["GPTTrainerConfig"], kwargs, "GPTTrainerConfig")
+
+    # Bazı Coqui surumleri constructor'da desteklemedigi alanlari daha sonra
+    # attribute olarak kabul eder. Kritik alanlari burada da set etmeyi deneriz.
+    for name, value in {
+        "datasets": [dataset_config],
+        "test_sentences": test_sentences,
+    }.items():
+        if not hasattr(config, name):
+            print(f"UYARI: GPTTrainerConfig attribute bulunamadi: {name}")
+            continue
+        setattr(config, name, value)
+
+    if hasattr(config, "max_steps"):
+        setattr(config, "max_steps", max_steps)
+        print(f"Max steps GPTTrainerConfig uzerinde ayarlandi: {max_steps}")
+    else:
+        print(
+            "UYARI: GPTTrainerConfig max_steps alani desteklemiyor. "
+            "TrainerArgs desteklemezse egitim adim sayisi kesin sinirlanmayabilir."
+        )
+
+    return config
+
+
+def build_trainer_args(
+    TrainerArgs: Any,
+    max_steps: int,
+    grad_accum: int,
+    start_with_eval: bool,
+) -> Any:
     """TrainerArgs nesnesini surum farklarina toleransli sekilde olusturur."""
     kwargs = {
         "restore_path": None,
         "skip_train_epoch": False,
         "start_with_eval": start_with_eval,
         "grad_accum_steps": grad_accum,
+        "max_steps": max_steps,
     }
-    if accepts_argument(TrainerArgs, "max_steps"):
-        kwargs["max_steps"] = max_steps
+    trainer_args = instantiate_supported(TrainerArgs, kwargs, "TrainerArgs")
 
-    trainer_args = TrainerArgs(**kwargs)
+    if hasattr(trainer_args, "grad_accum_steps"):
+        setattr(trainer_args, "grad_accum_steps", grad_accum)
+        print(f"Grad accumulation TrainerArgs uzerinde ayarlandi: {grad_accum}")
+    else:
+        print("UYARI: TrainerArgs grad_accum_steps alani desteklemiyor.")
+
     if hasattr(trainer_args, "max_steps"):
         setattr(trainer_args, "max_steps", max_steps)
+        print(f"Max steps TrainerArgs uzerinde ayarlandi: {max_steps}")
+    else:
+        print(
+            "UYARI: TrainerArgs max_steps alani desteklemiyor. "
+            "Kurulu trainer surumu max_steps limitini dogrudan uygulamayabilir."
+        )
+
     return trainer_args
 
 
-def make_xtts_config(
+def load_samples(
     api: dict[str, Any],
+    dataset_config: Any,
     manifest: dict[str, Any],
-    checkpoint_paths: dict[str, Path],
-    output_path: Path,
-    batch_size: int,
-    max_steps: int,
-) -> Any:
-    """XTTS config nesnesini kucuk deneysel varsayilanlarla olusturur."""
-    XttsArgs = api["XttsArgs"]
-    XttsAudioConfig = api["XttsAudioConfig"]
-    XttsConfig = api["XttsConfig"]
-
-    model_args = XttsArgs(
-        max_conditioning_length=132300,
-        min_conditioning_length=66150,
-        debug_loading_failures=False,
-        max_wav_length=255995,
-        max_text_length=200,
-        dvae_checkpoint=str(checkpoint_paths["dvae.pth"]),
-        xtts_checkpoint=str(checkpoint_paths["model.pth"]),
-        tokenizer_file=str(checkpoint_paths["vocab.json"]),
-        gpt_num_audio_tokens=1026,
-        gpt_start_audio_token=1024,
-        gpt_stop_audio_token=1025,
-        gpt_use_masking_gt_prompt_approach=True,
-        gpt_use_perceiver_resampler=True,
-    )
-    audio_config = XttsAudioConfig(
-        sample_rate=22050,
-        dvae_sample_rate=22050,
-        output_sample_rate=24000,
-    )
-
-    return XttsConfig(
-        output_path=str(output_path),
-        model_args=model_args,
-        run_name=f"{manifest['run_slug']}_gpt",
-        project_name="VoxForge_XTTS_GPT_Experiment",
-        run_description="Experimental local XTTS-v2 GPT encoder fine-tuning.",
-        audio=audio_config,
-        batch_size=batch_size,
-        eval_batch_size=batch_size,
-        batch_group_size=16,
-        num_loader_workers=0,
-        num_eval_loader_workers=0,
-        eval_split_max_size=256,
-        print_step=25,
-        plot_step=100,
-        save_step=max(50, min(max_steps, 100)),
-        save_n_checkpoints=1,
-        save_checkpoints=True,
-        print_eval=False,
-        optimizer="AdamW",
-        optimizer_wd_only_on_weights=True,
-        optimizer_params={"betas": [0.9, 0.96], "eps": 1e-8, "weight_decay": 1e-2},
-        lr=5e-6,
-        lr_scheduler="MultiStepLR",
-        lr_scheduler_params={"milestones": [max_steps + 1], "gamma": 0.5, "last_epoch": -1},
-        test_sentences=[],
-    )
-
-
-def load_samples(api: dict[str, Any], dataset_config: Any, manifest: dict[str, Any]) -> tuple[list[Any], list[Any]]:
+    eval_metadata_used: bool,
+) -> tuple[list[Any], list[Any]]:
     """Coqui dataset loader ile train/eval sample listelerini yukler."""
-    eval_exists = int(manifest.get("eval_samples", 0)) > 0
     load_tts_samples = api["load_tts_samples"]
-    samples = load_tts_samples(
-        dataset_config,
-        eval_split=eval_exists,
-        eval_split_max_size=max(1, int(manifest.get("eval_samples", 1))),
-        eval_split_size=0.10,
-    )
+    eval_sample_count = max(1, int(manifest.get("eval_samples", 1)))
+
+    if not eval_metadata_used:
+        print(
+            "Eval metadata dogrudan kullanilamiyor; "
+            "load_tts_samples train metadata uzerinden eval split uretecek."
+        )
+
+    kwargs = {
+        "eval_split": True,
+        "eval_split_max_size": eval_sample_count,
+        "eval_split_size": 0.10,
+    }
+
+    try:
+        samples = load_tts_samples([dataset_config], **kwargs)
+    except TypeError:
+        samples = load_tts_samples(dataset_config, **kwargs)
+
     if isinstance(samples, tuple):
         return samples[0], samples[1]
     return samples, []
 
 
-def run_training(experiment_path: Path, manifest: dict[str, Any], max_steps: int, batch_size: int, grad_accum: int) -> None:
-    """Coqui Trainer ile deneysel XTTS GPT training baslatir."""
+def create_gpt_model(GPTTrainer: Any, config: Any) -> Any:
+    """GPTTrainer model nesnesini official recipe yoluyla olusturur."""
+    if hasattr(GPTTrainer, "init_from_config"):
+        return GPTTrainer.init_from_config(config)
+    return GPTTrainer(config)
+
+
+def prepare_training_objects(
+    experiment_path: Path,
+    manifest: dict[str, Any],
+    checkpoint_files: dict[str, Path],
+    max_steps: int,
+    batch_size: int,
+    grad_accum: int,
+    dry_run: bool,
+) -> tuple[dict[str, Any], Any, Any, Any, Path, bool]:
+    """Dry-run ve training icin ortak import/config kontrollerini yapar."""
+    dataset_path, train_metadata_path, eval_metadata_path = validate_experiment_layout(experiment_path)
     api = import_training_api()
-    checkpoint_paths = ensure_xtts_files(experiment_path / CHECKPOINT_DIR_NAME)
+    dataset_config, eval_metadata_used = make_dataset_config(
+        api,
+        experiment_path,
+        manifest,
+        eval_metadata_path,
+    )
+    speaker_wav = pick_speaker_wav(dataset_path, train_metadata_path)
     output_path = experiment_path / TRAINING_OUTPUT_DIR_NAME
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    dataset_config = make_dataset_config(api, experiment_path, manifest)
-    config = make_xtts_config(api, manifest, checkpoint_paths, output_path, batch_size, max_steps)
-    config.datasets = [dataset_config]
-
-    train_samples, eval_samples = load_samples(api, dataset_config, manifest)
-    print(f"Coqui train samples: {len(train_samples)}")
-    print(f"Coqui eval samples: {len(eval_samples)}")
-
-    model = api["Xtts"].init_from_config(config)
-    try:
-        model.load_checkpoint(
-            config,
-            checkpoint_path=str(checkpoint_paths["model.pth"]),
-            vocab_path=str(checkpoint_paths["vocab.json"]),
-            eval=False,
-            strict=False,
-        )
-    except TypeError:
-        model.load_checkpoint(
-            config,
-            checkpoint_path=str(checkpoint_paths["model.pth"]),
-            vocab_path=str(checkpoint_paths["vocab.json"]),
-            strict=False,
-        )
-
-    trainer_args = make_trainer_args(
+    if not dry_run:
+        output_path.mkdir(parents=True, exist_ok=True)
+    config = build_gpt_trainer_config(
+        api,
+        manifest,
+        dataset_config,
+        checkpoint_files,
+        output_path,
+        batch_size,
+        max_steps,
+        speaker_wav,
+    )
+    trainer_args = build_trainer_args(
         api["TrainerArgs"],
         max_steps=max_steps,
         grad_accum=grad_accum,
-        start_with_eval=bool(eval_samples),
+        start_with_eval=bool(eval_metadata_path),
     )
+
+    print("GPT trainer config olusturma OK.")
+    if dry_run:
+        print("Dry-run modu: load_tts_samples ve training baslatilmadi.")
+
+    return api, dataset_config, config, trainer_args, output_path, eval_metadata_used
+
+
+def run_dry_run(
+    experiment_path: Path,
+    manifest: dict[str, Any],
+    max_steps: int,
+    batch_size: int,
+    grad_accum: int,
+) -> None:
+    """Training baslatmadan dosya/import/config kontrollerini yapar."""
+    checkpoint_files = check_checkpoint_files(experiment_path / CHECKPOINT_DIR_NAME)
+    prepare_training_objects(
+        experiment_path,
+        manifest,
+        checkpoint_files,
+        max_steps=max_steps,
+        batch_size=batch_size,
+        grad_accum=grad_accum,
+        dry_run=True,
+    )
+    print("XTTS fine-tuning dry-run completed successfully")
+
+
+def run_training(
+    experiment_path: Path,
+    manifest: dict[str, Any],
+    max_steps: int,
+    batch_size: int,
+    grad_accum: int,
+) -> None:
+    """Coqui Trainer ile deneysel XTTS GPT training baslatir."""
+    checkpoint_files = ensure_xtts_files(experiment_path / CHECKPOINT_DIR_NAME)
+    api, dataset_config, config, trainer_args, output_path, eval_metadata_used = prepare_training_objects(
+        experiment_path,
+        manifest,
+        checkpoint_files,
+        max_steps=max_steps,
+        batch_size=batch_size,
+        grad_accum=grad_accum,
+        dry_run=False,
+    )
+
+    train_samples, eval_samples = load_samples(api, dataset_config, manifest, eval_metadata_used)
+    print(f"Coqui train samples: {len(train_samples)}")
+    print(f"Coqui eval samples: {len(eval_samples)}")
+
+    model = create_gpt_model(api["GPTTrainer"], config)
     trainer = api["Trainer"](
         trainer_args,
         config,
@@ -374,9 +774,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Manifest ve ortam bilgisini yazdir, training baslatma.",
+        help="Manifest, dosya, import ve config kontrolu yap; training baslatma.",
     )
     return parser.parse_args(argv)
+
+
+def validate_cli_args(max_steps: int, batch_size: int, grad_accum: int) -> None:
+    """Temel CLI sayisal degerlerini kontrol eder."""
+    if max_steps <= 0:
+        raise TrainingError("--max-steps 0'dan buyuk olmali.")
+    if batch_size <= 0:
+        raise TrainingError("--batch-size 0'dan buyuk olmali.")
+    if grad_accum <= 0:
+        raise TrainingError("--grad-accum 0'dan buyuk olmali.")
 
 
 def main(argv: list[str]) -> int:
@@ -384,6 +794,7 @@ def main(argv: list[str]) -> int:
     experiment_path = resolve_experiment_path(args.experiment)
 
     try:
+        validate_cli_args(args.max_steps, args.batch_size, args.grad_accum)
         manifest = read_manifest(experiment_path)
         print_preflight(
             experiment_path,
@@ -393,7 +804,13 @@ def main(argv: list[str]) -> int:
             grad_accum=args.grad_accum,
         )
         if args.dry_run:
-            print("Dry-run modu: training baslatilmadi.")
+            run_dry_run(
+                experiment_path,
+                manifest,
+                max_steps=args.max_steps,
+                batch_size=args.batch_size,
+                grad_accum=args.grad_accum,
+            )
             return 0
 
         run_training(
@@ -404,12 +821,27 @@ def main(argv: list[str]) -> int:
             grad_accum=args.grad_accum,
         )
     except RuntimeError as exc:
-        if "out of memory" in str(exc).lower() or "cuda" in str(exc).lower():
+        error_text = str(exc).lower()
+        if "out of memory" in error_text or "cuda" in error_text:
             print(
                 "HATA: CUDA/OOM benzeri bir hata olustu. "
                 "Batch size degerini 1'e dusurmeyi veya grad accumulation degerini artirmayi deneyin.",
                 file=sys.stderr,
             )
+        print(f"Detay: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    except ImportError as exc:
+        print(
+            "HATA: ImportError olustu. Coqui TTS, trainer, PyTorch veya CUDA kurulumu eksik olabilir.",
+            file=sys.stderr,
+        )
+        print(f"Detay: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    except TypeError as exc:
+        print(
+            "HATA: Coqui training config API'si beklenen argumanlari kabul etmedi.",
+            file=sys.stderr,
+        )
         print(f"Detay: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     except TrainingError as exc:

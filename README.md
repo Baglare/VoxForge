@@ -429,11 +429,13 @@ Export adımı kaynak dataset dosyalarını değiştirmez. `experiments/<run_slu
 powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
 ```
 
-Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-run ile manifest, CUDA ve parametre kontrolü yapılabilir:
+Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-run ile manifest, dataset dosyaları, checkpoint varlığı, CUDA, GPT trainer importları ve config oluşturma kontrolü yapılabilir:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
 ```
+
+Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ve `XttsAudioConfig` yolunu kullanır; desteklenmeyen config argümanlarını uyarı olarak yazar.
 
 Training başlatmak için:
 
