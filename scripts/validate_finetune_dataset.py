@@ -16,10 +16,12 @@ REPORT_PATH = REPORTS_DIR / "finetune_dataset_report.json"
 METADATA_FILE_NAME = "metadata.csv"
 EXPECTED_HEADER = "audio_path|text"
 
-# Fine-tuning segmentleri referans profilden daha kisa olabilir; bu aralik
-# sadece veri hazirligi uyarisi uretir, egitim baslatmaz.
-MIN_SAMPLE_SECONDS = 1.0
-MAX_SAMPLE_SECONDS = 20.0
+# Fine-tuning klipleri referans ses profillerinden farklidir. Referans ses
+# analizindeki 30-90 sn onerisi burada dogrudan karar olarak kullanilmaz.
+MIN_ACCEPTABLE_SAMPLE_SECONDS = 1.5
+SHORT_WARNING_SAMPLE_SECONDS = 2.5
+IDEAL_MAX_SAMPLE_SECONDS = 15.0
+LONG_WARNING_SAMPLE_SECONDS = 25.0
 TARGET_SAMPLE_RATE = 24000
 TARGET_CHANNELS = 1
 
@@ -86,6 +88,62 @@ def resolve_audio_path(dataset_path: Path, audio_path_text: str) -> Path:
     return audio_path.resolve()
 
 
+def check_duration(duration: float | None, errors: list[str], warnings: list[str]) -> None:
+    """Fine-tuning klip suresini referans ses esiklerinden bagimsiz degerlendirir."""
+    if duration is None:
+        errors.append("Ses suresi okunamadi.")
+        return
+
+    if duration < MIN_ACCEPTABLE_SAMPLE_SECONDS:
+        errors.append(
+            f"Ses suresi cok kisa: {duration:.2f} sn "
+            f"(< {MIN_ACCEPTABLE_SAMPLE_SECONDS:.2f} sn)."
+        )
+    elif duration < SHORT_WARNING_SAMPLE_SECONDS:
+        warnings.append(
+            f"Ses suresi kisa: {duration:.2f} sn "
+            f"({MIN_ACCEPTABLE_SAMPLE_SECONDS:.2f}-{SHORT_WARNING_SAMPLE_SECONDS:.2f} sn arasi)."
+        )
+    elif duration > LONG_WARNING_SAMPLE_SECONDS:
+        warnings.append(
+            f"Ses suresi cok uzun olabilir: {duration:.2f} sn "
+            f"(> {LONG_WARNING_SAMPLE_SECONDS:.2f} sn)."
+        )
+    elif duration > IDEAL_MAX_SAMPLE_SECONDS:
+        warnings.append(
+            f"Ses suresi ideal araligin uzerinde: {duration:.2f} sn "
+            f"(ideal: {SHORT_WARNING_SAMPLE_SECONDS:.2f}-{IDEAL_MAX_SAMPLE_SECONDS:.2f} sn)."
+        )
+
+
+def check_audio_levels(
+    mean_volume_db: float | None,
+    max_volume_db: float | None,
+    warnings: list[str],
+) -> None:
+    """Ses seviyesi ve clipping riskini dataset klibi icin yorumlar."""
+    if mean_volume_db is None:
+        warnings.append("Ortalama ses seviyesi okunamadi.")
+    elif mean_volume_db < -35.0:
+        warnings.append("Ortalama ses seviyesi dusuk; kaydi dinleyerek kontrol edin.")
+    elif mean_volume_db > -12.0:
+        warnings.append("Ortalama ses seviyesi yuksek; clipping riskini kontrol edin.")
+
+    if max_volume_db is None:
+        warnings.append("Maksimum ses seviyesi okunamadi; clipping riski degerlendirilemedi.")
+    elif max_volume_db >= -1.0:
+        warnings.append("Maksimum ses seviyesi 0 dB'ye cok yakin; clipping riski var.")
+
+
+def sample_status(errors: list[str], warnings: list[str]) -> str:
+    """Satir sonucunu raporda kullanilan buyuk harfli statuye cevirir."""
+    if errors:
+        return "ERROR"
+    if warnings:
+        return "WARNING"
+    return "VALID"
+
+
 def validate_row(
     dataset_path: Path,
     line_number: int,
@@ -97,6 +155,11 @@ def validate_row(
     warnings: list[str] = []
     audio_path: Path | None = None
     quality_report: dict[str, Any] | None = None
+    duration_seconds: float | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+    mean_volume_db: float | None = None
+    max_volume_db: float | None = None
 
     if not audio_path_text:
         errors.append("audio_path bos.")
@@ -116,27 +179,14 @@ def validate_row(
         except Exception as exc:
             errors.append(f"Kalite analizi yapilamadi: {type(exc).__name__}: {exc}")
         else:
-            if quality_report.get("quality") == "BAD":
-                warnings.append("Kalite sonucu BAD; kaydi dinleyerek kontrol edin.")
-            elif quality_report.get("quality") == "WARNING":
-                warnings.append("Kalite sonucu WARNING; kaydi kontrol edin.")
-
-            duration = quality_report.get("duration_seconds")
-            if duration is None:
-                errors.append("Ses suresi okunamadi.")
-            else:
-                if duration < MIN_SAMPLE_SECONDS:
-                    warnings.append(
-                        f"Ses suresi cok kisa: {duration:.2f} sn "
-                        f"(< {MIN_SAMPLE_SECONDS:.2f} sn)."
-                    )
-                if duration > MAX_SAMPLE_SECONDS:
-                    warnings.append(
-                        f"Ses suresi cok uzun: {duration:.2f} sn "
-                        f"(> {MAX_SAMPLE_SECONDS:.2f} sn)."
-                    )
-
+            duration_seconds = quality_report.get("duration_seconds")
             sample_rate = quality_report.get("sample_rate")
+            channels = quality_report.get("channels")
+            mean_volume_db = quality_report.get("mean_volume_db")
+            max_volume_db = quality_report.get("max_volume_db")
+
+            check_duration(duration_seconds, errors, warnings)
+
             if sample_rate is None:
                 errors.append("Sample rate okunamadi.")
             elif sample_rate != TARGET_SAMPLE_RATE:
@@ -144,48 +194,25 @@ def validate_row(
                     f"Sample rate {TARGET_SAMPLE_RATE} Hz degil: {sample_rate} Hz."
                 )
 
-            channels = quality_report.get("channels")
             if channels is None:
                 errors.append("Kanal sayisi okunamadi.")
             elif channels != TARGET_CHANNELS:
                 warnings.append(f"Ses mono degil; kanal sayisi: {channels}.")
 
-            for warning in quality_report.get("warnings") or []:
-                if warning not in warnings:
-                    warnings.append(str(warning))
-
-    status = "error" if errors else "warning" if warnings else "valid"
-    duration_seconds = (
-        quality_report.get("duration_seconds")
-        if isinstance(quality_report, dict)
-        else None
-    )
+            check_audio_levels(mean_volume_db, max_volume_db, warnings)
 
     return {
-        "line_number": line_number,
+        "row_number": line_number,
         "audio_path": audio_path_text,
-        "resolved_audio_path": str(audio_path) if audio_path else None,
         "text": text,
-        "status": status,
-        "errors": errors,
-        "warnings": warnings,
         "duration_seconds": duration_seconds,
-        "sample_rate": (
-            quality_report.get("sample_rate")
-            if isinstance(quality_report, dict)
-            else None
-        ),
-        "channels": (
-            quality_report.get("channels")
-            if isinstance(quality_report, dict)
-            else None
-        ),
-        "quality": (
-            quality_report.get("quality")
-            if isinstance(quality_report, dict)
-            else None
-        ),
-        "quality_report": quality_report,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "mean_volume_db": mean_volume_db,
+        "max_volume_db": max_volume_db,
+        "sample_status": sample_status(errors, warnings),
+        "warnings": warnings,
+        "errors": errors,
     }
 
 
@@ -204,9 +231,9 @@ def build_report(dataset_path: Path) -> dict[str, Any]:
         for line_number, audio_path, text in metadata_rows
     ]
 
-    valid_samples = sum(1 for row in rows if row["status"] == "valid")
-    warning_samples = sum(1 for row in rows if row["status"] == "warning")
-    error_samples = sum(1 for row in rows if row["status"] == "error")
+    valid_samples = sum(1 for row in rows if row["sample_status"] == "VALID")
+    warning_samples = sum(1 for row in rows if row["sample_status"] == "WARNING")
+    error_samples = sum(1 for row in rows if row["sample_status"] == "ERROR")
     durations = [
         float(row["duration_seconds"])
         for row in rows
@@ -214,8 +241,9 @@ def build_report(dataset_path: Path) -> dict[str, Any]:
     ]
     total_duration = round(sum(durations), 3)
     average_duration = round(total_duration / len(durations), 3) if durations else 0.0
+    estimated_minutes = round(total_duration / 60.0, 3)
     warnings = [
-        f"satir {row['line_number']}: {warning}"
+        f"satir {row['row_number']}: {warning}"
         for row in rows
         for warning in row["warnings"]
     ]
@@ -223,7 +251,7 @@ def build_report(dataset_path: Path) -> dict[str, Any]:
         warnings.append("metadata.csv icinde dogrulanacak ornek yok.")
 
     errors = [
-        f"satir {row['line_number']}: {error}"
+        f"satir {row['row_number']}: {error}"
         for row in rows
         for error in row["errors"]
     ]
@@ -244,17 +272,27 @@ def build_report(dataset_path: Path) -> dict[str, Any]:
         "error_samples": error_samples,
         "total_duration_seconds": total_duration,
         "average_duration_seconds": average_duration,
+        "estimated_minutes": estimated_minutes,
         "rows": rows,
         "warnings": warnings,
         "errors": errors,
         "summary": {
             "result": result,
+            "total_rows": len(rows),
+            "valid_samples": valid_samples,
+            "warning_samples": warning_samples,
+            "error_samples": error_samples,
+            "total_duration_seconds": total_duration,
+            "average_duration_seconds": average_duration,
+            "estimated_minutes": estimated_minutes,
             "metadata_path": str(metadata_path),
             "report_path": str(REPORT_PATH),
             "target_sample_rate": TARGET_SAMPLE_RATE,
             "target_channels": TARGET_CHANNELS,
-            "recommended_min_sample_seconds": MIN_SAMPLE_SECONDS,
-            "recommended_max_sample_seconds": MAX_SAMPLE_SECONDS,
+            "min_acceptable_sample_seconds": MIN_ACCEPTABLE_SAMPLE_SECONDS,
+            "short_warning_sample_seconds": SHORT_WARNING_SAMPLE_SECONDS,
+            "ideal_max_sample_seconds": IDEAL_MAX_SAMPLE_SECONDS,
+            "long_warning_sample_seconds": LONG_WARNING_SAMPLE_SECONDS,
         },
     }
 
@@ -279,6 +317,7 @@ def print_report(report: dict[str, Any], report_path: Path) -> None:
     print(f"Hatali ornek: {report['error_samples']}")
     print(f"Toplam yaklasik sure: {report['total_duration_seconds']} sn")
     print(f"Ortalama ornek suresi: {report['average_duration_seconds']} sn")
+    print(f"Tahmini toplam sure: {report['estimated_minutes']} dk")
     print(f"JSON raporu: {report_path}")
 
     if report["errors"]:
@@ -323,11 +362,20 @@ def main(argv: list[str]) -> int:
             "warning_samples": 0,
             "error_samples": 1,
             "total_duration_seconds": 0.0,
+            "average_duration_seconds": 0.0,
+            "estimated_minutes": 0.0,
             "rows": [],
             "warnings": [],
             "errors": [str(exc)],
             "summary": {
                 "result": "FAILED",
+                "total_rows": 0,
+                "valid_samples": 0,
+                "warning_samples": 0,
+                "error_samples": 1,
+                "total_duration_seconds": 0.0,
+                "average_duration_seconds": 0.0,
+                "estimated_minutes": 0.0,
                 "report_path": str(REPORT_PATH),
             },
         }

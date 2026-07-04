@@ -56,7 +56,7 @@ Adım:
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
-Beklenen sonuç: Metadata satırları, WAV dosyaları, süre, sample rate, mono kanal ve kalite analizi kontrol edilir. Rapor `outputs/reports/finetune_dataset_report.json` dosyasına yazılır ve GitHub'a eklenmez.
+Beklenen sonuç: Metadata satırları, WAV dosyaları, fine-tuning klip süresi, sample rate, mono kanal, ses seviyesi ve clipping riski kontrol edilir. Ortalama 5-6 saniye civarındaki temiz klipler normal kabul edilir; 80 kayıt için toplu şekilde `30 saniyeden kısa` uyarısı beklenmez. Terminal özetinde toplam süre, ortalama örnek süresi ve tahmini dakika bilgisi görünür. Rapor `outputs/reports/finetune_dataset_report.json` dosyasına yazılır ve GitHub'a eklenmez.
 
 ## 6. Gradio demo açılış testi
 

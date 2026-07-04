@@ -358,7 +358,7 @@ Dataset doğrulamak için:
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
-Doğrulama scripti `metadata.csv` satırlarını, WAV dosyalarını, süreyi, sample rate değerini, mono kanal durumunu ve kalite analizini kontrol eder. Rapor local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır; bu rapor ve gerçek dataset dosyaları GitHub'a yüklenmez.
+Doğrulama scripti `metadata.csv` satırlarını, WAV dosyalarını, süreyi, sample rate değerini, mono kanal durumunu ve kalite analizini kontrol eder. Fine-tuning datasetindeki tekil klipler referans ses profili gibi 30-90 saniye beklenmez; çoğu klip 2.5-15 saniye aralığında olabilir ve datasetin toplam süresi ayrıca raporlanır. Rapor local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır; bu rapor ve gerçek dataset dosyaları GitHub'a yüklenmez.
 
 Kayıt toplama için `docs/RECORDING_TEXT_SET_TR.md` içinde özgün Türkçe metinler bulunur. Bu metinlerden kayıt planı üretmek için:
 

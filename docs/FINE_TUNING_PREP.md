@@ -125,15 +125,23 @@ Pratik yaklaşım:
 
 ## Süre ve kalite beklentisi
 
-Dataset doğrulama scripti her örnek için süre, sample rate, kanal sayısı ve temel kalite sinyallerini kontrol eder.
+Dataset doğrulama scripti her örnek için süre, sample rate, kanal sayısı ve temel kalite sinyallerini kontrol eder. Fine-tuning datasetindeki tekil klipler, Gradio/voice profile için kullanılan referans seslerden farklı değerlendirilir.
+
+Referans ses profili için 30-90 saniye doğal konuşma iyi bir hedeftir; çünkü tek bir referans ses, zero-shot üretimde konuşmacı karakterini taşımak için kullanılır. Fine-tuning datasetinde ise her satır genellikle kısa bir cümle veya kısa paragraftır. Bu yüzden tekil kliplerin çoğu 2.5-15 saniye aralığında olabilir.
+
+Fine-tuning datasetinde yalnızca tek klibin uzunluğu değil, datasetin toplam süresi de önemlidir. Örneğin ortalama 5-6 saniyelik çok sayıda temiz klip normal kabul edilir.
 
 Beklenen teknik hedef:
 
 - WAV formatı
 - 24000 Hz sample rate
 - Mono kanal
-- Çok kısa veya çok uzun olmayan cümle parçaları
+- Tekil klip için ideal süre: 2.5-15 saniye
+- 1.5 saniyeden kısa kliplerden kaçınma
+- 15 saniyeyi aşan klipleri dinleyerek kontrol etme
 - Temiz, anlaşılır, clipping riski düşük kayıt
+
+Doğrulama scripti 1.5 saniyeden kısa klipleri hata olarak işaretler. 1.5-2.5 saniye arası kısa klipler ve 15 saniyeden uzun klipler uyarı alabilir. 30 saniyeden kısa olmak tek başına fine-tuning dataset klibi için sorun değildir.
 
 Doğrulama uyarısı her zaman dosyanın kullanılamaz olduğu anlamına gelmez; ancak kayıt dinlenerek kontrol edilmelidir.
 
@@ -151,7 +159,7 @@ Sonra kayıt planı üzerinden WAV dosyaları `wavs/` altına local olarak eklen
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
-Doğrulama; boş alanları, eksik dosyaları, WAV olmayan dosyaları, süre uyarılarını, sample rate değerini, kanal sayısını ve kalite analizini kontrol eder. JSON raporu local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır.
+Doğrulama; boş alanları, eksik dosyaları, WAV olmayan dosyaları, fine-tuning klip süresi eşiklerini, sample rate değerini, kanal sayısını, ses seviyesini ve clipping riskini kontrol eder. JSON raporu local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır. Rapor satırlarında `sample_status` değeri `VALID`, `WARNING` veya `ERROR` olarak görünür.
 
 ## GitHub'a neden gerçek dataset yüklenmez?
 
