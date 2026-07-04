@@ -64,7 +64,7 @@ powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 
 Training başlatmadan önce dry-run ile manifest, dataset klasörü, train/eval metadata dosyaları, checkpoint dosyaları, CUDA bilgisi, GPT trainer importları ve config oluşturma adımı kontrol edilebilir:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8 -DryRun
 ```
 
 Dry-run modeli eğitmez, `load_tts_samples` çalıştırmaz ve checkpoint indirme başlatmaz. Başarılı olduğunda terminalin sonunda şu satır görünmelidir:
@@ -76,7 +76,7 @@ XTTS fine-tuning dry-run completed successfully
 Training başlatmak için:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8
 ```
 
 Bu komut gerçekten training sürecini başlatır. Küçük dataset ve düşük adım sayısı nedeniyle çıkan model deneysel kabul edilmelidir.
@@ -139,7 +139,27 @@ Script, kurulu Coqui sürümünün desteklemediği config argümanlarını termi
 
 ### Max steps sınırı
 
-`-MaxSteps` küçük deneylerin uzun çalışmasını önlemek için kullanılır. Kurulu `trainer` veya `GPTTrainerConfig` sürümü `max_steps` alanını destekliyorsa script bunu ayarlar. Desteklemiyorsa terminalde açık uyarı verir; bu durumda eğitim süresi ilgili Coqui trainer sürümünün epoch/step davranışına bağlı olabilir.
+`-MaxSteps` küçük deneylerin uzun çalışmasını önlemek için kullanılır. Script, `GPTTrainerConfig` ve `TrainerArgs` constructor imzalarını `inspect.signature` ile kontrol eder ve mümkünse `max_steps` sınırını uygular.
+
+Dry-run çıktısında hangi limit mekanizmasının kullanılacağı açıkça yazılır:
+
+- `limit_mode: max_steps`
+- `limit_mode: epochs_fallback`
+- `limit_mode: unsupported`
+
+Kurulu `coqui-tts/trainer` sürümü `max_steps` desteklemiyorsa script `epochs` veya `num_epochs` alanı arar. Bunlardan biri destekleniyorsa güvenli fallback olarak `epochs=1` kullanılır ve terminalde şu mesaj görünür:
+
+```text
+max_steps desteklenmiyor; güvenli fallback olarak epochs=1 kullanılacak.
+```
+
+`max_steps` ve epoch tabanlı sınırların hiçbiri desteklenmiyorsa dry-run yine tamamlanabilir; ama gerçek training başlatılmaz. Bu durumda script exit code `1` ile çıkar ve şu hatayı verir:
+
+```text
+Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.
+```
+
+Bu durumda daha güvenli kısa deneme için epoch sınırı desteği eklenmeli veya kurulu trainer API'sine göre adım/epoch sınırı yeniden uyarlanmalıdır.
 
 ### Checkpoint indirme hataları
 

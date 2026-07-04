@@ -97,6 +97,7 @@ def print_preflight(
     experiment_path: Path,
     manifest: dict[str, Any],
     max_steps: int,
+    epochs: int,
     batch_size: int,
     grad_accum: int,
 ) -> None:
@@ -111,6 +112,7 @@ def print_preflight(
     print(f"Eval sample count: {manifest.get('eval_samples')}")
     print(f"Language: {manifest.get('language')}")
     print(f"Max steps: {max_steps}")
+    print(f"Epoch fallback: {epochs}")
     print(f"Batch size: {batch_size}")
     print(f"Grad accumulation: {grad_accum}")
     print(f"CUDA available: {cuda_available}")
@@ -327,6 +329,125 @@ def instantiate_filtered(
                 f"Hata: TypeError: {exc}{keyword_detail}\n"
                 "Kurulu Coqui TTS API'si official XTTS GPT training recipe ile farkli olabilir."
             ) from exc
+
+
+def callable_accepts_keyword(callable_object: Any, keyword: str) -> bool:
+    """Constructor signature icinde keyword destekleniyor mu kontrol eder."""
+    signature = get_signature(callable_object)
+    if signature is None:
+        return False
+
+    return keyword in signature.parameters
+
+
+def first_supported_epoch_keyword(callable_object: Any) -> str | None:
+    """epochs veya num_epochs alanlarindan desteklenen ilkini dondurur."""
+    for keyword in ("epochs", "num_epochs"):
+        if callable_accepts_keyword(callable_object, keyword):
+            return keyword
+    return None
+
+
+def constructor_limit_kwargs(
+    callable_object: Any,
+    max_steps: int,
+    epochs: int,
+) -> tuple[dict[str, int], str | None]:
+    """Limit alanini constructor signature'a gore secer."""
+    if callable_accepts_keyword(callable_object, "max_steps"):
+        return {"max_steps": max_steps}, "max_steps"
+
+    epoch_keyword = first_supported_epoch_keyword(callable_object)
+    if epoch_keyword:
+        return {epoch_keyword: epochs}, epoch_keyword
+
+    return {}, None
+
+
+def apply_limit_attributes(
+    target: Any,
+    context: str,
+    max_steps: int,
+    epochs: int,
+    constructor_limit_field: str | None,
+) -> dict[str, Any]:
+    """Olusan nesne uzerinde guvenli limit alanlarini uygular."""
+    max_steps_applied = constructor_limit_field == "max_steps"
+    epoch_field = (
+        constructor_limit_field
+        if constructor_limit_field in {"epochs", "num_epochs"}
+        else None
+    )
+
+    if hasattr(target, "max_steps"):
+        setattr(target, "max_steps", max_steps)
+        max_steps_applied = True
+        print(f"Max steps {context} uzerinde ayarlandi: {max_steps}")
+    elif max_steps_applied:
+        print(f"Max steps {context} constructor uzerinden ayarlandi: {max_steps}")
+    else:
+        print(f"UYARI: {context} max_steps alani desteklemiyor.")
+
+    if not max_steps_applied:
+        epoch_set_on_attribute = False
+        for candidate_field in ("epochs", "num_epochs"):
+            if hasattr(target, candidate_field):
+                setattr(target, candidate_field, epochs)
+                epoch_field = candidate_field
+                epoch_set_on_attribute = True
+                print(f"Epoch fallback {context} uzerinde ayarlandi: {candidate_field}={epochs}")
+                break
+
+        if epoch_field and constructor_limit_field == epoch_field and not epoch_set_on_attribute:
+            print(f"Epoch fallback {context} constructor uzerinden ayarlandi: {epoch_field}={epochs}")
+        elif not epoch_field:
+            print(f"UYARI: {context} epochs/num_epochs alani desteklemiyor.")
+
+    return {
+        "context": context,
+        "max_steps": max_steps_applied,
+        "epoch_field": epoch_field,
+    }
+
+
+def resolve_limit_mode(config_limit: dict[str, Any], trainer_limit: dict[str, Any]) -> str:
+    """Config ve TrainerArgs limit desteklerinden nihai modu belirler."""
+    if config_limit["max_steps"] or trainer_limit["max_steps"]:
+        return "max_steps"
+
+    if config_limit["epoch_field"] or trainer_limit["epoch_field"]:
+        return "epochs_fallback"
+
+    return "unsupported"
+
+
+def report_and_enforce_limit_mode(limit_mode: str, dry_run: bool) -> None:
+    """Dry-run'da raporlar, gercek training'de guvensiz modu engeller."""
+    print(f"limit_mode: {limit_mode}")
+
+    if limit_mode == "max_steps":
+        return
+
+    if limit_mode == "epochs_fallback":
+        print("max_steps desteklenmiyor; güvenli fallback olarak epochs=1 kullanılacak.")
+        return
+
+    print(
+        "UYARI: Bu coqui-tts/trainer surumunde max_steps veya epochs/num_epochs "
+        "siniri bulunamadi."
+    )
+    if dry_run:
+        print(
+            "Dry-run devam ediyor; gercek training bu limit destegi olmadan baslatilmayacak."
+        )
+        return
+
+    raise TrainingError(
+        "Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. "
+        "Eğitim başlatılmadı.\n"
+        "Öneri: daha güvenli kısa deneme için epoch sınırı desteği eklenmeli.\n"
+        "Öneri: kurulu trainer API'sine göre adım/epoch sınırı yeniden uyarlanmalı."
+    )
 
 
 def download_file(url: str, target_path: Path) -> None:
@@ -583,8 +704,9 @@ def build_gpt_trainer_config(
     output_path: Path,
     batch_size: int,
     max_steps: int,
+    epochs: int,
     speaker_wav: Path,
-) -> Any:
+) -> tuple[Any, dict[str, Any]]:
     """GPTTrainerConfig nesnesini kucuk deneysel varsayilanlarla olusturur."""
     model_args = build_gpt_args(api, checkpoint_files)
     audio_config = build_audio_config(api)
@@ -622,6 +744,12 @@ def build_gpt_trainer_config(
         "datasets": [dataset_config],
         "test_sentences": test_sentences,
     }
+    limit_kwargs, limit_field = constructor_limit_kwargs(
+        api["GPTTrainerConfig"],
+        max_steps=max_steps,
+        epochs=epochs,
+    )
+    kwargs.update(limit_kwargs)
 
     config = instantiate_supported(api["GPTTrainerConfig"], kwargs, "GPTTrainerConfig")
 
@@ -636,32 +764,37 @@ def build_gpt_trainer_config(
             continue
         setattr(config, name, value)
 
-    if hasattr(config, "max_steps"):
-        setattr(config, "max_steps", max_steps)
-        print(f"Max steps GPTTrainerConfig uzerinde ayarlandi: {max_steps}")
-    else:
-        print(
-            "UYARI: GPTTrainerConfig max_steps alani desteklemiyor. "
-            "TrainerArgs desteklemezse egitim adim sayisi kesin sinirlanmayabilir."
-        )
+    limit_support = apply_limit_attributes(
+        config,
+        "GPTTrainerConfig",
+        max_steps=max_steps,
+        epochs=epochs,
+        constructor_limit_field=limit_field,
+    )
 
-    return config
+    return config, limit_support
 
 
 def build_trainer_args(
     TrainerArgs: Any,
     max_steps: int,
+    epochs: int,
     grad_accum: int,
     start_with_eval: bool,
-) -> Any:
+) -> tuple[Any, dict[str, Any]]:
     """TrainerArgs nesnesini surum farklarina toleransli sekilde olusturur."""
     kwargs = {
         "restore_path": None,
         "skip_train_epoch": False,
         "start_with_eval": start_with_eval,
         "grad_accum_steps": grad_accum,
-        "max_steps": max_steps,
     }
+    limit_kwargs, limit_field = constructor_limit_kwargs(
+        TrainerArgs,
+        max_steps=max_steps,
+        epochs=epochs,
+    )
+    kwargs.update(limit_kwargs)
     trainer_args = instantiate_supported(TrainerArgs, kwargs, "TrainerArgs")
 
     if hasattr(trainer_args, "grad_accum_steps"):
@@ -670,16 +803,15 @@ def build_trainer_args(
     else:
         print("UYARI: TrainerArgs grad_accum_steps alani desteklemiyor.")
 
-    if hasattr(trainer_args, "max_steps"):
-        setattr(trainer_args, "max_steps", max_steps)
-        print(f"Max steps TrainerArgs uzerinde ayarlandi: {max_steps}")
-    else:
-        print(
-            "UYARI: TrainerArgs max_steps alani desteklemiyor. "
-            "Kurulu trainer surumu max_steps limitini dogrudan uygulamayabilir."
-        )
+    limit_support = apply_limit_attributes(
+        trainer_args,
+        "TrainerArgs",
+        max_steps=max_steps,
+        epochs=epochs,
+        constructor_limit_field=limit_field,
+    )
 
-    return trainer_args
+    return trainer_args, limit_support
 
 
 def load_samples(
@@ -726,6 +858,7 @@ def prepare_training_objects(
     manifest: dict[str, Any],
     checkpoint_files: dict[str, Path],
     max_steps: int,
+    epochs: int,
     batch_size: int,
     grad_accum: int,
     dry_run: bool,
@@ -743,7 +876,7 @@ def prepare_training_objects(
     output_path = experiment_path / TRAINING_OUTPUT_DIR_NAME
     if not dry_run:
         output_path.mkdir(parents=True, exist_ok=True)
-    config = build_gpt_trainer_config(
+    config, config_limit = build_gpt_trainer_config(
         api,
         manifest,
         dataset_config,
@@ -751,14 +884,18 @@ def prepare_training_objects(
         output_path,
         batch_size,
         max_steps,
+        epochs,
         speaker_wav,
     )
-    trainer_args = build_trainer_args(
+    trainer_args, trainer_limit = build_trainer_args(
         api["TrainerArgs"],
         max_steps=max_steps,
+        epochs=epochs,
         grad_accum=grad_accum,
         start_with_eval=bool(eval_metadata_path),
     )
+    limit_mode = resolve_limit_mode(config_limit, trainer_limit)
+    report_and_enforce_limit_mode(limit_mode, dry_run=dry_run)
 
     print("GPT trainer config olusturma OK.")
     if dry_run:
@@ -771,6 +908,7 @@ def run_dry_run(
     experiment_path: Path,
     manifest: dict[str, Any],
     max_steps: int,
+    epochs: int,
     batch_size: int,
     grad_accum: int,
 ) -> None:
@@ -781,6 +919,7 @@ def run_dry_run(
         manifest,
         checkpoint_files,
         max_steps=max_steps,
+        epochs=epochs,
         batch_size=batch_size,
         grad_accum=grad_accum,
         dry_run=True,
@@ -792,6 +931,7 @@ def run_training(
     experiment_path: Path,
     manifest: dict[str, Any],
     max_steps: int,
+    epochs: int,
     batch_size: int,
     grad_accum: int,
 ) -> None:
@@ -802,6 +942,7 @@ def run_training(
         manifest,
         checkpoint_files,
         max_steps=max_steps,
+        epochs=epochs,
         batch_size=batch_size,
         grad_accum=grad_accum,
         dry_run=False,
@@ -833,6 +974,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Experiment klasoru. Ornek: experiments/baglare-xtts-exp01",
     )
     parser.add_argument("--max-steps", type=int, default=300)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument(
@@ -843,10 +985,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def validate_cli_args(max_steps: int, batch_size: int, grad_accum: int) -> None:
+def validate_cli_args(max_steps: int, epochs: int, batch_size: int, grad_accum: int) -> None:
     """Temel CLI sayisal degerlerini kontrol eder."""
     if max_steps <= 0:
         raise TrainingError("--max-steps 0'dan buyuk olmali.")
+    if epochs <= 0:
+        raise TrainingError("--epochs 0'dan buyuk olmali.")
     if batch_size <= 0:
         raise TrainingError("--batch-size 0'dan buyuk olmali.")
     if grad_accum <= 0:
@@ -858,12 +1002,13 @@ def main(argv: list[str]) -> int:
     experiment_path = resolve_experiment_path(args.experiment)
 
     try:
-        validate_cli_args(args.max_steps, args.batch_size, args.grad_accum)
+        validate_cli_args(args.max_steps, args.epochs, args.batch_size, args.grad_accum)
         manifest = read_manifest(experiment_path)
         print_preflight(
             experiment_path,
             manifest,
             max_steps=args.max_steps,
+            epochs=args.epochs,
             batch_size=args.batch_size,
             grad_accum=args.grad_accum,
         )
@@ -872,6 +1017,7 @@ def main(argv: list[str]) -> int:
                 experiment_path,
                 manifest,
                 max_steps=args.max_steps,
+                epochs=args.epochs,
                 batch_size=args.batch_size,
                 grad_accum=args.grad_accum,
             )
@@ -881,6 +1027,7 @@ def main(argv: list[str]) -> int:
             experiment_path,
             manifest,
             max_steps=args.max_steps,
+            epochs=args.epochs,
             batch_size=args.batch_size,
             grad_accum=args.grad_accum,
         )

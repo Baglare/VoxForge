@@ -83,22 +83,28 @@ Beklenen sonuç: `experiments/baglare-xtts-exp01/` altında `dataset/wavs/`, `me
 Adım:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8 -DryRun
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8 -DryRun
 ```
 
-Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, batch size, grad accumulation ve CUDA bilgisi görünür. Dataset klasörü, `metadata_train.csv`, varsa `metadata_eval.csv`, checkpoint dosyaları ve GPT trainer importları kontrol edilir. `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ayrı ayrı `Import OK` olarak görünür. `XttsAudioConfig` için `Import OK: XttsAudioConfig` ve `XttsAudioConfig import source: ...` satırları görünür; fallback kaynak kullanılması hata değildir. Config oluşturma başarılı olursa terminal sonunda `XTTS fine-tuning dry-run completed successfully` görünür. `-DryRun` kullanıldığı için training başlamaz, `load_tts_samples` çalıştırılmaz ve checkpoint indirme yapılmaz.
+Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, epoch fallback, batch size, grad accumulation ve CUDA bilgisi görünür. Dataset klasörü, `metadata_train.csv`, varsa `metadata_eval.csv`, checkpoint dosyaları ve GPT trainer importları kontrol edilir. `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ayrı ayrı `Import OK` olarak görünür. `XttsAudioConfig` için `Import OK: XttsAudioConfig` ve `XttsAudioConfig import source: ...` satırları görünür; fallback kaynak kullanılması hata değildir. Config oluşturma başarılı olursa terminal sonunda `XTTS fine-tuning dry-run completed successfully` görünür. `-DryRun` kullanıldığı için training başlamaz, `load_tts_samples` çalıştırılmaz ve checkpoint indirme yapılmaz.
 
-## 9. Deneysel XTTS training başlatma kontrolü
+## 9. MaxSteps / epoch limit kontrolü
+
+Adım: Dry-run çıktısında `limit_mode` satırını kontrol et.
+
+Beklenen sonuç: `limit_mode: max_steps` görünüyorsa adım sınırı doğrudan uygulanacaktır. `limit_mode: epochs_fallback` görünüyorsa `max_steps` desteklenmediği için güvenli fallback olarak `epochs=1` kullanılacaktır. `limit_mode: unsupported` görünüyorsa dry-run uyarıyla tamamlanabilir, fakat gerçek training başlatılmamalı ve script gerçek training modunda exit code `1` ile durmalıdır.
+
+## 10. Deneysel XTTS training başlatma kontrolü
 
 Adım: Dry-run başarılıysa ve kullanıcı bilinçli olarak training denemesi yapmak istiyorsa şu komut çalıştırılır:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -BatchSize 2 -GradAccum 8
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 2 -GradAccum 8
 ```
 
-Beklenen sonuç: Script training öncesi aynı özet bilgileri basar, eksik XTTS dosyalarını `experiments/baglare-xtts-exp01/checkpoints/` altına indirmeyi dener ve Coqui trainer sürecini başlatır. CUDA OOM olursa `-BatchSize 1` denenmelidir. Training çıktıları ve checkpointler GitHub'a eklenmez.
+Beklenen sonuç: Script training öncesi aynı özet bilgileri basar ve güvenli limit mekanizmasını kontrol eder. `max_steps` veya `epochs/num_epochs` sınırı uygulanabiliyorsa Coqui trainer süreci başlar. Güvenli limit uygulanamıyorsa `Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.` hatasıyla durur. CUDA OOM olursa `-BatchSize 1` denenmelidir. Training çıktıları ve checkpointler GitHub'a eklenmez.
 
-## 10. Gradio demo açılış testi
+## 11. Gradio demo açılış testi
 
 Adım:
 
@@ -108,73 +114,73 @@ powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 
 Beklenen sonuç: Local Gradio arayüzü açılır. Demo public paylaşım açmadan local makinede çalışır.
 
-## 11. Web üzerinden profil oluşturma testi
+## 12. Web üzerinden profil oluşturma testi
 
 Adım: Gradio arayüzünde profil adı gir, referans ses yükle, izin checkbox'ını işaretle ve `Profil oluştur` butonuna bas.
 
 Beklenen sonuç: Yeni profil `profiles/<profile_slug>/` altında oluşur. Profil klasöründe `original_reference.wav`, `preprocessed_reference.wav` ve `profile.json` bulunur.
 
-## 12. Profil seçme testi
+## 13. Profil seçme testi
 
 Adım: Gradio profil dropdown'ından oluşturulan profili seç.
 
 Beklenen sonuç: Seçili profil üretimde öncelikli referans olur. Profil seçiliyken ayrıca yüklenen ses dosyası kullanılmaz.
 
-## 13. Profil dropdown yenileme testi
+## 14. Profil dropdown yenileme testi
 
 Adım: Yeni profil oluşturduktan sonra profil dropdown'ının güncellenip güncellenmediğini kontrol et.
 
 Beklenen sonuç: Dropdown yeni profili gösterir ve mümkünse yeni profil seçili hale gelir.
 
-## 14. Seçili profil yenileme testi
+## 15. Seçili profil yenileme testi
 
 Adım: Gradio'da bir profil seç ve `Seçili profili yenile` butonuna bas.
 
 Beklenen sonuç: `original_reference.wav` korunur, `preprocessed_reference.wav` yeniden üretilir ve `profile.json` içindeki kalite bilgisi güncellenir. XTTS modeli yüklenmez ve ses üretimi yapılmaz.
 
-## 15. Seçili profil silme testi
+## 16. Seçili profil silme testi
 
 Adım: Gradio'da bir profil seç, silme onay checkbox'ını işaretle ve `Seçili profili sil` butonuna bas.
 
 Beklenen sonuç: `profiles/<profile_slug>/` klasörü silinir, dropdown güncellenir, seçim temizlenir ve `profiles/.gitkeep` dosyası korunur. Onay checkbox'ı işaretli değilse silme yapılmaz.
 
-## 16. Varsayılan referans ses testi
+## 17. Varsayılan referans ses testi
 
 Adım: Profil seçmeden ve harici ses yüklemeden kısa bir metinle üretim denemesi yap.
 
 Beklenen sonuç: Sistem varsayılan `samples/my_voice.wav` referansını kullanmaya çalışır. Dosya yoksa kullanıcıya anlaşılır hata gösterilir.
 
-## 17. Harici referans ses yükleme testi
+## 18. Harici referans ses yükleme testi
 
 Adım: Profil seçmeden Gradio üzerinden açık izinli bir referans ses yükle ve metin seslendir.
 
 Beklenen sonuç: Yüklenen referans ses ön işlenir ve üretimde kullanılır.
 
-## 18. İzin checkbox testi
+## 19. İzin checkbox testi
 
 Adım: İzin checkbox'ını işaretlemeden üretim veya profil oluşturma denemesi yap.
 
 Beklenen sonuç: İşlem başlamaz ve kullanıcıdan ses üzerinde hakkı veya açık izni olduğunu onaylaması istenir.
 
-## 19. Boş metin testi
+## 20. Boş metin testi
 
 Adım: Metin alanını boş bırakıp ses üretmeyi dene.
 
 Beklenen sonuç: Ses üretimi başlamaz ve boş metin için anlaşılır uyarı verilir.
 
-## 20. Kalite raporu testi
+## 21. Kalite raporu testi
 
 Adım: Profil oluşturma veya ses üretimi sonrasında kalite raporu alanını kontrol et.
 
 Beklenen sonuç: Ham ve/veya ön işlenmiş referans için `GOOD`, `WARNING` veya `BAD` sonucu görünür. Rapor teknik sinyal verir; nihai kalite dinlenerek kontrol edilir.
 
-## 21. Çıktı dosyaları testi
+## 22. Çıktı dosyaları testi
 
 Adım: Üretimden sonra local çıktı klasörlerini kontrol et.
 
 Beklenen sonuç: Gradio çıktıları `outputs/gradio_outputs/`, kalite raporları `outputs/reports/`, ön işlenmiş referanslar `outputs/preprocessed_references/` altında tutulur.
 
-## 22. GitHub'a gitmemesi gereken dosyalar kontrolü
+## 23. GitHub'a gitmemesi gereken dosyalar kontrolü
 
 Adım: GitHub Desktop değişiklik listesini kontrol et.
 

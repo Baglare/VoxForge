@@ -4,6 +4,8 @@ param(
 
     [int]$MaxSteps = 300,
 
+    [int]$Epochs = 1,
+
     [int]$BatchSize = 2,
 
     [int]$GradAccum = 8,
@@ -124,6 +126,7 @@ Write-Host "Kullanilacak FFmpeg yolu: $FfmpegExe"
 Write-Host "Kullanilacak FFprobe yolu: $FfprobeExe"
 Write-Host "Experiment yolu: $Experiment"
 Write-Host "Max steps: $MaxSteps"
+Write-Host "Epoch fallback: $Epochs"
 Write-Host "Batch size: $BatchSize"
 Write-Host "Grad accumulation: $GradAccum"
 Write-Host "Dry run: $DryRun"
@@ -136,6 +139,7 @@ $PythonArgs = @(
     $TrainScript,
     "--experiment", $Experiment,
     "--max-steps", $MaxSteps,
+    "--epochs", $Epochs,
     "--batch-size", $BatchSize,
     "--grad-accum", $GradAccum
 )
