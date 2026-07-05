@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from evaluate_xtts_finetuned_checkpoint import (
+    CHUNK_MAX_CHARS,
     PROJECT_ROOT,
     TRAINING_OUTPUT_DIR_NAME,
     EvaluationError,
@@ -21,6 +22,11 @@ from evaluate_xtts_finetuned_checkpoint import (
     resolve_speaker_wav,
     run_xtts_generation,
 )
+
+try:
+    from text_chunking_utils import split_text_for_tts, summarize_chunks
+except ImportError:
+    from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
 
 
 REPORT_JSON_PATH = PROJECT_ROOT / "outputs" / "reports" / "finetuned_matrix_report.json"
@@ -173,6 +179,7 @@ def build_report(
     variants: list[dict[str, Any]],
     success_count: int,
     errors: list[dict[str, str]],
+    chunking_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
     tested_variants = []
     for variant in variants:
@@ -185,11 +192,26 @@ def build_report(
             }
         )
 
+    text_chunking = []
+    for index, sentence in enumerate(TEST_SENTENCES, start=1):
+        chunk_summary = summarize_chunks(split_text_for_tts(sentence, max_chars=CHUNK_MAX_CHARS))
+        text_chunking.append(
+            {
+                "test": f"test_{index:02d}",
+                "text": sentence,
+                **chunk_summary,
+            }
+        )
+
     return {
         "experiment": str(experiment_path),
         "speaker_wav": str(speaker_wav) if speaker_wav else None,
         "tested_variants": tested_variants,
         "test_sentences": TEST_SENTENCES,
+        "chunking_used": any(item["chunking_used"] for item in text_chunking),
+        "chunked_test_count": sum(1 for item in text_chunking if item["chunking_used"]),
+        "chunks": text_chunking,
+        "chunking_results": chunking_results,
         "output_root": str(output_root),
         "success_count": success_count,
         "error_count": len(errors),
@@ -255,6 +277,13 @@ def write_markdown_report(report: dict[str, Any]) -> None:
                 f"- `{error.get('variant', '')}` `{error.get('test', '')}`: {error.get('message', '')}"
             )
 
+    lines.extend(["", "## Chunking", ""])
+    lines.append(f"- Chunking kullanildi mi: {report['chunking_used']}")
+    lines.append(f"- Chunking gereken test sayisi: {report['chunked_test_count']}")
+    for item in report["chunks"]:
+        if item["chunking_used"]:
+            lines.append(f"- `{item['test']}`: {item['chunk_count']} parca")
+
     REPORT_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_MD_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Markdown rapor yazildi: {REPORT_MD_PATH}")
@@ -273,6 +302,7 @@ def main(argv: list[str]) -> int:
     success_count = 0
     variants: list[dict[str, Any]] = []
     speaker_wav: Path | None = None
+    chunking_results: list[dict[str, Any]] = []
 
     try:
         print("VoxForge XTTS checkpoint matrix evaluation")
@@ -304,7 +334,7 @@ def main(argv: list[str]) -> int:
                 output_path = variant_dir / f"test_{index:02d}.wav"
                 try:
                     print(f"[{variant_name}] test_{index:02d} uretiliyor...")
-                    run_xtts_generation(
+                    chunk_summary = run_xtts_generation(
                         variant_name,
                         config_class,
                         model_class,
@@ -313,6 +343,13 @@ def main(argv: list[str]) -> int:
                         speaker_wav,
                         sentence,
                         output_path,
+                    )
+                    chunking_results.append(
+                        {
+                            "variant": variant_name,
+                            "test": f"test_{index:02d}",
+                            **chunk_summary,
+                        }
                     )
                     print(f"Ses dosyasi: {output_path}")
                     success_count += 1
@@ -338,6 +375,7 @@ def main(argv: list[str]) -> int:
             variants=variants,
             success_count=success_count,
             errors=errors,
+            chunking_results=chunking_results,
         )
         write_reports(report)
 
@@ -356,6 +394,7 @@ def main(argv: list[str]) -> int:
             variants=variants,
             success_count=success_count,
             errors=errors,
+            chunking_results=chunking_results,
         )
         write_reports(report)
         print(f"HATA: {exc}", file=sys.stderr)
@@ -370,6 +409,7 @@ def main(argv: list[str]) -> int:
             variants=variants,
             success_count=success_count,
             errors=errors,
+            chunking_results=chunking_results,
         )
         write_reports(report)
         print(f"HATA: {message}", file=sys.stderr)

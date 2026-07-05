@@ -36,6 +36,7 @@ Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
 - Fine-tuned checkpoint kalitesini birden fazla checkpoint ve Türkçe test cümlesiyle karşılaştıran matrix evaluation akışı vardır.
 - Fine-tuned matrix çıktıları için manuel dinleme scorecard raporu oluşturma akışı vardır.
 - Fine-tuned checkpointlerde görülebilecek erken kesilme riskini inference parametreleriyle karşılaştıran param sweep akışı vardır.
+- Türkçe XTTS karakter sınırı aşılırsa eval scriptleri uzun metni güvenli parçalara bölüp final WAV olarak birleştirir.
 
 Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
 
@@ -60,6 +61,7 @@ Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesa
 - Çoklu checkpoint matrix evaluation runner scripti
 - Manuel human evaluation scorecard runner scripti
 - Erken kesilme / inference ayarı param sweep runner scripti
+- Uzun Türkçe metinler için güvenli text chunking ve WAV birleştirme yardımcıları
 - Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
 - Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
 
@@ -103,6 +105,8 @@ VoxForge/
 |   |-- evaluate_xtts_checkpoint_matrix.py
 |   |-- create_human_eval_report.py
 |   |-- evaluate_xtts_inference_params.py
+|   |-- text_chunking_utils.py
+|   |-- audio_concat_utils.py
 |   |-- generate_recording_plan.py
 |   |-- build_metadata_from_recording_plan.py
 |   |-- smoke_check.py
@@ -494,6 +498,8 @@ Checkpoint matrix karşılaştırması, `base`, `best_model.pth`, varsa `best_mo
 Manuel kalite değerlendirme scorecard akışı, matrix klasörleri dinlendikten sonra verilen 1-5 puanları `outputs/reports/human_eval_scorecard.csv`, `outputs/reports/human_eval_summary.json` ve `outputs/reports/human_eval_summary.md` dosyalarına yazar. Bu otomatik kalite ölçümü değildir; ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır.
 
 Erken kesilme / inference ayarı testi, `checkpoint_71` veya `best_model` gibi seçilen bir varyantı `default`, `conservative`, `stable` ve `longer_attempt` parametre setleriyle dener. Bu akış kalite garantisi vermez; cümlenin erken kesilip kesilmediğini anlamak için base ve fine-tuned çıktılar karşılaştırmalı dinlenmelidir. Daha fazla training başlatmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
+
+Uzun Türkçe metinlerde XTTS karakter sınırı aşılırsa eval scriptleri metni 220 karakteri aşmayan güvenli parçalara böler, her parçayı ayrı üretir ve FFmpeg ile tek final WAV olarak birleştirir. Chunking ses kalitesini garanti etmez; ama uzun metnin sessizce kırpılmasını azaltır. Parçalar birleştirildiği için cümleler arası küçük geçiş farkları duyulabilir.
 
 Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
 

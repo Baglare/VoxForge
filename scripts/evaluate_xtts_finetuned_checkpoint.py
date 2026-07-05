@@ -13,6 +13,13 @@ import wave
 from pathlib import Path
 from typing import Any
 
+try:
+    from audio_concat_utils import concatenate_wavs
+    from text_chunking_utils import split_text_for_tts, summarize_chunks
+except ImportError:
+    from scripts.audio_concat_utils import concatenate_wavs
+    from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR_NAME = "checkpoints"
@@ -26,6 +33,7 @@ DEFAULT_TEXT = (
     "Merhaba, bu VoxForge fine-tuning denemesinden sonra oluşturulan ilk test sesidir."
 )
 LANGUAGE = "tr"
+CHUNK_MAX_CHARS = 220
 REQUIRED_BASE_FILES = (
     "config.json",
     "vocab.json",
@@ -512,6 +520,58 @@ def save_wav_from_synthesis(synth_output: Any, output_path: Path, sample_rate: i
         wav_file.writeframes(bytes(frames))
 
 
+def chunk_output_dir(output_path: Path) -> Path:
+    return output_path.parent / "chunks" / output_path.stem
+
+
+def synthesize_to_wav_file(
+    model: Any,
+    config: Any,
+    text: str,
+    speaker_wav: Path,
+    output_path: Path,
+) -> None:
+    synth_output = synthesize(model, config, text=text, speaker_wav=speaker_wav)
+    sample_rate = output_sample_rate(config, synth_output)
+    save_wav_from_synthesis(synth_output, output_path, sample_rate=sample_rate)
+
+
+def synthesize_text_with_chunking(
+    label: str,
+    model: Any,
+    config: Any,
+    text: str,
+    speaker_wav: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    chunks = split_text_for_tts(text, max_chars=CHUNK_MAX_CHARS)
+    chunk_summary = summarize_chunks(chunks)
+
+    if not chunks:
+        raise EvaluationError("TTS icin bos metin uretildi.")
+
+    if len(chunks) == 1:
+        synthesize_to_wav_file(model, config, chunks[0], speaker_wav, output_path)
+        return chunk_summary
+
+    chunk_dir = chunk_output_dir(output_path)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_paths: list[Path] = []
+    print(f"{label} chunking kullaniliyor: {len(chunks)} parca")
+
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_path = chunk_dir / f"chunk_{index:02d}.wav"
+        print(f"{label} chunk_{index:02d}: {len(chunk)} karakter")
+        synthesize_to_wav_file(model, config, chunk, speaker_wav, chunk_path)
+        chunk_paths.append(chunk_path)
+
+    ok, message = concatenate_wavs(chunk_paths, output_path)
+    if not ok:
+        raise EvaluationError(message)
+    print(f"{label} chunk birlestirme OK: {message}")
+    return chunk_summary
+
+
 def run_xtts_generation(
     label: str,
     config_class: Any,
@@ -521,7 +581,7 @@ def run_xtts_generation(
     speaker_wav: Path,
     text: str,
     output_path: Path,
-) -> None:
+) -> dict[str, Any]:
     print(f"{label} inference baslatiliyor.")
     print(f"{label} checkpoint: {checkpoint_path}")
     config = load_config(config_class, base_files["config.json"])
@@ -529,10 +589,16 @@ def run_xtts_generation(
     model = init_model(model_class, config)
     load_model_checkpoint(model, config, base_files, checkpoint_path, label)
     move_model_to_device(model)
-    synth_output = synthesize(model, config, text=text, speaker_wav=speaker_wav)
-    sample_rate = output_sample_rate(config, synth_output)
-    save_wav_from_synthesis(synth_output, output_path, sample_rate=sample_rate)
+    chunk_summary = synthesize_text_with_chunking(
+        label=label,
+        model=model,
+        config=config,
+        text=text,
+        speaker_wav=speaker_wav,
+        output_path=output_path,
+    )
     print(f"{label} output yazildi: {output_path}")
+    return chunk_summary
 
 
 def initial_report(
@@ -541,11 +607,15 @@ def initial_report(
     speaker_wav: Path | None,
     text: str,
 ) -> dict[str, Any]:
+    chunk_summary = summarize_chunks(split_text_for_tts(text, max_chars=CHUNK_MAX_CHARS))
     return {
         "experiment": str(experiment_path),
         "selected_checkpoint": str(selected_checkpoint) if selected_checkpoint else None,
         "speaker_wav": str(speaker_wav) if speaker_wav else None,
         "text": text,
+        "chunking_used": chunk_summary["chunking_used"],
+        "chunk_count": chunk_summary["chunk_count"],
+        "chunks": chunk_summary["chunks"],
         "base_output_path": str(BASE_OUTPUT_PATH),
         "finetuned_output_path": str(FINETUNED_OUTPUT_PATH),
         "success": False,
@@ -614,7 +684,7 @@ def main(argv: list[str]) -> int:
         config_class, model_class = import_xtts_api()
 
         try:
-            run_xtts_generation(
+            base_chunk_summary = run_xtts_generation(
                 "base",
                 config_class,
                 model_class,
@@ -624,13 +694,14 @@ def main(argv: list[str]) -> int:
                 text,
                 BASE_OUTPUT_PATH,
             )
+            report["base_chunking"] = base_chunk_summary
             report["notes"].append("Base XTTS output olusturuldu.")
         except Exception as exc:
             error = f"Base XTTS output basarisiz: {type(exc).__name__}: {exc}"
             print(f"UYARI: {error}", file=sys.stderr)
             report["errors"].append(error)
 
-        run_xtts_generation(
+        finetuned_chunk_summary = run_xtts_generation(
             "fine-tuned",
             config_class,
             model_class,
@@ -640,6 +711,7 @@ def main(argv: list[str]) -> int:
             text,
             FINETUNED_OUTPUT_PATH,
         )
+        report["finetuned_chunking"] = finetuned_chunk_summary
         report["success"] = True
         report["notes"].append("Fine-tuned checkpoint output olusturuldu.")
         write_report(report)

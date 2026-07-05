@@ -401,6 +401,34 @@ Dinleme sırası:
 
 Daha fazla training basmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
 
+## Uzun metinlerde chunking
+
+XTTS Türkçe inference tarafında uzun metinler için karakter sınırı uyarısı verebilir:
+
+```text
+The text length exceeds the character limit of 226 for language 'tr', this might cause truncated audio
+```
+
+Bu uyarı görüldüğünde uzun metin tek parça olarak verilirse ses erken kesilmiş gibi duyulabilir. VoxForge eval scriptleri bu riski azaltmak için 220 karakter üstündeki metinleri güvenli parçalara böler.
+
+Bölme önceliği:
+
+1. Cümle sonu: `.`, `?`, `!`
+2. Noktalı virgül veya iki nokta: `;`, `:`
+3. Virgül
+4. Boşluk
+5. Hiç uygun yer yoksa zorunlu kesim
+
+Chunking şu scriptlerde kullanılır:
+
+- `scripts/evaluate_xtts_finetuned_checkpoint.py`
+- `scripts/evaluate_xtts_checkpoint_matrix.py`
+- `scripts/evaluate_xtts_inference_params.py`
+
+Her chunk ayrı üretilir ve FFmpeg ile tek final WAV dosyasına birleştirilir. Raporlara `chunking_used`, `chunk_count` ve `chunks` alanları yazılır. Matrix ve param sweep raporlarında hangi test metninin kaç parçaya bölündüğü ayrıca görülebilir.
+
+Chunking ses kalitesini garanti etmez. Ama uzun metnin sessizce kırpılmasını azaltır. Parçalar sonradan birleştirildiği için cümleler arası küçük geçiş farkları, ton değişimleri veya nefes hissi farklılıkları duyulabilir.
+
 ## Training sonrası model nasıl değerlendirilecek?
 
 İlk inference scripti yalnızca teknik pipeline kontrolüdür. Kalite değerlendirmesi için şu kontroller ayrıca yapılmalıdır:

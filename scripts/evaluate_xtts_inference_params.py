@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from evaluate_xtts_finetuned_checkpoint import (
+    CHUNK_MAX_CHARS,
     PROJECT_ROOT,
     TRAINING_OUTPUT_DIR_NAME,
     EvaluationError,
@@ -31,6 +32,13 @@ from evaluate_xtts_finetuned_checkpoint import (
     save_wav_from_synthesis,
     signature_text,
 )
+
+try:
+    from audio_concat_utils import concatenate_wavs
+    from text_chunking_utils import split_text_for_tts, summarize_chunks
+except ImportError:
+    from scripts.audio_concat_utils import concatenate_wavs
+    from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
 
 
 LANGUAGE = "tr"
@@ -327,20 +335,51 @@ def run_single_output(
     output_path: Path,
     params: dict[str, Any],
     errors: list[dict[str, str]],
-) -> tuple[float | None, str]:
-    synth_output = synthesize_with_params(
-        model=model,
-        config=config,
-        text=text,
-        speaker_wav=speaker_wav,
-        params=params,
-    )
-    sample_rate = output_sample_rate(config, synth_output)
-    save_wav_from_synthesis(synth_output, output_path, sample_rate=sample_rate)
+) -> tuple[float | None, str, dict[str, Any]]:
+    chunks = split_text_for_tts(text, max_chars=CHUNK_MAX_CHARS)
+    chunk_summary = summarize_chunks(chunks)
+    if not chunks:
+        raise EvaluationError("TTS icin bos metin uretildi.")
+
+    if len(chunks) == 1:
+        synth_output = synthesize_with_params(
+            model=model,
+            config=config,
+            text=chunks[0],
+            speaker_wav=speaker_wav,
+            params=params,
+        )
+        sample_rate = output_sample_rate(config, synth_output)
+        save_wav_from_synthesis(synth_output, output_path, sample_rate=sample_rate)
+    else:
+        chunk_dir = output_path.parent / "chunks" / output_path.stem
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        chunk_paths: list[Path] = []
+        print(f"{label} chunking kullaniliyor: {len(chunks)} parca")
+
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_path = chunk_dir / f"chunk_{index:02d}.wav"
+            print(f"{label} chunk_{index:02d}: {len(chunk)} karakter")
+            synth_output = synthesize_with_params(
+                model=model,
+                config=config,
+                text=chunk,
+                speaker_wav=speaker_wav,
+                params=params,
+            )
+            sample_rate = output_sample_rate(config, synth_output)
+            save_wav_from_synthesis(synth_output, chunk_path, sample_rate=sample_rate)
+            chunk_paths.append(chunk_path)
+
+        ok, message = concatenate_wavs(chunk_paths, output_path)
+        if not ok:
+            raise EvaluationError(message)
+        print(f"{label} chunk birlestirme OK: {message}")
+
     duration, duration_source = ffprobe_duration_seconds(output_path, errors)
     print(f"{label} output: {output_path}")
     print(f"{label} duration_seconds: {duration}")
-    return duration, duration_source
+    return duration, duration_source, chunk_summary
 
 
 def output_entry_key(variant: str, param_set: str, test_id: str) -> str:
@@ -363,6 +402,8 @@ def write_reports(report: dict[str, Any]) -> None:
         f"- Selected checkpoint: `{report['selected_checkpoint']}`",
         f"- Speaker wav: `{report['speaker_wav']}`",
         f"- Output root: `{report['output_root']}`",
+        f"- Chunking used: {report['chunking_used']}",
+        f"- Max chunk count: {report['chunk_count']}",
         f"- Hata sayisi: {len(report['errors'])}",
         "",
         "## Dinleme yonergesi",
@@ -386,8 +427,8 @@ def write_reports(report: dict[str, Any]) -> None:
             "",
             "## Ciktilar",
             "",
-            "| variant | param_set | test | chars | duration | flags | output |",
-            "|---|---|---|---:|---:|---|---|",
+            "| variant | param_set | test | chars | chunks | duration | flags | output |",
+            "|---|---|---|---:|---:|---:|---|---|",
         ]
     )
     for item in report["outputs"]:
@@ -396,8 +437,14 @@ def write_reports(report: dict[str, Any]) -> None:
         flags = ", ".join(item["cutoff_flags"]) if item["cutoff_flags"] else "-"
         lines.append(
             f"| {item['variant']} | {item['param_set']} | {item['test_id']} | "
-            f"{item['char_count']} | {duration_text} | {flags} | `{item['output_path']}` |"
+            f"{item['char_count']} | {item.get('chunk_count', 1)} | {duration_text} | "
+            f"{flags} | `{item['output_path']}` |"
         )
+
+    lines.extend(["", "## Chunking", ""])
+    for item in report["test_texts"]:
+        if item["chunking_used"]:
+            lines.append(f"- `{item['test_id']}`: {item['chunk_count']} parca")
 
     if report["errors"]:
         lines.extend(["", "## Hatalar", ""])
@@ -428,6 +475,18 @@ def initial_report(
     outputs: list[dict[str, Any]],
     errors: list[dict[str, str]],
 ) -> dict[str, Any]:
+    test_texts = []
+    for index, text in enumerate(TEST_TEXTS, start=1):
+        chunk_summary = summarize_chunks(split_text_for_tts(text, max_chars=CHUNK_MAX_CHARS))
+        test_texts.append(
+            {
+                "test_id": f"test_{index:02d}",
+                "text": text,
+                "char_count": len(text),
+                **chunk_summary,
+            }
+        )
+
     duration_seconds = {
         output_entry_key(item["variant"], item["param_set"], item["test_id"]): item["duration_seconds"]
         for item in outputs
@@ -448,10 +507,9 @@ def initial_report(
         "selected_checkpoint": str(selected_checkpoint) if selected_checkpoint else None,
         "speaker_wav": str(speaker_wav) if speaker_wav else None,
         "param_sets": PARAM_SETS,
-        "test_texts": [
-            {"test_id": f"test_{index:02d}", "text": text, "char_count": len(text)}
-            for index, text in enumerate(TEST_TEXTS, start=1)
-        ],
+        "test_texts": test_texts,
+        "chunking_used": any(item["chunking_used"] for item in test_texts),
+        "chunk_count": max((item["chunk_count"] for item in test_texts), default=0),
         "output_root": str(output_root),
         "outputs": outputs,
         "duration_seconds": duration_seconds,
@@ -487,7 +545,7 @@ def run_variant_sweep(
             label = f"{variant}/{param_set}/{test_id}"
             try:
                 print(f"{label} uretiliyor...")
-                duration, duration_source = run_single_output(
+                duration, duration_source, chunk_summary = run_single_output(
                     label=label,
                     model=model,
                     config=config,
@@ -513,6 +571,9 @@ def run_variant_sweep(
                         "duration_seconds": duration,
                         "duration_source": duration_source,
                         "base_duration_seconds": base_durations.get(test_id),
+                        "chunking_used": chunk_summary["chunking_used"],
+                        "chunk_count": chunk_summary["chunk_count"],
+                        "chunks": chunk_summary["chunks"],
                         "cutoff_flags": flags,
                     }
                 )
@@ -559,7 +620,7 @@ def run_base_reference(
         label = f"base/default/{test_id}"
         try:
             print(f"{label} referans uretiliyor...")
-            duration, duration_source = run_single_output(
+            duration, duration_source, chunk_summary = run_single_output(
                 label=label,
                 model=model,
                 config=config,
@@ -581,6 +642,9 @@ def run_base_reference(
                     "duration_seconds": duration,
                     "duration_source": duration_source,
                     "base_duration_seconds": duration,
+                    "chunking_used": chunk_summary["chunking_used"],
+                    "chunk_count": chunk_summary["chunk_count"],
+                    "chunks": chunk_summary["chunks"],
                     "cutoff_flags": cutoff_flags_for_output(text, duration, None),
                 }
             )
