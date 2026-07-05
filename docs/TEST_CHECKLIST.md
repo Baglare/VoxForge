@@ -505,6 +505,33 @@ Kontrol:
 - JSON raporda `chunking_used: true`, `chunk_count` ve `chunks` alanları görünür.
 - Chunking kırpılma riskini azaltır; ses kalitesini garanti etmez.
 
+### 6.6 Blind A/B experiment comparison testi
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_compare_finetune_experiments.ps1 -ExpA .\experiments\baglare-xtts-exp01 -ExpB .\experiments\baglare-xtts-exp02
+```
+
+Opsiyonel referans ses:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_compare_finetune_experiments.ps1 -ExpA .\experiments\baglare-xtts-exp01 -ExpB .\experiments\baglare-xtts-exp02 -SpeakerWav .\profiles\baglare\preprocessed_reference.wav
+```
+
+Kontrol:
+
+- Terminalde base, exp_a ve exp_b için kullanılan checkpoint yolları görünür.
+- Çıktılar `outputs/finetuned_eval/experiment_compare/<timestamp>/` altında `base/`, `exp_a/`, `exp_b/` ve `blind/` klasörlerine yazılır.
+- `outputs/reports/experiment_compare_report.json` oluşur.
+- `outputs/reports/experiment_compare_report.md` oluşur.
+- `outputs/reports/experiment_blind_key.json` oluşur.
+- `outputs/reports/experiment_blind_scorecard.csv` oluşur.
+- Blind klasördeki A/B dosyaları önce experiment bilgisi bilinmeden dinlenir.
+- Scorecard CSV doldurulduktan sonra blind key açılır.
+- Bu test otomatik kalite ölçümü değildir; beklenti yanlılığını azaltır.
+- Objektif metrikler yalnızca yardımcı teknik sinyaldir.
+
 ## 7. Yerel dosya ve GitHub kontrolü
 
 GitHub Desktop'ta commit öncesi kontrol:

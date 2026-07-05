@@ -322,7 +322,59 @@ Puanlama 1-5 aralığındadır. Bu otomatik kalite ölçümü değildir; sonuçl
 
 Mevcut değerlendirme yorumu: fine-tuning pipeline teknik olarak çalışmıştır, ancak kalite artışı sınırlıdır. Bazı checkpointlerde erken kesilme veya robotiklik duyulabilir.
 
-## 12. Inference parameter sweep
+## 12. Blind experiment comparison
+
+Exp01 ve Exp02 gibi iki fine-tuning experimenti beklenti yanlılığını azaltarak karşılaştırmak için blind A/B comparison aracı kullanılabilir. Bu araç yeni training başlatmaz, model eğitmez ve otomatik kalite kararı vermez.
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_compare_finetune_experiments.ps1 -ExpA .\experiments\baglare-xtts-exp01 -ExpB .\experiments\baglare-xtts-exp02
+```
+
+Opsiyonel speaker wav:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_compare_finetune_experiments.ps1 -ExpA .\experiments\baglare-xtts-exp01 -ExpB .\experiments\baglare-xtts-exp02 -SpeakerWav .\profiles\baglare\preprocessed_reference.wav
+```
+
+Script, her experiment için checkpointi şu öncelikle seçer:
+
+1. `best_model.pth`
+2. En yeni `best_model_*.pth`
+3. En yüksek numaralı `checkpoint_*.pth`
+
+Base XTTS de karşılaştırmaya dahil edilir. Aynı speaker wav ve aynı sabit Türkçe test metinleri kullanılır. Uzun metinlerde mevcut chunking yardımcılarıyla WAV parçaları birleştirilir.
+
+Çıktılar:
+
+```text
+outputs/finetuned_eval/experiment_compare/<timestamp>/
+|-- base/
+|-- exp_a/
+|-- exp_b/
+`-- blind/
+```
+
+Rapor dosyaları:
+
+```text
+outputs/reports/experiment_compare_report.json
+outputs/reports/experiment_compare_report.md
+outputs/reports/experiment_blind_key.json
+outputs/reports/experiment_blind_scorecard.csv
+```
+
+Dinleme yönergesi:
+
+1. Önce `blind/` klasöründeki A/B dosyalarını dinleyin.
+2. Hangi dosyanın hangi experiment olduğunu bilmeden `experiment_blind_scorecard.csv` dosyasını doldurun.
+3. Puanlama bittikten sonra `experiment_blind_key.json` ile A/B eşleşmesini açın.
+4. Nihai yorum blind puanlara göre yapılmalıdır.
+
+Objektif metrikler süre, dosya boyutu, ses seviyesi ve clipping riski gibi yardımcı teknik sinyallerdir. Bu metrikler tek başına kalite kararı değildir.
+
+## 13. Inference parameter sweep
 
 Bazı checkpointler daha iyi puan alıp uzun cümlelerde erken kesilme gösterebilir. Bu durumda yeni training başlatmadan önce inference parametreleri karşılaştırılabilir.
 
@@ -355,7 +407,7 @@ outputs/reports/inference_param_sweep_report.md
 
 Raporlarda `likely_cutoff` ve `possibly_cutoff` gibi işaretler görülebilir. Bu işaretler kalite garantisi değildir; erken kesilme karşılaştırmalı dinleme ile doğrulanmalıdır.
 
-## 13. Uzun metinlerde chunking
+## 14. Uzun metinlerde chunking
 
 XTTS Türkçe inference tarafında uzun metinler için karakter sınırı uyarısı verebilir:
 
@@ -370,12 +422,13 @@ Chunking kullanılan scriptler:
 - `scripts/evaluate_xtts_finetuned_checkpoint.py`
 - `scripts/evaluate_xtts_checkpoint_matrix.py`
 - `scripts/evaluate_xtts_inference_params.py`
+- `scripts/compare_finetune_experiments.py`
 
 Raporlarda `chunking_used`, `chunk_count` ve `chunks` alanları yer alır.
 
 Chunking ses kalitesini garanti etmez. Uzun metnin sessizce kırpılmasını azaltır; ancak parça geçişlerinde küçük ton veya ritim farkları duyulabilir.
 
-## 14. Çıktı klasörleri ve GitHub sınırı
+## 15. Çıktı klasörleri ve GitHub sınırı
 
 Deney sırasında oluşan gerçek dosyalar local kalmalıdır:
 
@@ -390,7 +443,7 @@ outputs/reports/
 
 Bu klasörlerde WAV dosyaları, checkpointler, model çıktıları, trainer logları ve değerlendirme raporları bulunabilir. GitHub'a eklenmemelidir.
 
-## 15. Sonuç nasıl yorumlanmalı?
+## 16. Sonuç nasıl yorumlanmalı?
 
 Mevcut deney şu teknik sonucu gösterir:
 

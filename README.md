@@ -63,6 +63,7 @@ VoxForge aşağıdaki teknik alanları kapsar:
 - Fine-tuned checkpoint inference
 - Matrix evaluation ve manuel human scorecard
 - Inference parameter sweep
+- Exp01/Exp02 gibi deneyleri beklenti yanlılığını azaltarak dinlemek için blind A/B experiment comparison
 - Uzun metinlerde chunking ve final WAV birleştirme
 - Yerel ses, model, dataset ve çıktı dosyalarını Git dışında tutan `.gitignore`
 
@@ -198,6 +199,7 @@ VoxForge/
 |   |-- evaluate_xtts_checkpoint_matrix.py
 |   |-- create_human_eval_report.py
 |   |-- evaluate_xtts_inference_params.py
+|   |-- compare_finetune_experiments.py
 |   |-- text_chunking_utils.py
 |   |-- audio_concat_utils.py
 |   |-- prepare_reference_audio.py
@@ -291,9 +293,12 @@ powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Expe
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
 powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
+powershell -ExecutionPolicy Bypass -File .\run_compare_finetune_experiments.ps1 -ExpA .\experiments\baglare-xtts-exp01 -ExpB .\experiments\baglare-xtts-exp02
 ```
 
 Gradio üretim raporları `outputs/reports/gradio_quality_reports/` altında tutulur. Raporlarda kullanılan inference preset, A/B durumu, post-processing seçimi, chunking bilgisi ve çıktı yolları yer alır.
+
+Blind experiment comparison, exp_a ve exp_b çıktılarını rastgele A/B dosya adlarıyla kopyalar ve kullanıcıya doldurulacak scorecard CSV üretir. Bu otomatik kalite ölçümü değildir; objektif metrikler yalnızca yardımcı sinyaldir ve nihai karar blind dinleme puanlarıyla verilmelidir.
 
 ## 13. Yerel veri, gizlilik ve etik kullanım
 
