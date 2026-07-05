@@ -91,6 +91,21 @@ XTTS fine-tuning dry-run completed successfully
 
 Dry-run modeli eğitmez, `load_tts_samples` çalıştırmaz ve training checkpoint üretmez. Bu nedenle dry-run başarısı training başarısı değildir.
 
+## 4.1 Gradio hazırlık paneli
+
+Gradio arayüzünde `Experimental Fine-tuning Hazırlığı` bölümü bulunur. Bu panel gerçek training başlatmaz; yalnızca hazırlık ve dry-run kontrollerini arayüzden çalıştırır.
+
+Paneldeki kontroller:
+
+- Dataset dropdown: `datasets/` altında `metadata.csv` ve `wavs/` klasörü bulunan datasetleri listeler.
+- Run name: export edilecek veya dry-run için kullanılacak experiment adını belirler.
+- Max steps, epochs, batch size, grad accumulation ve save step alanları: sadece dry-run komutuna aktarılır.
+- `Readiness raporu çalıştır`: seçili dataset için readiness özetini üretir.
+- `Experiment export et`: seçili dataset ve run name ile experiment klasörü oluşturur; mevcut experiment üzerine yazmaz.
+- `Training dry-run çalıştır`: `scripts/train_xtts_gpt_experiment.py` dosyasını mutlaka `--dry-run` ile çağırır.
+
+Bu panelde `Training başlat` benzeri bir buton yoktur. Dry-run sonucu; CUDA durumu, checkpoint kontrolü, dataset kontrolü, import durumu, `limit_mode` ve config oluşturma sonucunu özetler. Dry-run eğitim değildir, checkpoint üretmez ve model kalitesi hakkında iddia oluşturmaz.
+
 ## 5. Gerçek training
 
 Training yalnızca kullanıcı aşağıdaki komutu çalıştırırsa başlar:

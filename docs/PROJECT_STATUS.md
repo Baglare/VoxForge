@@ -2,7 +2,7 @@
 
 ## 1. Mevcut sürüm özeti
 
-VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Mevcut sürüm; XTTS-v2 ile reference-based ses üretimi, local Gradio demo, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama, Gradio üretim kontrolleri ve deneysel fine-tuning değerlendirme akışlarını içerir.
+VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Mevcut sürüm; XTTS-v2 ile reference-based ses üretimi, local Gradio demo, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama, Gradio üretim kontrolleri, experimental fine-tuning hazırlık paneli ve deneysel fine-tuning değerlendirme akışlarını içerir.
 
 Proje local-first çalışır. Ses kayıtları, profiller, datasetler, deney klasörleri, checkpointler ve üretilen çıktılar kullanıcının makinesinde kalır. GitHub üzerinde yalnızca kaynak kod, runner dosyaları, dokümantasyon ve boş klasör niyetini koruyan `.gitkeep` dosyaları tutulmalıdır.
 
@@ -18,6 +18,8 @@ Proje local-first çalışır. Ses kayıtları, profiller, datasetler, deney kla
 - Gradio uzun metin chunking ve WAV birleştirme
 - Final çıktı için opsiyonel normalize
 - A/B üretim modu
+- Gradio experimental fine-tuning hazırlık paneli
+- Gradio üzerinden readiness, experiment export ve training dry-run kontrolleri
 - Fine-tuning dataset iskeleti oluşturma
 - Kayıt planı üretimi
 - DONE kayıtlarından metadata oluşturma
@@ -71,6 +73,8 @@ Deneysel fine-tuning değerlendirme akışı:
 7. Human evaluation scorecard ile manuel dinleme sonuçları kaydedilir.
 8. Inference parameter sweep ile erken kesilme ve ayar etkisi incelenir.
 
+Gradio hazırlık paneli bu akışın güvenli hazırlık kısmını arayüzden çalıştırır. Panel dataset dropdown, run name, eğitim sınırı parametreleri, readiness raporu, experiment export ve training dry-run kontrolleri içerir. Gerçek training başlatmaz ve checkpoint üretmez.
+
 ## 4. Deneysel fine-tuning durumu
 
 Mevcut deneyde kullanılan dataset yaklaşık 7.45 dakika / 80 örnek düzeyindedir. Dataset teknik olarak geçerli kabul edilmiştir; ancak gerçek fine-tuning kalitesi için küçük bir veri miktarıdır.
@@ -110,6 +114,7 @@ Mevcut yorum:
 - Gradio preset, normalize ve A/B kontrolleri kalite garantisi vermez; üretim davranışını daha kontrollü karşılaştırmak için kullanılır.
 - Voice profile sistemi fine-tuning yapmaz.
 - Fine-tuning akışı deneysel düzeydedir.
+- Gradio fine-tuning hazırlık paneli yalnızca readiness, export ve dry-run içindir; gerçek training başlatmaz.
 - Yaklaşık 7.45 dakikalık dataset kalite için sınırlıdır.
 - Checkpoint üretimi teknik başarıdır; iyi ses kalitesi anlamına gelmez.
 - Uzun metin chunking kırpılma riskini azaltır, doğal geçiş garantisi vermez.

@@ -4,11 +4,14 @@
 from datetime import datetime
 from pathlib import Path
 import json
+import os
+import re
 import shutil
 import sys
 import subprocess
 from threading import Lock
 import traceback
+import unicodedata
 from typing import Any, Optional
 
 import gradio as gr
@@ -21,11 +24,18 @@ DEFAULT_REFERENCE_AUDIO = PROJECT_ROOT / "samples" / "my_voice.wav"
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "gradio_outputs"
 PREPROCESSED_REFERENCE_DIR = PROJECT_ROOT / "outputs" / "preprocessed_references"
 GRADIO_QUALITY_REPORT_DIR = PROJECT_ROOT / "outputs" / "reports" / "gradio_quality_reports"
+REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
+DATASETS_DIR = PROJECT_ROOT / "datasets"
+EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 PROFILES_DIR = PROJECT_ROOT / "profiles"
 PROFILE_JSON_NAME = "profile.json"
 PROFILE_ORIGINAL_REFERENCE_NAME = "original_reference.wav"
 PROFILE_PREPROCESSED_REFERENCE_NAME = "preprocessed_reference.wav"
+DATASET_METADATA_NAME = "metadata.csv"
+DATASET_WAVS_DIR_NAME = "wavs"
+EXPERIMENT_MANIFEST_NAME = "experiment_manifest.json"
 NO_PROFILE_VALUE = ""
+NO_DATASET_VALUE = ""
 MAX_GRADIO_TTS_CHARS = 220
 INFERENCE_PRESET_DEFAULT = "Dengeli"
 INFERENCE_PRESET_STABLE = "Daha stabil"
@@ -689,6 +699,448 @@ def delete_selected_profile_from_gradio(
         status,
         gr.update(value=False),
     )
+
+
+class FineTuningPanelError(Exception):
+    """Fine-tuning hazirlik paneli icin sade kullanici hatasi."""
+
+
+def scan_finetune_datasets() -> dict[str, list[dict[str, Any]]]:
+    """datasets/ altindaki teknik olarak gecerli dataset klasorlerini listeler."""
+    valid_datasets: list[dict[str, Any]] = []
+    invalid_datasets: list[dict[str, Any]] = []
+
+    if not DATASETS_DIR.is_dir():
+        return {
+            "valid_datasets": valid_datasets,
+            "invalid_datasets": invalid_datasets,
+        }
+
+    for dataset_dir in sorted(DATASETS_DIR.iterdir(), key=lambda item: item.name.lower()):
+        if not dataset_dir.is_dir():
+            continue
+
+        issues = []
+        metadata_path = dataset_dir / DATASET_METADATA_NAME
+        wavs_dir = dataset_dir / DATASET_WAVS_DIR_NAME
+        if not metadata_path.is_file():
+            issues.append("metadata.csv bulunamadi.")
+        if not wavs_dir.is_dir():
+            issues.append("wavs/ klasoru bulunamadi.")
+
+        record = {
+            "dataset_slug": dataset_dir.name,
+            "dataset_path": dataset_dir,
+            "metadata_path": metadata_path,
+            "wavs_dir": wavs_dir,
+            "issues": issues,
+        }
+        if issues:
+            invalid_datasets.append(record)
+        else:
+            valid_datasets.append(record)
+
+    return {
+        "valid_datasets": valid_datasets,
+        "invalid_datasets": invalid_datasets,
+    }
+
+
+def build_dataset_dropdown_choices(
+    dataset_scan: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[tuple[str, str]]:
+    """Dataset dropdown seceneklerini olusturur."""
+    if dataset_scan is None:
+        dataset_scan = scan_finetune_datasets()
+
+    choices: list[tuple[str, str]] = [
+        ("Dataset seçilmedi", NO_DATASET_VALUE),
+    ]
+    for dataset in dataset_scan["valid_datasets"]:
+        choices.append((dataset["dataset_slug"], dataset["dataset_slug"]))
+    return choices
+
+
+def build_dataset_scan_status(dataset_scan: dict[str, list[dict[str, Any]]]) -> str:
+    """Dataset dropdown yaninda gosterilecek kisa durum metni."""
+    valid_count = len(dataset_scan["valid_datasets"])
+    invalid_count = len(dataset_scan["invalid_datasets"])
+    if valid_count == 0:
+        lines = ["Yerel fine-tuning dataset bulunamadı."]
+    else:
+        lines = [f"Geçerli dataset sayısı: {valid_count}"]
+
+    if invalid_count:
+        lines.append(f"Bozuk veya eksik dataset sayısı: {invalid_count}")
+        for dataset in dataset_scan["invalid_datasets"][:5]:
+            issues = ", ".join(dataset["issues"])
+            lines.append(f"- `{dataset['dataset_slug']}`: {issues}")
+
+    lines.append("Not: datasets/ ve experiments/ yerel klasörlerdir; GitHub'a eklenmez.")
+    return "\n".join(lines)
+
+
+def dataset_slug_to_dir(dataset_slug: str | None) -> Path:
+    """Dropdown degerinin datasets klasoru disina cikmadigini dogrular."""
+    if not dataset_slug or dataset_slug == NO_DATASET_VALUE:
+        raise FineTuningPanelError("Lütfen geçerli bir dataset seçin.")
+
+    dataset_dir = DATASETS_DIR / str(dataset_slug)
+    datasets_root = DATASETS_DIR.resolve()
+    resolved_dataset_dir = dataset_dir.resolve()
+    try:
+        resolved_dataset_dir.relative_to(datasets_root)
+    except ValueError as exc:
+        raise FineTuningPanelError("Geçersiz dataset yolu seçildi.") from exc
+
+    if not (resolved_dataset_dir / DATASET_METADATA_NAME).is_file():
+        raise FineTuningPanelError("Seçilen dataset içinde metadata.csv bulunamadı.")
+    if not (resolved_dataset_dir / DATASET_WAVS_DIR_NAME).is_dir():
+        raise FineTuningPanelError("Seçilen dataset içinde wavs/ klasörü bulunamadı.")
+
+    return resolved_dataset_dir
+
+
+def slugify_run_name(run_name: str) -> str:
+    """Export scriptiyle uyumlu experiment slug'i uretir."""
+    translation = str.maketrans(
+        {
+            "ç": "c",
+            "ğ": "g",
+            "ı": "i",
+            "ö": "o",
+            "ş": "s",
+            "ü": "u",
+            "Ç": "c",
+            "Ğ": "g",
+            "İ": "i",
+            "Ö": "o",
+            "Ş": "s",
+            "Ü": "u",
+        }
+    )
+    value = run_name.translate(translation)
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_text = ascii_text.lower().strip()
+    ascii_text = re.sub(r"[\s_]+", "-", ascii_text)
+    ascii_text = re.sub(r"[^a-z0-9-]", "", ascii_text)
+    ascii_text = re.sub(r"-{2,}", "-", ascii_text).strip("-")
+    if not ascii_text:
+        raise FineTuningPanelError("Run name güvenli bir experiment adına çevrilemedi.")
+    return ascii_text
+
+
+def experiment_path_from_run_name(run_name: str | None) -> Path:
+    """Run name degerinden yerel experiment klasor yolunu uretir."""
+    cleaned_run_name = (run_name or "").strip()
+    if not cleaned_run_name:
+        raise FineTuningPanelError("Lütfen run name girin.")
+
+    run_slug = slugify_run_name(cleaned_run_name)
+    experiment_path = (EXPERIMENTS_DIR / run_slug).resolve()
+    try:
+        experiment_path.relative_to(EXPERIMENTS_DIR.resolve())
+    except ValueError as exc:
+        raise FineTuningPanelError("Geçersiz experiment yolu üretildi.") from exc
+    return experiment_path
+
+
+def gradio_python_executable() -> Path:
+    """Panel scriptlerini Gradio'yu calistiran Python ile baslatir."""
+    return Path(sys.executable)
+
+
+def run_finetune_subprocess(
+    script_relative_path: str,
+    args: list[str],
+    timeout_seconds: int = 600,
+) -> subprocess.CompletedProcess[str]:
+    """Hazirlik scriptlerini traceback'i arayuze basmadan calistirir."""
+    script_path = PROJECT_ROOT / script_relative_path
+    command = [str(gradio_python_executable()), str(script_path), *args]
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    print("Gradio fine-tuning hazirlik komutu:")
+    print(subprocess.list2cmdline(command))
+    result = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=timeout_seconds,
+        env=env,
+    )
+    if result.stdout.strip():
+        print("STDOUT:")
+        print(result.stdout)
+    if result.stderr.strip():
+        print("STDERR:")
+        print(result.stderr)
+    return result
+
+
+def first_clean_error_line(result: subprocess.CompletedProcess[str]) -> str:
+    """Subprocess ciktisindan traceback gostermeden kisa hata satiri secer."""
+    combined = "\n".join([result.stderr or "", result.stdout or ""])
+    for line in combined.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("Traceback"):
+            continue
+        if stripped.startswith("File ") or stripped.startswith("  File "):
+            continue
+        return stripped
+    return "Teknik hata oluştu. Ayrıntı terminale yazıldı."
+
+
+def read_json_file(json_path: Path) -> dict[str, Any] | None:
+    """JSON rapor dosyasini bozuksa arayuzu dusurmeden okur."""
+    if not json_path.is_file():
+        return None
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def format_recommendations(items: Any) -> str:
+    """Oneri listesini Markdown maddelerine cevirir."""
+    if not isinstance(items, list) or not items:
+        return "- Yok"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def run_readiness_report_from_gradio(selected_dataset_slug: str | None) -> str:
+    """Seçili dataset icin readiness raporunu calistirir."""
+    try:
+        dataset_path = dataset_slug_to_dir(selected_dataset_slug)
+        result = run_finetune_subprocess(
+            "scripts/finetune_readiness_report.py",
+            ["--dataset", str(dataset_path)],
+            timeout_seconds=300,
+        )
+        report_path = REPORTS_DIR / "finetune_readiness_report.json"
+        markdown_path = REPORTS_DIR / "finetune_readiness_report.md"
+        report = read_json_file(report_path)
+        if report is None:
+            if result.returncode != 0:
+                return "HATA: Readiness raporu çalıştırılamadı.\n" + first_clean_error_line(result)
+            return "HATA: Readiness raporu üretildi ama JSON raporu okunamadı."
+
+        prefix = "Readiness raporu tamamlandı."
+        if result.returncode != 0 and report.get("readiness_level") == "NOT_READY":
+            prefix = "Readiness raporu tamamlandı; dataset hazır değil."
+        elif result.returncode != 0:
+            prefix = "Readiness raporu uyarıyla tamamlandı."
+
+        return "\n".join(
+            [
+                f"### {prefix}",
+                f"- Dataset: `{dataset_path}`",
+                f"- Hazırlık seviyesi: `{report.get('readiness_level', 'bilinmiyor')}`",
+                f"- Toplam örnek: {report.get('total_rows', 'bilinmiyor')}",
+                f"- Geçerli örnek: {report.get('valid_samples', 'bilinmiyor')}",
+                f"- Toplam dakika: {report.get('total_duration_minutes', 'bilinmiyor')}",
+                "",
+                "Öneriler:",
+                format_recommendations(report.get("recommendations")),
+                "",
+                f"JSON raporu: `{report_path}`",
+                f"Markdown raporu: `{markdown_path}`",
+            ]
+        )
+    except FineTuningPanelError as exc:
+        return f"HATA: {exc}"
+    except Exception:
+        print("Readiness raporu Gradio callback hatasi.")
+        traceback.print_exc()
+        return "HATA: Readiness raporu sırasında teknik bir sorun oluştu. Ayrıntı terminale yazıldı."
+
+
+def export_experiment_from_gradio(
+    selected_dataset_slug: str | None,
+    run_name: str | None,
+) -> str:
+    """Dataset export islemini gercek training baslatmadan calistirir."""
+    try:
+        dataset_path = dataset_slug_to_dir(selected_dataset_slug)
+        cleaned_run_name = (run_name or "").strip()
+        experiment_path = experiment_path_from_run_name(cleaned_run_name)
+        if experiment_path.exists():
+            suggestion = f"{cleaned_run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            return "\n".join(
+                [
+                    "HATA: Experiment klasörü zaten var; üzerine yazılmadı.",
+                    f"- Mevcut experiment: `{experiment_path}`",
+                    f"- Farklı run name önerisi: `{suggestion}`",
+                ]
+            )
+
+        result = run_finetune_subprocess(
+            "scripts/export_xtts_finetune_dataset.py",
+            ["--dataset", str(dataset_path), "--run-name", cleaned_run_name],
+            timeout_seconds=600,
+        )
+        if result.returncode != 0:
+            return "HATA: Experiment export başarısız oldu.\n" + first_clean_error_line(result)
+
+        manifest_path = experiment_path / EXPERIMENT_MANIFEST_NAME
+        manifest = read_json_file(manifest_path)
+        if manifest is None:
+            return "HATA: Export tamamlandı ancak experiment manifest okunamadı."
+
+        return "\n".join(
+            [
+                "### Experiment export tamamlandı.",
+                "Bu işlem model eğitimi çalıştırmadı.",
+                f"- Experiment path: `{experiment_path}`",
+                f"- Train sample count: {manifest.get('train_samples', 'bilinmiyor')}",
+                f"- Eval sample count: {manifest.get('eval_samples', 'bilinmiyor')}",
+                f"- Manifest path: `{manifest_path}`",
+                "- Not: Export edilen dataset ve experiment çıktıları GitHub'a eklenmez.",
+            ]
+        )
+    except FineTuningPanelError as exc:
+        return f"HATA: {exc}"
+    except Exception:
+        print("Experiment export Gradio callback hatasi.")
+        traceback.print_exc()
+        return "HATA: Experiment export sırasında teknik bir sorun oluştu. Ayrıntı terminale yazıldı."
+
+
+def positive_int(value: Any, label: str) -> int:
+    """Gradio Number degerini pozitif integer olarak dogrular."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise FineTuningPanelError(f"{label} sayısal olmalı.") from exc
+    if number <= 0:
+        raise FineTuningPanelError(f"{label} 0'dan büyük olmalı.")
+    return number
+
+
+def extract_stdout_value(output: str, prefix: str) -> str:
+    """Dry-run stdout icinden belirli bir satir degerini bulur."""
+    for line in output.splitlines():
+        if line.strip().startswith(prefix):
+            return line.split(":", 1)[1].strip() if ":" in line else line.strip()
+    return "bilinmiyor"
+
+
+def summarize_dry_run_output(output: str) -> dict[str, str]:
+    """Training dry-run ciktisini kullaniciya okunabilir ozetler."""
+    required_imports = [
+        "Import OK: GPTArgs",
+        "Import OK: GPTTrainer",
+        "Import OK: GPTTrainerConfig",
+        "Import OK: XttsAudioConfig",
+        "Import OK: Trainer, TrainerArgs",
+        "Import OK: BaseDatasetConfig",
+        "Import OK: load_tts_samples",
+    ]
+    missing_imports = [item for item in required_imports if item not in output]
+    checkpoint_missing = "Checkpoint eksik:" in output
+    checkpoint_ok = "Checkpoint OK:" in output and not checkpoint_missing
+    dataset_ok = "Dataset OK:" in output and "Train metadata OK:" in output
+    config_ok = "Dry-run config ve TrainerArgs olusturma OK." in output
+    limit_mode = extract_stdout_value(output, "limit_mode:")
+    if limit_mode == "bilinmiyor":
+        limit_mode = extract_stdout_value(output, "resolved limit_mode:")
+
+    return {
+        "cuda_available": extract_stdout_value(output, "CUDA available:"),
+        "checkpoint_ok": "evet" if checkpoint_ok else ("hayır" if checkpoint_missing else "bilinmiyor"),
+        "dataset_ok": "evet" if dataset_ok else "bilinmiyor",
+        "import_ok": "evet" if not missing_imports else f"eksik: {', '.join(missing_imports)}",
+        "limit_mode": limit_mode,
+        "config_ok": "evet" if config_ok else "hayır",
+    }
+
+
+def run_training_dry_run_from_gradio(
+    selected_dataset_slug: str | None,
+    run_name: str | None,
+    max_steps: Any,
+    epochs: Any,
+    batch_size: Any,
+    grad_accum: Any,
+    save_step: Any,
+) -> str:
+    """Experiment icin sadece dry-run calistirir; gercek training baslatmaz."""
+    try:
+        if selected_dataset_slug and selected_dataset_slug != NO_DATASET_VALUE:
+            dataset_slug_to_dir(selected_dataset_slug)
+        experiment_path = experiment_path_from_run_name(run_name)
+        manifest_path = experiment_path / EXPERIMENT_MANIFEST_NAME
+        if not manifest_path.is_file():
+            return "\n".join(
+                [
+                    "HATA: Experiment manifest bulunamadı.",
+                    f"- Beklenen manifest: `{manifest_path}`",
+                    "- Önce export çalıştırın veya mevcut bir experiment run name girin.",
+                ]
+            )
+
+        max_steps_int = positive_int(max_steps, "Max steps")
+        epochs_int = positive_int(epochs, "Epochs")
+        batch_size_int = positive_int(batch_size, "Batch size")
+        grad_accum_int = positive_int(grad_accum, "Grad accumulation")
+        save_step_int = positive_int(save_step, "Save step")
+
+        args = [
+            "--experiment",
+            str(experiment_path),
+            "--max-steps",
+            str(max_steps_int),
+            "--epochs",
+            str(epochs_int),
+            "--batch-size",
+            str(batch_size_int),
+            "--grad-accum",
+            str(grad_accum_int),
+            "--save-step",
+            str(save_step_int),
+            "--dry-run",
+        ]
+        result = run_finetune_subprocess(
+            "scripts/train_xtts_gpt_experiment.py",
+            args,
+            timeout_seconds=900,
+        )
+        summary = summarize_dry_run_output(result.stdout or "")
+        header = "### Training dry-run tamamlandı."
+        if result.returncode != 0:
+            header = "### Training dry-run başarısız oldu."
+
+        lines = [
+            header,
+            "Bu işlem eğitim başlatmaz ve checkpoint üretmez.",
+            f"- Experiment path: `{experiment_path}`",
+            f"- CUDA available: {summary['cuda_available']}",
+            f"- Checkpoint OK: {summary['checkpoint_ok']}",
+            f"- Dataset OK: {summary['dataset_ok']}",
+            f"- Import OK: {summary['import_ok']}",
+            f"- limit_mode: `{summary['limit_mode']}`",
+            f"- Config oluşturma sonucu: {summary['config_ok']}",
+            "- Komut güvenlik kontrolü: `--dry-run` kullanıldı.",
+        ]
+        if result.returncode != 0:
+            lines.extend(["", "Hata özeti:", first_clean_error_line(result)])
+        return "\n".join(lines)
+    except FineTuningPanelError as exc:
+        return f"HATA: {exc}"
+    except subprocess.TimeoutExpired:
+        return "HATA: Training dry-run zaman aşımına uğradı. Model eğitimi çalıştırılmadı."
+    except Exception:
+        print("Training dry-run Gradio callback hatasi.")
+        traceback.print_exc()
+        return "HATA: Training dry-run sırasında teknik bir sorun oluştu. Ayrıntı terminale yazıldı."
 
 
 def format_quality_report_section(title: str, report: dict, is_raw: bool) -> str:
@@ -1396,6 +1848,7 @@ def generate_voice(
 def build_demo() -> gr.Blocks:
     """Basit lokal Gradio arayuzunu olusturur."""
     initial_profile_scan = scan_local_profiles()
+    initial_dataset_scan = scan_finetune_datasets()
 
     with gr.Blocks(title="VoxForge XTTS Demo") as demo:
         gr.Markdown("# VoxForge XTTS Türkçe Demo")
@@ -1488,6 +1941,59 @@ def build_demo() -> gr.Blocks:
             value="Kalite raporu ses uretiminden sonra burada gorunecek."
         )
 
+        gr.Markdown("## Experimental Fine-tuning Hazırlığı")
+        gr.Markdown(
+            "Bu bölüm model eğitimi çalıştırmaz; readiness, export ve dry-run kontrolleri içindir. "
+            "`datasets/` ve `experiments/` yerel klasörlerdir; GitHub'a eklenmez."
+        )
+        finetune_dataset_dropdown = gr.Dropdown(
+            label="Fine-tuning dataset",
+            choices=build_dataset_dropdown_choices(initial_dataset_scan),
+            value=NO_DATASET_VALUE,
+            interactive=True,
+        )
+        finetune_dataset_status = gr.Markdown(
+            value=build_dataset_scan_status(initial_dataset_scan)
+        )
+        finetune_run_name_input = gr.Textbox(
+            label="Run name",
+            placeholder="Örnek: baglare_xtts_exp01",
+        )
+        with gr.Row():
+            finetune_max_steps_input = gr.Number(
+                label="Max steps",
+                value=300,
+            )
+            finetune_epochs_input = gr.Number(
+                label="Epochs",
+                value=1,
+            )
+            finetune_batch_size_input = gr.Number(
+                label="Batch size",
+                value=1,
+            )
+        with gr.Row():
+            finetune_grad_accum_input = gr.Number(
+                label="Grad accumulation",
+                value=16,
+            )
+            finetune_save_step_input = gr.Number(
+                label="Save step",
+                value=1,
+            )
+        readiness_button = gr.Button("Readiness raporu çalıştır")
+        readiness_status = gr.Markdown(
+            value="Readiness sonucu burada görünecek."
+        )
+        export_button = gr.Button("Experiment export et")
+        export_status = gr.Markdown(
+            value="Export sonucu burada görünecek."
+        )
+        dry_run_button = gr.Button("Training dry-run çalıştır")
+        dry_run_status = gr.Markdown(
+            value="Dry-run sonucu burada görünecek. Bu işlem eğitim başlatmaz."
+        )
+
         refresh_profiles_button.click(
             fn=refresh_profile_choices,
             inputs=[profile_dropdown],
@@ -1563,6 +2069,35 @@ def build_demo() -> gr.Blocks:
                 status_output,
                 quality_report_output,
             ],
+        )
+
+        readiness_button.click(
+            fn=run_readiness_report_from_gradio,
+            inputs=[finetune_dataset_dropdown],
+            outputs=[readiness_status],
+        )
+
+        export_button.click(
+            fn=export_experiment_from_gradio,
+            inputs=[
+                finetune_dataset_dropdown,
+                finetune_run_name_input,
+            ],
+            outputs=[export_status],
+        )
+
+        dry_run_button.click(
+            fn=run_training_dry_run_from_gradio,
+            inputs=[
+                finetune_dataset_dropdown,
+                finetune_run_name_input,
+                finetune_max_steps_input,
+                finetune_epochs_input,
+                finetune_batch_size_input,
+                finetune_grad_accum_input,
+                finetune_save_step_input,
+            ],
+            outputs=[dry_run_status],
         )
 
     return demo

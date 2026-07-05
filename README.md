@@ -19,6 +19,7 @@ Proje şu anda yerel kullanım için çalışan bir teknik prototip seviyesinded
 - Ham ve ön işlenmiş referanslar için kalite raporu üretilir.
 - Gradio üretiminde inference preset seçimi, uzun metin chunking, çıktı normalize ve A/B karşılaştırma kontrolleri vardır.
 - Fine-tuning dataset iskeleti oluşturma, metadata üretme, dataset doğrulama ve readiness report akışları vardır.
+- Gradio içinde experimental fine-tuning hazırlık paneli vardır; dataset readiness, experiment export ve training dry-run kontrollerini çalıştırır.
 - Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training runner bulunur.
 - Mevcut deneyde yaklaşık 7.45 dakika / 80 örnek ile training pipeline çalıştırılmış, checkpoint üretilmiş ve fine-tuned checkpoint inference denenmiştir.
 - Matrix evaluation, human evaluation scorecard ve inference parameter sweep akışları eklenmiştir.
@@ -56,6 +57,7 @@ VoxForge aşağıdaki teknik alanları kapsar:
 - Fine-tuning dataset klasörü ve kayıt planı üretimi
 - Metadata üretimi ve dataset validation
 - Readiness report ile dataset hazırlık seviyesi
+- Gradio üzerinden readiness, experiment export ve training dry-run hazırlık kontrolleri
 - Deneysel XTTS GPT fine-tuning export ve training akışı
 - Checkpoint üretimi zorunlu training başarı kriteri
 - Fine-tuned checkpoint inference
@@ -152,6 +154,8 @@ Hazırlık bileşenleri:
 - Toplam süre ve örnek sayısına göre readiness report
 
 10 dakikadan kısa ama hatasız datasetler teknik olarak geçerli olabilir; ancak gerçek kalite beklentisi açısından küçük kabul edilir. Bu durumda readiness seviyesi `DATASET_VALID_BUT_SMALL` olarak raporlanabilir.
+
+Gradio arayüzünde ayrıca `Experimental Fine-tuning Hazırlığı` paneli bulunur. Bu panel geçerli datasetleri listeler, readiness raporu çalıştırır, experiment export eder ve training scriptini yalnızca dry-run modunda çağırır. Panel gerçek training başlatmaz, checkpoint üretmez ve fine-tuned model seçimi yapmaz.
 
 ## 9. Deneysel fine-tuning ve değerlendirme
 

@@ -132,6 +132,67 @@ Kontrol:
 - Arayüzde ana çıktı ve karşılaştırma çıktısı ayrı audio alanlarında görünür.
 - Kalite raporu JSON içinde `ab_test_enabled`, `primary_output_path` ve `comparison_output_path` alanları bulunur.
 
+### 2.10 Experimental fine-tuning dataset dropdown testi
+
+Adım:
+
+1. Gradio arayüzünde `Experimental Fine-tuning Hazırlığı` bölümüne git.
+2. Dataset dropdown listesini aç.
+
+Kontrol:
+
+- `datasets/` altında `metadata.csv` ve `wavs/` klasörü bulunan datasetler listelenir.
+- Dataset yoksa `Yerel fine-tuning dataset bulunamadı.` mesajı görünür.
+- Bozuk dataset varsa arayüz düşmez; eksik dosya/klasör bilgisi sade mesajla gösterilir.
+
+### 2.11 Readiness butonu testi
+
+Adım:
+
+1. Geçerli bir dataset seç.
+2. `Readiness raporu çalıştır` butonuna bas.
+
+Kontrol:
+
+- Hazırlık seviyesi, toplam örnek, geçerli örnek, toplam dakika ve öneriler görünür.
+- JSON/Markdown rapor yolları `outputs/reports/` altında gösterilir.
+- Bu işlem training başlatmaz.
+
+### 2.12 Experiment export butonu testi
+
+Adım:
+
+1. Geçerli bir dataset seç.
+2. Daha önce kullanılmamış bir run name gir.
+3. `Experiment export et` butonuna bas.
+
+Kontrol:
+
+- Experiment path, train sample count, eval sample count ve manifest path görünür.
+- Aynı run name daha önce kullanıldıysa üzerine yazılmaz ve farklı run name önerilir.
+- Oluşan experiment dosyaları `experiments/` altında local kalır ve GitHub'a eklenmez.
+
+### 2.13 Training dry-run butonu testi
+
+Adım:
+
+1. Export edilmiş veya mevcut bir experiment run name gir.
+2. Max steps, epochs, batch size, grad accumulation ve save step değerlerini kontrol et.
+3. `Training dry-run çalıştır` butonuna bas.
+
+Kontrol:
+
+- Sonuçta CUDA available, checkpoint OK, dataset OK, import OK, `limit_mode` ve config oluşturma sonucu görünür.
+- Durum mesajında `--dry-run` kullanıldığı belirtilir.
+- Bu işlem eğitim başlatmaz ve checkpoint üretmez.
+
+### 2.14 Gerçek training butonu bulunmadığı kontrolü
+
+Kontrol:
+
+- Gradio arayüzünde `Training başlat`, `Gerçek training başlat` veya benzeri bir buton bulunmaz.
+- Fine-tuning panelinde yalnızca readiness, export ve dry-run butonları vardır.
+
 ## 3. Profile testleri
 
 ### 3.1 Web üzerinden profil oluşturma
