@@ -1,53 +1,58 @@
-# Virtual environments
-.venv/
-venv/
-
-# Python caches
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-# IDE files
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / editor
 .vs/
 .vscode/
 .idea/
 
-# Environment files
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
 .env
 .env.*
+*.env
 
 # Build artifacts
 build/
 dist/
 *.egg-info/
 
-# Local reference samples
+# Local audio data
 samples/*
 !samples/.gitkeep
 
-# Local voice profiles
-profiles/*
-!profiles/.gitkeep
-
-# Local fine-tuning datasets
-datasets/*
-!datasets/.gitkeep
-
-# Local fine-tuning experiments
-experiments/*
-!experiments/.gitkeep
-
-# Local fine-tuned model outputs
-fine_tuned_models/*
-!fine_tuned_models/.gitkeep
-
-# Generated outputs
 outputs/*
 !outputs/.gitkeep
 !outputs/gradio_outputs/
 outputs/gradio_outputs/*
 !outputs/gradio_outputs/.gitkeep
+
+profiles/*
+!profiles/.gitkeep
+
+datasets/*
+!datasets/.gitkeep
+
+experiments/*
+!experiments/.gitkeep
+
+fine_tuned_models/*
+!fine_tuned_models/.gitkeep
 
 # Audio files
 *.wav
@@ -57,7 +62,7 @@ outputs/gradio_outputs/*
 *.ogg
 *.aac
 
-# Model and checkpoint files
+# ML model / checkpoint files
 .cache/
 models/
 checkpoints/
@@ -68,5 +73,5 @@ checkpoints/
 *.onnx
 *.bin
 
-# Gradio flagged data
+# Gradio
 flagged/

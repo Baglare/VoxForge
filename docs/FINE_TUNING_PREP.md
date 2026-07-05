@@ -163,7 +163,7 @@ Doğrulama; boş alanları, eksik dosyaları, WAV olmayan dosyaları, fine-tunin
 
 ## Fine-tuning readiness report
 
-Readiness report, doğrulama sonucunu daha portfolyo dostu bir teknik hazırlık özetine çevirir. Bu rapor model eğitimi başlatmaz; yalnızca mevcut datasetin fine-tuning denemesi için ne kadar hazır göründüğünü söyler.
+Readiness report, doğrulama sonucunu teknik hazırlık özetine çevirir. Bu rapor model eğitimi başlatmaz; yalnızca mevcut datasetin fine-tuning denemesi için ne kadar hazır göründüğünü söyler.
 
 Çalıştırma komutu:
 

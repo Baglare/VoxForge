@@ -167,7 +167,7 @@ Profil klasörleri dışında `samples/` altındaki gerçek referans sesler ve `
 
 ## 13. Profil oluşturma sırasında kalite raporu nasıl kullanılır?
 
-Profil oluşturulurken hem orijinal referans hem de ön işlenmiş referans için kalite raporu alınır. Raporlar `profile.json` içine yazılır ve Gradio tarafında kullanıcıya gösterilebilir.
+Profil oluşturulurken hem orijinal referans hem de ön işlenmiş referans için kalite raporu alınır. Raporlar `profile.json` içine yazılır ve Gradio tarafında kullanıcıya sunulur.
 
 Kalite raporları şu konularda sinyal verir:
 
