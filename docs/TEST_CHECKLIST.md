@@ -74,6 +74,64 @@ Kontrol:
 - Rapor teknik sinyal olarak yorumlanır; nihai kalite dinlenerek kontrol edilir.
 - Raporlar `outputs/reports/gradio_quality_reports/` altında local kalır.
 
+### 2.6 Inference preset testi
+
+Adım:
+
+1. Gradio arayüzünde `Üretim modu` alanından `Daha stabil` seç.
+2. Kısa bir Türkçe metinle üretim başlat.
+
+Kontrol:
+
+- Durum mesajında kullanılan preset görünür.
+- Ses üretimi tamamlanır veya desteklenmeyen XTTS parametresi varsa default üretime geri düşüldüğü sade şekilde yazılır.
+- Kalite raporu JSON içinde `inference_preset` alanı bulunur.
+
+### 2.7 Gradio uzun metin chunking testi
+
+Adım:
+
+1. Gradio metin alanına 220 karakterden uzun Türkçe metin gir.
+2. İzin checkbox'ını işaretle ve üretimi başlat.
+
+Kontrol:
+
+- Durum mesajında chunking kullanıldığı ve parça sayısı görünür.
+- Final WAV tek çıktı olarak dinlenebilir.
+- Chunk parçaları `outputs/gradio_outputs/chunks/` altında local kalır.
+- Kalite raporu JSON içinde `chunking_used`, `chunk_count` ve `chunks` alanları bulunur.
+- Chunking kalite garantisi değildir; kırpılma riskini azaltmak için kullanılır.
+
+### 2.8 Çıktı normalize testi
+
+Adım:
+
+1. `Çıktı sesini normalize et` checkbox'ını açık bırak.
+2. Kısa bir metinle üretim başlat.
+
+Kontrol:
+
+- Durum mesajında post-processing sonucu görünür.
+- Normalize başarılıysa final çıktı normalize edilmiş WAV olur.
+- Normalize başarısızsa ham çıktı korunur ve kullanıcıya uyarı gösterilir.
+- Kalite raporu JSON içinde `post_processing_enabled` alanı bulunur.
+
+### 2.9 A/B karşılaştırma testi
+
+Adım:
+
+1. `A/B karşılaştırma üret` checkbox'ını işaretle.
+2. `Üretim modu` için `Daha doğal deneme` veya `Daha uzun çıktı denemesi` seç.
+3. Aynı metinle üretim başlat.
+
+Kontrol:
+
+- Ana çıktı seçili preset ile üretilir.
+- Karşılaştırma çıktısı `Daha stabil` preset ile üretilir.
+- İki WAV `outputs/gradio_outputs/` altında ayrı dosyalar olarak oluşur.
+- Arayüzde ana çıktı ve karşılaştırma çıktısı ayrı audio alanlarında görünür.
+- Kalite raporu JSON içinde `ab_test_enabled`, `primary_output_path` ve `comparison_output_path` alanları bulunur.
+
 ## 3. Profile testleri
 
 ### 3.1 Web üzerinden profil oluşturma

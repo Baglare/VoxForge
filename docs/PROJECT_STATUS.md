@@ -2,7 +2,7 @@
 
 ## 1. Mevcut sürüm özeti
 
-VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Mevcut sürüm; XTTS-v2 ile reference-based ses üretimi, local Gradio demo, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama ve deneysel fine-tuning değerlendirme akışlarını içerir.
+VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Mevcut sürüm; XTTS-v2 ile reference-based ses üretimi, local Gradio demo, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama, Gradio üretim kontrolleri ve deneysel fine-tuning değerlendirme akışlarını içerir.
 
 Proje local-first çalışır. Ses kayıtları, profiller, datasetler, deney klasörleri, checkpointler ve üretilen çıktılar kullanıcının makinesinde kalır. GitHub üzerinde yalnızca kaynak kod, runner dosyaları, dokümantasyon ve boş klasör niyetini koruyan `.gitkeep` dosyaları tutulmalıdır.
 
@@ -14,6 +14,10 @@ Proje local-first çalışır. Ses kayıtları, profiller, datasetler, deney kla
 - Voice profile seçme, yenileme ve silme
 - Referans ses safe preprocessing
 - Ham ve ön işlenmiş referans kalite raporu
+- Gradio inference preset seçimi
+- Gradio uzun metin chunking ve WAV birleştirme
+- Final çıktı için opsiyonel normalize
+- A/B üretim modu
 - Fine-tuning dataset iskeleti oluşturma
 - Kayıt planı üretimi
 - DONE kayıtlarından metadata oluşturma
@@ -35,9 +39,11 @@ Reference-based demo akışı:
 1. Gradio demo başlatılır.
 2. Kullanıcı yerel profil seçer veya referans ses yükler.
 3. Referans ses ön işlenir.
-4. Kalite raporu üretilir.
-5. Türkçe metin XTTS-v2 ile seslendirilir.
-6. Üretilen WAV ve raporlar `outputs/` altında local kalır.
+4. Kullanıcı üretim presetini, normalize seçeneğini ve A/B karşılaştırmayı seçebilir.
+5. Kalite raporu üretilir.
+6. Türkçe metin XTTS-v2 ile seslendirilir.
+7. Uzun metinlerde chunking uygulanır ve final WAV birleştirilir.
+8. Üretilen WAV ve raporlar `outputs/` altında local kalır.
 
 Voice profile akışı:
 
@@ -101,6 +107,7 @@ Mevcut yorum:
 - Gradio demo yalnızca local çalışma içindir.
 - Reference-based ses üretiminde ses benzerliği garanti değildir.
 - Kalite raporu nihai ses kalitesini otomatik ölçmez.
+- Gradio preset, normalize ve A/B kontrolleri kalite garantisi vermez; üretim davranışını daha kontrollü karşılaştırmak için kullanılır.
 - Voice profile sistemi fine-tuning yapmaz.
 - Fine-tuning akışı deneysel düzeydedir.
 - Yaklaşık 7.45 dakikalık dataset kalite için sınırlıdır.

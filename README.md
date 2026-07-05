@@ -2,7 +2,7 @@
 
 ## 1. VoxForge nedir?
 
-VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Proje, Coqui XTTS-v2 modeliyle referans sese dayalı ses üretimi, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama ve deneysel XTTS GPT fine-tuning akışlarını tek bir local çalışma düzeninde toplar.
+VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Proje, Coqui XTTS-v2 modeliyle referans sese dayalı ses üretimi, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama, Gradio üretim kontrolleri ve deneysel XTTS GPT fine-tuning akışlarını tek bir local çalışma düzeninde toplar.
 
 Ana kullanım modeli local-first olarak tasarlanmıştır. Ses kayıtları, profiller, datasetler, deney çıktıları, checkpointler ve raporlar kullanıcının makinesinde kalır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu kapsamda yoktur.
 
@@ -17,6 +17,7 @@ Proje şu anda yerel kullanım için çalışan bir teknik prototip seviyesinded
 - Yerel voice profile oluşturma, seçme, yenileme ve silme akışları vardır.
 - Referans sesler FFmpeg ile mono, 24000 Hz WAV formatına ön işlenir.
 - Ham ve ön işlenmiş referanslar için kalite raporu üretilir.
+- Gradio üretiminde inference preset seçimi, uzun metin chunking, çıktı normalize ve A/B karşılaştırma kontrolleri vardır.
 - Fine-tuning dataset iskeleti oluşturma, metadata üretme, dataset doğrulama ve readiness report akışları vardır.
 - Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training runner bulunur.
 - Mevcut deneyde yaklaşık 7.45 dakika / 80 örnek ile training pipeline çalıştırılmış, checkpoint üretilmiş ve fine-tuned checkpoint inference denenmiştir.
@@ -48,6 +49,10 @@ VoxForge aşağıdaki teknik alanları kapsar:
 - Terminalden profil oluşturma, listeleme, yenileme ve silme
 - Referans ses için safe preprocessing
 - `GOOD`, `WARNING`, `BAD` durumlarıyla kalite raporu
+- Gradio üretim modu presetleri: `Dengeli`, `Daha stabil`, `Daha doğal deneme`, `Daha uzun çıktı denemesi`
+- Reference-based üretimde 220 karakter üstü metinler için chunking ve WAV birleştirme
+- Final WAV için opsiyonel hafif normalize
+- Aynı metinle seçili preset ve `Daha stabil` preset arasında A/B karşılaştırma
 - Fine-tuning dataset klasörü ve kayıt planı üretimi
 - Metadata üretimi ve dataset validation
 - Readiness report ile dataset hazırlık seviyesi
@@ -68,10 +73,11 @@ Temel reference-based kullanım akışı:
 3. Kullanıcının kendi sesi veya açık izinli bir referans ses local klasöre eklenir.
 4. Gradio demo başlatılır.
 5. Kullanıcı mevcut voice profile seçer veya yeni referans ses yükler.
-6. Referans ses ön işlenir ve kalite raporu üretilir.
-7. Kullanıcı Türkçe metni girer ve izin checkbox'ını onaylar.
-8. XTTS-v2 inference çalışır.
-9. Üretilen WAV ve raporlar `outputs/` altında local olarak saklanır.
+6. Kullanıcı üretim modunu, çıktı normalize seçeneğini ve gerekirse A/B karşılaştırmayı seçer.
+7. Referans ses ön işlenir ve kalite raporu üretilir.
+8. Kullanıcı Türkçe metni girer ve izin checkbox'ını onaylar.
+9. XTTS-v2 inference çalışır; uzun metinlerde metin parçalara bölünüp final WAV olarak birleştirilir.
+10. Üretilen WAV ve raporlar `outputs/` altında local olarak saklanır.
 
 Fine-tuning deney akışı:
 
@@ -120,6 +126,17 @@ Referans ses için pratik koşullar:
 - Arka plan müziği, ortam gürültüsü ve clipping olmamalıdır.
 - 30-90 saniye arası doğal konuşma reference-based kullanım için daha tutarlı sonuç verebilir.
 - Kalite raporu teknik sinyal verir; nihai ses kalitesi dinlenerek değerlendirilmelidir.
+
+### Gradio üretim kontrolleri
+
+Gradio arayüzünde reference-based üretim için güvenli kullanıcı kontrolleri bulunur:
+
+- `Üretim modu`, XTTS inference çağrısında kullanılan preset parametrelerini seçer.
+- `Çıktı sesini normalize et`, final WAV için hafif FFmpeg normalize uygular; başarısız olursa ham çıktı korunur.
+- `A/B karşılaştırma üret`, aynı metni seçili preset ve `Daha stabil` preset ile iki ayrı WAV olarak üretir.
+- 220 karakter üstü metinlerde chunking otomatik uygulanır ve parçalar final WAV olarak birleştirilir.
+
+Bu kontroller kalite garantisi değildir. Ama farklı üretim ayarlarını kontrollü şekilde karşılaştırmayı ve uzun metinlerde sessiz kırpılma riskini azaltmayı sağlar.
 
 ## 8. Fine-tuning hazırlığı
 
@@ -272,6 +289,8 @@ powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -Mat
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
 ```
 
+Gradio üretim raporları `outputs/reports/gradio_quality_reports/` altında tutulur. Raporlarda kullanılan inference preset, A/B durumu, post-processing seçimi, chunking bilgisi ve çıktı yolları yer alır.
+
 ## 13. Yerel veri, gizlilik ve etik kullanım
 
 VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle kullanılmalıdır. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
@@ -295,6 +314,7 @@ Bu klasörlerde kişisel ses kayıtları, profile metadata'sı, dataset dosyalar
 - Gradio demo local arayüzdür; ürünleşmiş web uygulaması değildir.
 - Ses benzerliği garanti değildir.
 - Kalite raporu nihai ses kalitesini otomatik ölçmez.
+- Gradio üretim presetleri, normalize ve A/B karşılaştırma kalite garantisi vermez; yalnızca üretim davranışını daha kontrollü incelemeyi sağlar.
 - Yerel voice profile sistemi fine-tuning değildir.
 - Fine-tuning akışı deneysel ve local runner düzeyindedir.
 - Küçük dataset ile üretilen checkpointlerde kalite artışı sınırlı olabilir.

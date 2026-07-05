@@ -4,7 +4,9 @@
 from datetime import datetime
 from pathlib import Path
 import json
+import shutil
 import sys
+import subprocess
 from threading import Lock
 import traceback
 from typing import Any, Optional
@@ -24,6 +26,38 @@ PROFILE_JSON_NAME = "profile.json"
 PROFILE_ORIGINAL_REFERENCE_NAME = "original_reference.wav"
 PROFILE_PREPROCESSED_REFERENCE_NAME = "preprocessed_reference.wav"
 NO_PROFILE_VALUE = ""
+MAX_GRADIO_TTS_CHARS = 220
+INFERENCE_PRESET_DEFAULT = "Dengeli"
+INFERENCE_PRESET_STABLE = "Daha stabil"
+INFERENCE_PRESET_NATURAL = "Daha doğal deneme"
+INFERENCE_PRESET_LONGER = "Daha uzun çıktı denemesi"
+INFERENCE_PRESET_CHOICES = [
+    INFERENCE_PRESET_DEFAULT,
+    INFERENCE_PRESET_STABLE,
+    INFERENCE_PRESET_NATURAL,
+    INFERENCE_PRESET_LONGER,
+]
+INFERENCE_PRESET_KWARGS: dict[str, dict[str, Any]] = {
+    INFERENCE_PRESET_DEFAULT: {},
+    INFERENCE_PRESET_STABLE: {
+        "temperature": 0.7,
+        "top_p": 0.85,
+        "top_k": 50,
+        "repetition_penalty": 5.0,
+    },
+    INFERENCE_PRESET_NATURAL: {
+        "temperature": 0.75,
+        "top_p": 0.9,
+        "top_k": 80,
+    },
+    INFERENCE_PRESET_LONGER: {
+        "temperature": 0.75,
+        "top_p": 0.9,
+        "top_k": 80,
+        "length_penalty": 1.0,
+    },
+}
+OUTPUT_NORMALIZE_FILTER = "loudnorm=I=-18:TP=-2:LRA=11"
 NO_PROFILE_INFO_TEXT = (
     "### Seçili profil bilgisi\n"
     "Profil seçilmedi. Ses yüklenirse yüklenen ses, yüklenmezse "
@@ -34,7 +68,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_reference_audio
+from scripts.audio_concat_utils import concatenate_wavs
 from scripts.audio_quality_utils import analyze_audio_file, format_value
+from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -779,17 +815,27 @@ def write_gradio_quality_report(
     preprocessing_result: dict | None = None,
     source_info: dict | None = None,
     profile_info: dict | None = None,
+    generation_report: dict | None = None,
     error_message: str | None = None,
 ) -> Path:
     """Her Gradio uretim denemesi icin kalite raporunu JSON olarak kaydeder."""
     GRADIO_QUALITY_REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = GRADIO_QUALITY_REPORT_DIR / f"quality_report_{timestamp}.json"
+    generation_report = generation_report or {}
     payload = {
         "created_at": timestamp,
         "status": status,
         "reference_audio": str(reference_audio),
         "preprocessed_audio": str(preprocessed_audio) if preprocessed_audio else None,
         "output_audio": str(output_audio) if output_audio else None,
+        "inference_preset": generation_report.get("inference_preset"),
+        "ab_test_enabled": generation_report.get("ab_test_enabled"),
+        "post_processing_enabled": generation_report.get("post_processing_enabled"),
+        "chunking_used": generation_report.get("chunking_used"),
+        "chunk_count": generation_report.get("chunk_count"),
+        "chunks": generation_report.get("chunks"),
+        "primary_output_path": generation_report.get("primary_output_path"),
+        "comparison_output_path": generation_report.get("comparison_output_path"),
         "source_type": source_info.get("source_type") if source_info else None,
         "source_label": source_info.get("source_label") if source_info else None,
         "device": _tts_device,
@@ -844,25 +890,287 @@ def build_preprocessing_status_warning(preprocessing_result: dict | None) -> str
     return f"\nOn isleme uyarisi: {warning}"
 
 
-def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permission: bool):
+def normalize_inference_preset(preset_label: str | None) -> str:
+    """Bilinmeyen preset degerini guvenli varsayilana indirger."""
+    if preset_label in INFERENCE_PRESET_KWARGS:
+        return preset_label
+    return INFERENCE_PRESET_DEFAULT
+
+
+def run_tts_to_file_with_preset(
+    tts: TTS,
+    text: str,
+    speaker_wav: Path,
+    output_path: Path,
+    preset_label: str,
+) -> str | None:
+    """XTTS cagrısını preset kwargs ile dener; TypeError olursa default'a duser."""
+    kwargs = dict(INFERENCE_PRESET_KWARGS.get(preset_label, {}))
+    base_call = {
+        "text": text,
+        "speaker_wav": str(speaker_wav),
+        "language": LANGUAGE,
+        "file_path": str(output_path),
+    }
+
+    try:
+        tts.tts_to_file(**base_call, **kwargs)
+        return None
+    except TypeError as exc:
+        if not kwargs:
+            raise
+
+        print(f"Preset parametreleri desteklenmedi, default uretime dusuluyor: {exc}")
+        tts.tts_to_file(**base_call)
+        return (
+            "Seçilen üretim modu bu XTTS API sürümünde tamamen desteklenmedi; "
+            "default üretime geri düşüldü."
+        )
+
+
+def normalize_output_wav(input_path: Path, output_path: Path) -> tuple[bool, str]:
+    """Final WAV icin hafif FFmpeg loudnorm post-processing uygular."""
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path is None:
+        return False, "FFmpeg bulunamadı; ham çıktı korundu."
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-hide_banner",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-af",
+        OUTPUT_NORMALIZE_FILTER,
+        "-c:a",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    print("Cikti post-processing FFmpeg komutu:")
+    print(subprocess.list2cmdline(command))
+
+    result = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "bilinmeyen FFmpeg hatasi"
+        return False, f"Çıktı normalize edilemedi; ham çıktı korundu. Ayrıntı: {detail}"
+
+    if not output_path.is_file():
+        return False, "Normalize komutu tamamlandı ancak işlenmiş çıktı oluşmadı; ham çıktı korundu."
+
+    return True, "Çıktı sesi normalize edildi."
+
+
+def synthesize_gradio_output(
+    tts: TTS,
+    text: str,
+    speaker_wav: Path,
+    output_stem: str,
+    preset_label: str,
+    post_processing_enabled: bool,
+) -> dict[str, Any]:
+    """Tek veya chunked XTTS uretimini yapar ve final cikti yolunu dondurur."""
+    chunks = (
+        split_text_for_tts(text, max_chars=MAX_GRADIO_TTS_CHARS)
+        if len(text) > MAX_GRADIO_TTS_CHARS
+        else [text]
+    )
+    chunk_summary = summarize_chunks(chunks)
+    raw_output_path = OUTPUT_DIR / f"{output_stem}_raw.wav"
+    warnings: list[str] = []
+    chunk_paths: list[Path] = []
+
+    if chunk_summary["chunking_used"]:
+        chunk_dir = OUTPUT_DIR / "chunks" / output_stem
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_path = chunk_dir / f"chunk_{index:02d}.wav"
+            warning = run_tts_to_file_with_preset(
+                tts,
+                chunk,
+                speaker_wav,
+                chunk_path,
+                preset_label,
+            )
+            if warning:
+                warnings.append(warning)
+            chunk_paths.append(chunk_path)
+
+        concat_ok, concat_message = concatenate_wavs(chunk_paths, raw_output_path)
+        if not concat_ok:
+            raise RuntimeError(f"WAV parçaları birleştirilemedi: {concat_message}")
+    else:
+        warning = run_tts_to_file_with_preset(
+            tts,
+            chunks[0],
+            speaker_wav,
+            raw_output_path,
+            preset_label,
+        )
+        if warning:
+            warnings.append(warning)
+
+    final_output_path = raw_output_path
+    post_processing_applied = False
+    if post_processing_enabled:
+        normalized_output_path = OUTPUT_DIR / f"{output_stem}_normalized.wav"
+        normalized_ok, normalized_message = normalize_output_wav(
+            raw_output_path,
+            normalized_output_path,
+        )
+        if normalized_ok:
+            final_output_path = normalized_output_path
+            post_processing_applied = True
+        else:
+            warnings.append(normalized_message)
+
+    return {
+        "preset_label": preset_label,
+        "raw_output_path": raw_output_path,
+        "final_output_path": final_output_path,
+        "post_processing_enabled": post_processing_enabled,
+        "post_processing_applied": post_processing_applied,
+        "chunking_used": chunk_summary["chunking_used"],
+        "chunk_count": chunk_summary["chunk_count"],
+        "chunks": chunk_summary["chunks"],
+        "warnings": warnings,
+    }
+
+
+def build_generation_report(
+    inference_preset: str,
+    ab_test_enabled: bool,
+    post_processing_enabled: bool,
+    primary_result: dict[str, Any] | None = None,
+    comparison_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Gradio kalite raporuna eklenecek uretim ayarlarini olusturur."""
+    chunking_used = primary_result.get("chunking_used") if primary_result else False
+    chunk_count = primary_result.get("chunk_count") if primary_result else 0
+    chunks = primary_result.get("chunks") if primary_result else []
+    primary_output_path = (
+        str(primary_result.get("final_output_path")) if primary_result else None
+    )
+    comparison_output_path = (
+        str(comparison_result.get("final_output_path")) if comparison_result else None
+    )
+
+    return {
+        "inference_preset": inference_preset,
+        "ab_test_enabled": ab_test_enabled,
+        "post_processing_enabled": post_processing_enabled,
+        "chunking_used": chunking_used,
+        "chunk_count": chunk_count,
+        "chunks": chunks,
+        "primary_output_path": primary_output_path,
+        "comparison_output_path": comparison_output_path,
+    }
+
+
+def build_generation_status_lines(
+    primary_result: dict[str, Any],
+    comparison_result: dict[str, Any] | None,
+    ab_test_enabled: bool,
+) -> list[str]:
+    """Uretim ayarlarini sade durum satirlarina cevirir."""
+    chunking_text = (
+        f"kullanıldı ({primary_result['chunk_count']} parça)"
+        if primary_result["chunking_used"]
+        else "kullanılmadı"
+    )
+    post_processing_text = (
+        "uygulandı"
+        if primary_result["post_processing_applied"]
+        else (
+            "denendi, ham çıktı korundu"
+            if primary_result["post_processing_enabled"]
+            else "kapalı"
+        )
+    )
+    lines = [
+        f"Üretim modu: {primary_result['preset_label']}",
+        f"Chunking: {chunking_text}",
+        f"Post-processing: {post_processing_text}",
+        f"Final çıktı yolu: {primary_result['final_output_path'].resolve()}",
+        f"A/B karşılaştırma: {'açık' if ab_test_enabled else 'kapalı'}",
+    ]
+
+    if comparison_result:
+        comparison_post = (
+            "uygulandı"
+            if comparison_result["post_processing_applied"]
+            else (
+                "denendi, ham çıktı korundu"
+                if comparison_result["post_processing_enabled"]
+                else "kapalı"
+            )
+        )
+        lines.extend(
+            [
+                f"Karşılaştırma modu: {comparison_result['preset_label']}",
+                f"Karşılaştırma post-processing: {comparison_post}",
+                "Karşılaştırma çıktı yolu: "
+                f"{comparison_result['final_output_path'].resolve()}",
+            ]
+        )
+
+    warnings = list(primary_result.get("warnings") or [])
+    if comparison_result:
+        warnings.extend(comparison_result.get("warnings") or [])
+    for warning in dict.fromkeys(warnings):
+        lines.append(f"Uyarı: {warning}")
+
+    return lines
+
+
+def generate_voice(
+    text: str,
+    uploaded_audio,
+    selected_profile_slug,
+    inference_preset: str,
+    post_processing_enabled: bool,
+    ab_test_enabled: bool,
+    has_permission: bool,
+):
     """Gradio butonuna basilinca Turkce ses uretimi yapar."""
     if not has_permission:
-        return None, "Uyari: Ses uretimi icin sesin size ait oldugunu veya kullanma izniniz oldugunu onaylamalisiniz.", ""
+        return (
+            None,
+            None,
+            "Uyari: Ses uretimi icin sesin size ait oldugunu veya kullanma izniniz oldugunu onaylamalisiniz.",
+            "",
+        )
 
     cleaned_text = (text or "").strip()
     if not cleaned_text:
-        return None, "Uyari: Ses uretmek icin Turkce metin girmelisiniz.", ""
+        return None, None, "Uyari: Ses uretmek icin Turkce metin girmelisiniz.", ""
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    output_audio = OUTPUT_DIR / f"xtts_tr_{timestamp}.wav"
+    selected_preset = normalize_inference_preset(inference_preset)
+    post_processing_enabled = bool(post_processing_enabled)
+    ab_test_enabled = bool(ab_test_enabled)
+    output_stem = f"xtts_tr_{timestamp}"
+    planned_output_audio = OUTPUT_DIR / f"{output_stem}_raw.wav"
+    generation_report = build_generation_report(
+        selected_preset,
+        ab_test_enabled,
+        post_processing_enabled,
+    )
     profile_info = None
 
     try:
         profile_info = load_selected_profile(selected_profile_slug)
     except ProfileSelectionError as exc:
         print(f"Profil secimi hatasi: {exc}")
-        return None, f"HATA: {exc}", ""
+        return None, None, f"HATA: {exc}", ""
 
     if profile_info:
         source_info = {
@@ -879,7 +1187,7 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
         print(f"Profil adi: {profile_info['profile_name']}")
         print(f"Profil slug: {profile_info['profile_slug']}")
         print(f"Profil on islenmis referans: {preprocessed_audio}")
-        print(f"Cikti ses dosyasi: {output_audio}")
+        print(f"Planlanan cikti ses dosyasi: {planned_output_audio}")
 
         quality_report_text = build_quality_report_text(
             raw_report,
@@ -901,6 +1209,7 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
         if not raw_report.get("exists"):
             quality_report_text = build_quality_report_text(raw_report, None, None)
             return (
+                None,
                 None,
                 f"HATA: Referans ses dosyasi bulunamadi: {reference_audio}\n"
                 f"{source_info['source_label']}",
@@ -928,10 +1237,12 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
                 None,
                 "preprocess_failed",
                 source_info=source_info,
+                generation_report=generation_report,
                 error_message=preprocess_error,
             )
             quality_report_text = build_quality_report_text(raw_report, None, None)
             return (
+                None,
                 None,
                 "HATA: Referans ses on isleme basarisiz oldu.\n"
                 f"{source_info['source_label']}\n"
@@ -947,7 +1258,7 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
         print(f"On isleme varyanti: {preprocessing_result.get('selected_variant')}")
         if preprocessing_result.get("preprocessing_warning"):
             print(f"On isleme uyarisi: {preprocessing_result['preprocessing_warning']}")
-        print(f"Cikti ses dosyasi: {output_audio}")
+        print(f"Planlanan cikti ses dosyasi: {planned_output_audio}")
         preprocessed_report = (
             preprocessing_result.get("candidate_reports", {})
             .get(preprocessing_result.get("selected_variant"))
@@ -961,38 +1272,74 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
             preprocessing_result,
         )
 
+    primary_result = None
+    comparison_result = None
     try:
         tts = get_tts_model()
         device = _tts_device or "bilinmiyor"
-        tts.tts_to_file(
-            text=cleaned_text,
-            speaker_wav=str(preprocessed_audio),
-            language=LANGUAGE,
-            file_path=str(output_audio),
+        primary_result = synthesize_gradio_output(
+            tts,
+            cleaned_text,
+            preprocessed_audio,
+            output_stem,
+            selected_preset,
+            post_processing_enabled,
+        )
+        if ab_test_enabled:
+            comparison_result = synthesize_gradio_output(
+                tts,
+                cleaned_text,
+                preprocessed_audio,
+                f"{output_stem}_ab_stable",
+                INFERENCE_PRESET_STABLE,
+                post_processing_enabled,
+            )
+        generation_report = build_generation_report(
+            selected_preset,
+            ab_test_enabled,
+            post_processing_enabled,
+            primary_result,
+            comparison_result,
         )
     except Exception as exc:
         device = _tts_device or "bilinmiyor"
         print(f"Ses uretimi hatasi: {exc}")
+        generation_report = build_generation_report(
+            selected_preset,
+            ab_test_enabled,
+            post_processing_enabled,
+            primary_result,
+            comparison_result,
+        )
+        report_output_audio = (
+            primary_result.get("final_output_path")
+            if primary_result
+            else planned_output_audio
+        )
         quality_report_path = write_gradio_quality_report(
             timestamp,
             raw_report,
             preprocessed_report,
             reference_audio,
             preprocessed_audio,
-            output_audio,
+            report_output_audio,
             "tts_failed",
             preprocessing_result=preprocessing_result,
             source_info=source_info,
             profile_info=profile_info,
+            generation_report=generation_report,
             error_message="Ses uretimi sirasinda sorun olustu.",
         )
         return (
+            None,
             None,
             "HATA: Ses uretimi sirasinda sorun olustu.\n"
             f"{source_info['source_label']}\n"
             f"Kullanilan referans ses yolu: {reference_audio.resolve()}\n"
             f"Kullanilan speaker_wav yolu: {preprocessed_audio.resolve()}\n"
-            f"Uretilmesi planlanan cikti ses yolu: {output_audio.resolve()}\n"
+            f"Uretilmesi planlanan cikti ses yolu: {planned_output_audio.resolve()}\n"
+            f"Uretim modu: {selected_preset}\n"
+            f"A/B karsilastirma: {'acik' if ab_test_enabled else 'kapali'}\n"
             f"Kullanilan cihaz: {device}\n"
             f"Kalite raporu JSON: {quality_report_path.resolve()}\n"
             f"{build_preprocessing_status_warning(preprocessing_result)}\n"
@@ -1000,30 +1347,50 @@ def generate_voice(text: str, uploaded_audio, selected_profile_slug, has_permiss
             quality_report_text,
         )
 
+    primary_output_path = primary_result["final_output_path"]
+    comparison_output_path = (
+        comparison_result["final_output_path"] if comparison_result else None
+    )
     quality_report_path = write_gradio_quality_report(
         timestamp,
         raw_report,
         preprocessed_report,
         reference_audio,
         preprocessed_audio,
-        output_audio,
+        primary_output_path,
         "success",
         preprocessing_result=preprocessing_result,
         source_info=source_info,
         profile_info=profile_info,
+        generation_report=generation_report,
     )
-    status_message = (
-        "Ses uretildi.\n"
-        f"{source_info['source_label']}\n"
-        f"Kullanilan referans ses yolu: {reference_audio.resolve()}\n"
-        f"Kullanilan speaker_wav yolu: {preprocessed_audio.resolve()}\n"
-        f"Uretilen cikti ses yolu: {output_audio.resolve()}\n"
-        f"Kullanilan cihaz: {device}\n"
-        f"Kalite raporu JSON: {quality_report_path.resolve()}"
-        f"{build_preprocessing_status_warning(preprocessing_result)}"
-        f"{build_quality_status_warning(raw_report, preprocessed_report)}"
+    status_lines = [
+        "Ses uretildi.",
+        source_info["source_label"],
+        f"Kullanilan referans ses yolu: {reference_audio.resolve()}",
+        f"Kullanilan speaker_wav yolu: {preprocessed_audio.resolve()}",
+        *build_generation_status_lines(
+            primary_result,
+            comparison_result,
+            ab_test_enabled,
+        ),
+        f"Kullanilan cihaz: {device}",
+        f"Kalite raporu JSON: {quality_report_path.resolve()}",
+    ]
+    preprocessing_warning = build_preprocessing_status_warning(preprocessing_result)
+    if preprocessing_warning:
+        status_lines.append(preprocessing_warning.strip())
+    quality_warning = build_quality_status_warning(raw_report, preprocessed_report)
+    if quality_warning:
+        status_lines.append(quality_warning.strip())
+
+    status_message = "\n".join(status_lines)
+    return (
+        str(primary_output_path),
+        str(comparison_output_path) if comparison_output_path else None,
+        status_message,
+        quality_report_text,
     )
-    return str(output_audio), status_message, quality_report_text
 
 
 def build_demo() -> gr.Blocks:
@@ -1085,6 +1452,20 @@ def build_demo() -> gr.Blocks:
             label="Referans ses dosyası",
             type="filepath",
         )
+        inference_preset_dropdown = gr.Dropdown(
+            label="Üretim modu",
+            choices=INFERENCE_PRESET_CHOICES,
+            value=INFERENCE_PRESET_DEFAULT,
+            interactive=True,
+        )
+        post_processing_checkbox = gr.Checkbox(
+            label="Çıktı sesini normalize et",
+            value=True,
+        )
+        ab_test_checkbox = gr.Checkbox(
+            label="A/B karşılaştırma üret",
+            value=False,
+        )
         permission_checkbox = gr.Checkbox(
             label="Bu ses bana ait veya kullanma iznim var",
             value=False,
@@ -1093,6 +1474,10 @@ def build_demo() -> gr.Blocks:
 
         audio_output = gr.Audio(
             label="Üretilen ses",
+            type="filepath",
+        )
+        comparison_audio_output = gr.Audio(
+            label="Karşılaştırma çıktısı",
             type="filepath",
         )
         status_output = gr.Textbox(
@@ -1167,9 +1552,17 @@ def build_demo() -> gr.Blocks:
                 text_input,
                 reference_audio_input,
                 profile_dropdown,
+                inference_preset_dropdown,
+                post_processing_checkbox,
+                ab_test_checkbox,
                 permission_checkbox,
             ],
-            outputs=[audio_output, status_output, quality_report_output],
+            outputs=[
+                audio_output,
+                comparison_audio_output,
+                status_output,
+                quality_report_output,
+            ],
         )
 
     return demo
