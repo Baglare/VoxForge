@@ -1,24 +1,46 @@
 # VoxForge Deneysel XTTS Fine-Tuning
 
-Bu doküman, VoxForge içindeki mevcut yerel fine-tuning datasetini kullanarak deneysel XTTS-v2 GPT encoder fine-tuning altyapısını açıklar. Bu aşama kalite garantisi vermez; amaç önce training pipeline'ın yerel makinede başlayıp başlamadığını görmektir.
+Bu doküman, VoxForge içindeki yerel dataset ile yapılan deneysel XTTS-v2 GPT encoder fine-tuning akışını açıklar. Akış local çalışır, Gradio arayüzüne bağlı değildir ve kalite garantisi vermez.
 
-## Bu deney ne yapar?
+## 1. Amaç
 
-Bu deney, `datasets/baglare-finetune-v1` içindeki doğrulanmış WAV ve transkriptleri Coqui/LJSpeech benzeri formata export eder. Ardından kullanıcı isterse ayrı bir PowerShell komutuyla XTTS-v2 GPT encoder fine-tuning denemesini başlatabilir.
+Bu deneyin amacı, mevcut kayıt datasetinin XTTS fine-tuning formatına export edilmesini, training pipeline'ın yerel ortamda kontrollü şekilde çalışmasını, checkpoint üretilmesini ve üretilen checkpoint ile inference yapılmasını test etmektir.
 
-Bu akış Gradio arayüzüne bağlı değildir. Yeni kullanıcı özelliği, veritabanı veya public servis eklemez.
+Bu akış şunları hedeflemez:
 
-## Dataset neden önce export ediliyor?
+- Public servis veya hesap sistemi eklemek
+- Gradio UI davranışını değiştirmek
+- Ses kalitesini garanti etmek
+- Küçük dataset ile production seviyesinde model üretmek
 
-VoxForge dataset formatı proje içi hazırlık için sade tutulur:
+## 2. Dataset durumu
+
+Mevcut deney datasetinin özeti:
+
+- 80 geçerli örnek
+- Yaklaşık 446.88 saniye / 7.45 dakika toplam kayıt
+- Ortalama örnek süresi yaklaşık 5.59 saniye
+- Readiness yorumu: `DATASET_VALID_BUT_SMALL`
+
+Bu veri miktarı pipeline testi için yeterlidir; ancak güçlü ve kararlı fine-tuning sonucu beklemek için küçüktür. Kalite değerlendirmesi bu sınır dikkate alınarak yapılmalıdır.
+
+## 3. Export akışı
+
+VoxForge dataset formatı proje içi hazırlık için şu yapıyı kullanır:
 
 ```text
 audio_path|text
 ```
 
-Coqui training tarafında ise LJSpeech formatter ile çalışmak daha pratiktir. Bu yüzden export adımı kaynak dataset dosyalarını değiştirmez; bunun yerine deney klasörü altında ayrı bir kopya üretir.
+Coqui training tarafında LJSpeech formatter ile çalışmak daha pratik olduğu için dataset önce deney klasörüne export edilir. Export adımı kaynak dataset dosyalarını değiştirmez.
 
-Export edilen yapı:
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
+```
+
+Beklenen yapı:
 
 ```text
 experiments/<run_slug>/
@@ -31,230 +53,187 @@ experiments/<run_slug>/
 `-- experiment_manifest.json
 ```
 
-## LJSpeech metadata formatı
-
-`metadata_train.csv` ve varsa `metadata_eval.csv` başlıksız yazılır:
+`metadata_train.csv` ve `metadata_eval.csv` başlıksız yazılır:
 
 ```text
 VF_TR_001|metin|metin
 ```
 
-İlk sütunda `.wav` uzantısı bulunmaz. `VF_TR_001`, `dataset/wavs/VF_TR_001.wav` dosyasını temsil eden audio id değeridir.
+İlk sütunda `.wav` uzantısı bulunmaz. `VF_TR_001`, `dataset/wavs/VF_TR_001.wav` dosyasını temsil eder.
 
-## Neden 7.45 dakika veri deneysel sayılır?
+## 4. Training dry-run
 
-Mevcut dataset teknik olarak geçerlidir:
+Dry-run, training başlatmadan önce ortamı ve config üretimini kontrol eder.
 
-- 80 geçerli örnek
-- 0 uyarı
-- 0 hata
-- Yaklaşık 446.88 saniye / 7.448 dakika
-- Ortalama örnek süresi yaklaşık 5.586 saniye
-
-Bu, pipeline denemesi için anlamlıdır; ancak gerçek fine-tuning kalitesi için küçük bir veri miktarıdır. Bu yüzden readiness seviyesi `DATASET_VALID_BUT_SMALL` olarak değerlendirilir.
-
-## Training komutları
-
-Önce dataset export edilir:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
-```
-
-Training başlatmadan önce dry-run ile manifest, dataset klasörü, train/eval metadata dosyaları, checkpoint dosyaları, CUDA bilgisi, GPT trainer importları ve config oluşturma adımı kontrol edilebilir:
+Komut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
 ```
 
-Dry-run modeli eğitmez, `load_tts_samples` çalıştırmaz ve checkpoint indirme başlatmaz. Başarılı olduğunda terminalin sonunda şu satır görünmelidir:
+Dry-run şu kontrolleri yapar:
+
+- Experiment ve dataset yolları
+- Train/eval metadata dosyaları
+- Checkpoint dosyalarının varlığı
+- CUDA bilgisi
+- GPT trainer importları
+- `XttsAudioConfig` import kaynağı
+- Training config oluşturma
+- `limit_mode`, epoch fallback ve checkpoint ayarları
+- `TrainerArgs` içinde `start_with_eval`, `skip_train_epoch`, `grad_accum_steps`
+
+Başarılı dry-run sonunda şu satır görünür:
 
 ```text
 XTTS fine-tuning dry-run completed successfully
 ```
 
-Dry-run çıktısında varsayılan akış için `Start with eval: False` görünmelidir. `TrainerArgs ozeti` altında da şu değerler kontrol edilmelidir:
+Dry-run modeli eğitmez, `load_tts_samples` çalıştırmaz ve training checkpoint üretmez. Bu nedenle dry-run başarısı training başarısı değildir.
+
+## 5. Gerçek training
+
+Training yalnızca kullanıcı aşağıdaki komutu çalıştırırsa başlar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
+```
+
+Varsayılan akışta `-StartWithEval` kullanılmaz. Beklenen değerler:
 
 - `start_with_eval: False`
 - `skip_train_epoch: False`
-- `grad_accum_steps: <GradAccum degeri>`
-
-Training başlatmak için:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
-```
-
-Bu komut gerçekten training sürecini başlatır. Runner varsayılan olarak `-StartWithEval` geçmez; bu yüzden Python tarafında `start_with_eval=False` kullanılır. `-SaveStep 1`, kısa denemede checkpoint yazımını erken tetiklemek için kullanılır. Küçük dataset ve düşük adım sayısı nedeniyle çıkan model deneysel kabul edilmelidir.
-
-Sadece bilinçli bir karşılaştırma yapmak istenirse runner'a `-StartWithEval` eklenebilir. Küçük dataset denemelerinde varsayılan önerilen akış `start_with_eval=False` olarak kalmalıdır.
-
-## Beklenen çıktı klasörleri
-
-```text
-experiments/<run_slug>/dataset/
-experiments/<run_slug>/checkpoints/
-experiments/<run_slug>/training_output/
-fine_tuned_models/
-```
-
-`experiments/` ve `fine_tuned_models/` altındaki gerçek dosyalar GitHub'a eklenmemelidir. Bu klasörler büyük checkpoint, model, log ve trainer çıktıları içerebilir.
-
-## Olası hatalar
-
-### CUDA OOM
-
-GPU belleği yetmezse batch size değerini düşürün:
-
-```powershell
--BatchSize 1
-```
-
-Gerekirse `-GradAccum` değerini artırarak efektif batch davranışı korunabilir.
-
-### Coqui import hataları
-
-Kurulu `coqui-tts`, `TTS` veya `trainer` API'si beklenen recipe ile aynı değilse script hangi importun eksik olduğunu terminalde açık yazar. Dry-run şu importları özellikle ayrı ayrı kontrol eder:
-
-- `GPTArgs`
-- `GPTTrainer`
-- `GPTTrainerConfig`
-- `XttsAudioConfig` ve bulunduğu import kaynağı
-- `Trainer`
-- `TrainerArgs`
-- `BaseDatasetConfig`
-- `load_tts_samples`
-
-Bu durumda kurulu paket sürümü ve resmi XTTS GPT training recipe kontrol edilmelidir.
-
-### XttsAudioConfig uyumluluğu
-
-Bazı `coqui-tts` sürümlerinde `XttsAudioConfig`, `TTS.tts.layers.xtts.trainer.gpt_trainer` içinde bulunmaz. Script bu sınıfı sırayla şu modüllerde arar:
-
-- `TTS.tts.layers.xtts.trainer.gpt_trainer`
-- `TTS.tts.models.xtts`
-- `TTS.tts.configs.xtts_config`
-
-Bulunan kaynak terminalde `XttsAudioConfig import source: ...` satırıyla yazılır. Fallback ile bulunması hata değildir; yalnızca kurulu Coqui sürümünün sınıfı farklı modülde tuttuğunu gösterir.
-
-`XttsAudioConfig` oluşturulurken `sample_rate`, `dvae_sample_rate` ve `output_sample_rate` alanları constructor imzasına göre filtrelenir. Kurulu sürüm bu alanlardan birini desteklemiyorsa script o alanı vermeden devam eder ve desteklenen alanları `DEBUG: XttsAudioConfig desteklenen alanlar: ...` satırıyla gösterir.
-
-### XttsArgs unexpected keyword hatası
-
-`TypeError: XttsArgs.__init__() got an unexpected keyword argument 'max_conditioning_length'` hatası, XTTS GPT training için genel `XttsArgs` sınıfının yanlış yerde kullanılmasından kaynaklanır. Training scripti bu aşamada `TTS.tts.layers.xtts.trainer.gpt_trainer` içindeki `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. `XttsAudioConfig` ise kurulu `coqui-tts` sürümüne göre fallback import ile bulunur.
-
-Script, kurulu Coqui sürümünün desteklemediği config argümanlarını terminalde uyarı olarak gösterip atlamaya çalışır. Zorunlu bir argüman eksikse training başlamadan anlaşılır hata verir.
-
-### Max steps sınırı
-
-`-MaxSteps` küçük deneylerin uzun çalışmasını önlemek için kullanılır. Script, `GPTTrainerConfig` ve `TrainerArgs` constructor imzalarını `inspect.signature` ile kontrol eder ve mümkünse `max_steps` sınırını uygular.
-
-Dry-run çıktısında hangi limit mekanizmasının kullanılacağı açıkça yazılır:
-
-- `limit_mode: max_steps`
-- `limit_mode: epochs_fallback`
-- `limit_mode: unsupported`
-
-Kurulu `coqui-tts/trainer` sürümü `max_steps` desteklemiyorsa script `epochs` veya `num_epochs` alanı arar. Bunlardan biri destekleniyorsa güvenli fallback olarak `epochs=1` kullanılır ve terminalde şu mesaj görünür:
-
-```text
-max_steps desteklenmiyor; güvenli fallback olarak epochs=1 kullanılacak.
-```
-
-`max_steps` ve epoch tabanlı sınırların hiçbiri desteklenmiyorsa dry-run yine tamamlanabilir; ama gerçek training başlatılmaz. Bu durumda script exit code `1` ile çıkar ve şu hatayı verir:
-
-```text
-Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.
-```
-
-Bu durumda daha güvenli kısa deneme için epoch sınırı desteği eklenmeli veya kurulu trainer API'sine göre adım/epoch sınırı yeniden uyarlanmalıdır.
-
-Dry-run ve gerçek training öncesinde script şu config bilgilerini yazar:
-
-- requested max_steps
-- requested epochs
-- resolved limit_mode
-- config.epochs
-- config.num_epochs
-- save_step
-- save_checkpoints
-- save_n_checkpoints
-
-`TrainerArgs ozeti` bölümünde ayrıca `start_with_eval`, `skip_train_epoch` ve `grad_accum_steps` değerleri yazılır. Küçük deneyde beklenen güvenli varsayılan `start_with_eval: False` ve `skip_train_epoch: False` değerleridir.
-
-`limit_mode: epochs_fallback` ise script config üzerinde `epochs` veya `num_epochs` alanını gerçekten `1` veya daha büyük görmeyi bekler. Bu doğrulanamazsa gerçek training başlamaz ve şu hata verilir:
-
-```text
-Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.
-```
-
-### EPOCH: 0/0 ve checkpoint oluşmaması
-
-Bazı trainer sürümlerinde config limitleri doğru uygulanmadığında veya training eval ile başladığında trainer açılıp yalnızca eval çalıştırabilir. Bu durumda `EPOCH: 0/0` görünebilir ve `training_output/` altında checkpoint üretilmeyebilir. Bu durum gerçek training pass olarak kabul edilmez.
-
-Bu senaryoda önce dry-run çıktısını kontrol edin:
-
-- `Start with eval: False`
-- `TrainerArgs ozeti` altında `start_with_eval: False`
-- `TrainerArgs ozeti` altında `skip_train_epoch: False`
 - `save_step: 1`
 - `save_checkpoints: True`
 
-Gerçek training başlatırken normal komutta `-StartWithEval` kullanmayın:
+`-SaveStep 1`, kısa deneylerde checkpoint yazımını erken tetiklemek için kullanılır. Küçük dataset ve düşük adım sayısı nedeniyle çıkan model deneysel kabul edilmelidir.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
+## 6. Training başarı kriterleri
+
+Training başarısı artifact temellidir.
+
+Başarılı sayılmak için:
+
+1. Training komutu hata ile durmamalıdır.
+2. `training_output/` altında checkpoint artifact oluşmalıdır.
+3. Script checkpoint artifact yollarını terminale yazmalıdır.
+
+Checkpoint artifact örnekleri:
+
+```text
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+checkpoint_*
+best_model*
 ```
 
-Checkpoint yine oluşmazsa şu üç noktayı özellikle kontrol edin:
-
-- `start_with_eval=False` kullanılıyor mu?
-- `limit_mode: epochs_fallback` görünüyorsa `epochs` veya `num_epochs` gerçekte `1` veya daha büyük mü?
-- Kısa deneyde `save_step` değeri `1` olarak tutuluyor mu?
-
-Training bittikten sonra script `training_output/` klasörünü recursive tarar. `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunursa yolları terminale yazar ve şu mesajı verir:
+Checkpoint bulunursa beklenen mesaj:
 
 ```text
 Training completed and checkpoint artifacts were found.
 ```
 
-Checkpoint bulunamazsa script şu mesajı verir ve exit code `1` ile çıkar:
+Checkpoint bulunamazsa beklenen hata:
 
 ```text
 Training finished but no checkpoint artifact was found.
 ```
 
+`EPOCH: 0/0`, yalnızca evaluation çalışması veya trainer logunun tamamlanması başarı sayılmaz. Checkpoint yoksa deney başarısız kabul edilir.
+
+## 7. Training limit davranışı
+
+`-MaxSteps`, kısa deneylerin kontrolsüz uzamasını önlemek için kullanılır. Script, kurulu `coqui-tts` ve `trainer` API'sine göre limit mekanizmasını açıkça raporlar:
+
+- `limit_mode: max_steps`
+- `limit_mode: epochs_fallback`
+- `limit_mode: unsupported`
+
+`max_steps` desteklenmiyorsa ve config üzerinde güvenli `epochs` veya `num_epochs` alanı doğrulanabiliyorsa fallback olarak `epochs=1` kullanılır.
+
+Beklenen fallback mesajı:
+
+```text
+max_steps desteklenmiyor; güvenli fallback olarak epochs=1 kullanılacak.
+```
+
+Güvenli limit uygulanamıyorsa gerçek training başlatılmaz:
+
+```text
+Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.
+```
+
+Epoch fallback config üzerinde doğrulanamazsa gerçek training yine durdurulur:
+
+```text
+Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.
+```
+
+## 8. Sık görülebilecek hatalar
+
+### CUDA OOM
+
+GPU belleği yetmezse `-BatchSize 1` korunmalı, gerekirse `-GradAccum` artırılmalıdır.
+
+### Coqui import uyumsuzluğu
+
+Kurulu `coqui-tts`, `TTS` veya `trainer` sürümü beklenen XTTS GPT recipe ile aynı olmayabilir. Dry-run şu importları ayrı ayrı kontrol eder:
+
+- `GPTArgs`
+- `GPTTrainer`
+- `GPTTrainerConfig`
+- `XttsAudioConfig`
+- `Trainer`
+- `TrainerArgs`
+- `BaseDatasetConfig`
+- `load_tts_samples`
+
+`XttsAudioConfig` farklı modülden import edilebilir. Script bulunan kaynağı terminalde yazar; fallback kaynak kullanılması tek başına hata değildir.
+
+### EPOCH: 0/0
+
+`EPOCH: 0/0` görünürse ve checkpoint oluşmazsa bu gerçek training pass değildir. Önce şu değerler kontrol edilmelidir:
+
+- `start_with_eval: False`
+- `skip_train_epoch: False`
+- `save_step: 1`
+- `save_checkpoints: True`
+- `limit_mode` güvenli mi?
+- `epochs` veya `num_epochs` gerçekten `1` veya daha büyük mü?
+
 ### Checkpoint indirme hataları
 
-Training scripti eksik XTTS dosyalarını `experiments/<run_slug>/checkpoints/` altına indirmeyi dener. Ağ bağlantısı, Hugging Face erişimi veya sertifika sorunları indirmeyi engelleyebilir.
+Eksik XTTS dosyaları `experiments/<run_slug>/checkpoints/` altına indirilmeye çalışılır. Ağ, sertifika veya Hugging Face erişim sorunları indirmeyi engelleyebilir.
 
-### FFmpeg / torchcodec sorunları
+### FFmpeg / TorchCodec sorunları
 
-Training runner, Gyan.FFmpeg.Shared yolunu PATH başına eklemeye çalışır. Ses okuma tarafında FFmpeg, TorchCodec veya PyTorch/CUDA uyumsuzluğu çıkarsa önce FFmpeg yolu ve PyTorch CUDA kurulumu kontrol edilmelidir.
+Ses okuma tarafında FFmpeg, TorchCodec veya PyTorch/CUDA uyumsuzluğu görülebilir. Bu durumda önce FFmpeg yolu ve PyTorch CUDA kurulumu kontrol edilmelidir.
 
-## Training sonrası inference testi
+## 9. Training sonrası inference
 
-Training başarıyla checkpoint ürettiyse ilk amaç kalite iddiası değildir; fine-tuned checkpoint ile inference pipeline çalışıyor mu bunu görmektir. Bu adım yeni training başlatmaz, Gradio UI değiştirmez ve yeni paket eklemez.
+Training checkpoint ürettiyse ilk hedef kalite iddiası değildir; fine-tuned checkpoint ile inference pipeline'ın çalıştığını doğrulamaktır.
 
-İlk fine-tuned checkpoint inference denemesi için:
+Komut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Merhaba, bu ilk fine-tuned testidir."
 ```
 
-Script `training_output/` altında checkpointi şu öncelikle seçer:
+Checkpoint seçme önceliği:
 
 1. `best_model.pth`
 2. En yeni `best_model_*.pth`
 3. En yüksek numaralı `checkpoint_*.pth`
 
-Base XTTS dosyaları `experiments/<run_slug>/checkpoints/` içinden okunur. Fine-tuned GPT checkpoint olarak seçilen training output checkpointi kullanılır. Speaker wav verilmezse öncelik sırası şudur:
+Speaker wav önceliği:
 
 1. `profiles/baglare/preprocessed_reference.wav`
 2. `samples/my_voice.wav`
 3. Experiment dataset içinden kısa bir WAV
 
-Başarılı denemede şu dosyalar oluşur:
+Beklenen çıktılar:
 
 ```text
 outputs/finetuned_eval/base_test.wav
@@ -262,72 +241,55 @@ outputs/finetuned_eval/finetuned_test.wav
 outputs/reports/finetuned_eval_report.json
 ```
 
-Base output üretimi başarısız olursa fine-tuned deneme yine devam eder; hata JSON raporuna yazılır. Fine-tuned output başarısız olursa script exit code `1` ile biter ve hangi import, checkpoint yükleme veya synthesize çağrısında patladığını sade şekilde yazar.
+`best_model.pth` kalite garantisi değildir. Base ve fine-tuned dosyalar dinlenerek karşılaştırılmalıdır.
 
-`best_model.pth` kalite garantisi değildir. Base output ve fine-tuned output mutlaka dinlenerek karşılaştırılmalıdır. Mevcut 72 train / 8 eval örnekli küçük dataset nedeniyle ses benzerliği, telaffuz ve stabilite sınırlı olabilir.
+## 10. Checkpoint matrix evaluation
 
-## Checkpoint matrix evaluation
+Matrix evaluation, birden fazla checkpoint varyantını ve Türkçe test cümlesini karşılaştırmak için kullanılır. Bu akış otomatik kalite ölçümü değildir.
 
-Tek cümlelik testte fine-tuned ses robotik gelirse hemen yeni training başlatmadan önce birden fazla checkpoint ve birden fazla Türkçe test cümlesiyle karşılaştırma yapılmalıdır. Matrix evaluation akışı kaliteyi otomatik ölçmez; insan kulağıyla base ve fine-tuned çıktılar karşılaştırılır.
-
-Matrix testi için:
+Komut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
 ```
 
-Opsiyonel özel referans ses vermek için:
+Opsiyonel referans ses:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01 -SpeakerWav .\profiles\baglare\preprocessed_reference.wav
 ```
 
-Script şu varyantları dener:
+Denenen varyantlar:
 
 - `base`
 - `best_model.pth`
 - `best_model_72.pth`, varsa
 - En yüksek numaralı `checkpoint_*.pth`, varsa
 
-Aynı checkpoint iki kez seçilmez. Eksik checkpoint varyantı atlanır ve rapora yazılır.
-
-Çıktılar zaman damgalı klasöre yazılır:
+Çıktılar:
 
 ```text
 outputs/finetuned_eval/matrix/<timestamp>/
-|-- base/
-|   |-- test_01.wav
-|   `-- test_02.wav
-|-- best_model/
-|-- best_model_72/
-`-- checkpoint_71/
-```
-
-Rapor dosyaları:
-
-```text
 outputs/reports/finetuned_matrix_report.json
 outputs/reports/finetuned_matrix_report.md
 ```
 
-Dinleme sırası:
+Önerilen dinleme sırası:
 
-1. Önce `base` klasörünü dinleyin.
-2. Sonra fine-tuned varyantları sırayla dinleyin.
-3. Benzerlik, doğallık, telaffuz ve robotiklik açısından 1-5 puan verin.
-4. Fine-tuned çıktı base'den kötüyse daha fazla training basmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
+1. Önce `base` çıktılarını dinleyin.
+2. Sonra fine-tuned varyantları dinleyin.
+3. Benzerlik, doğallık, telaffuz, insanilik ve metin doğruluğu için not alın.
+4. Fine-tuned çıktı base'den zayıfsa yeni training yerine önce veri, referans ve checkpoint seçimini değerlendirin.
 
-Robotiklik duyuluyorsa bunun nedeni yalnızca checkpoint olmayabilir. Kayıt temizliği, referans ses seçimi, dataset çeşitliliği, transkript uyumu ve kısa dataset sınırı birlikte incelenmelidir.
+## 11. Human evaluation scorecard
 
-## Human evaluation scorecard
-
-Matrix evaluation çıktıları dinlendikten sonra manuel puanları tek bir scorecard dosyasına kaydetmek için:
+Matrix çıktıları dinlendikten sonra manuel puanları raporlamak için:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
 ```
 
-Bu komut training başlatmaz, yeni model eğitmez ve Gradio UI'a dokunmaz. `-UseDefaultScores`, ilk manuel dinleme puanlarını kullanarak şu dosyaları üretir:
+Oluşan dosyalar:
 
 ```text
 outputs/reports/human_eval_scorecard.csv
@@ -335,73 +297,50 @@ outputs/reports/human_eval_summary.json
 outputs/reports/human_eval_summary.md
 ```
 
-CSV dosyası noktalı virgül (`;`) ile ayrılır ve sonradan elle düzenlenebilir:
+CSV başlığı:
 
 ```text
 variant;naturalness;similarity;pronunciation;human_likeness;text_accuracy;total_score;notes
 ```
 
-Puanlama 1 kötü, 5 iyi olacak şekilde yorumlanır. `human_likeness` alanında 1 daha robotik, 5 daha insan gibi kabul edilir.
+Puanlama 1-5 aralığındadır. Bu otomatik kalite ölçümü değildir; sonuçlar insan dinlemesine dayanır ve küçük dataset sınırıyla birlikte yorumlanmalıdır.
 
-Bu otomatik kalite ölçümü değildir. Ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır. İlk puanlara göre fine-tuning pipeline teknik olarak başarılıdır; kalite artışı sınırlıdır. `best_model` base'e göre küçük iyileşme gösterir. `checkpoint_71` daha yüksek puan alsa da bazı kayıtlarda cümle erken kesiliyor gibi olduğu için güvenilir kabul edilmemelidir. Daha fazla veri, daha iyi referans kayıt ve inference ayarı değerlendirilmelidir.
+Mevcut değerlendirme yorumu: fine-tuning pipeline teknik olarak çalışmıştır, ancak kalite artışı sınırlıdır. Bazı checkpointlerde erken kesilme veya robotiklik duyulabilir.
 
-## Inference parameter sweep
+## 12. Inference parameter sweep
 
-`checkpoint_71` gibi daha iyi puan alan ama bazı kayıtlarda cümleyi erken kesiyor gibi duran checkpointler için training başlatmadan önce inference parametreleri karşılaştırılabilir. Bu akış yeni model eğitmez, model indirme başlatmaz ve Gradio UI'a dokunmaz.
+Bazı checkpointler daha iyi puan alıp uzun cümlelerde erken kesilme gösterebilir. Bu durumda yeni training başlatmadan önce inference parametreleri karşılaştırılabilir.
 
-Varsayılan test:
+Komut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
 ```
 
-Opsiyonel özel referans ses vermek için:
+Opsiyonel referans ses:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71 -SpeakerWav .\profiles\baglare\preprocessed_reference.wav
 ```
 
-Desteklenen varyantlar:
+Parametre setleri:
 
-- `base`
-- `best_model`
-- `best_model_72`
-- `checkpoint_71`
+- `default`
+- `conservative`
+- `stable`
+- `longer_attempt`
 
-Script seçilen varyant için şu parametre setlerini dener:
-
-- `default`: ekstra parametre yok
-- `conservative`: `temperature=0.65`, `top_p=0.8`, `top_k=50`
-- `stable`: `temperature=0.7`, `top_p=0.85`, `top_k=50`, `repetition_penalty=5.0`
-- `longer_attempt`: `temperature=0.75`, `top_p=0.9`, `top_k=80`, `length_penalty=1.0`
-
-Çıktılar şu klasör yapısına yazılır:
+Çıktılar:
 
 ```text
 outputs/finetuned_eval/param_sweep/<timestamp>/<variant>/<param_set>/test_01.wav
-```
-
-Seçilen varyant `base` değilse script aynı metinleri `base/default` ile de üretmeye çalışır. Base üretim başarısız olursa seçilen checkpoint testi engellenmez; hata rapora yazılır.
-
-Rapor dosyaları:
-
-```text
 outputs/reports/inference_param_sweep_report.json
 outputs/reports/inference_param_sweep_report.md
 ```
 
-Her çıktı için `ffprobe` ile süre ölçülür. Uzun metinde çıktı 2 saniyeden kısaysa `likely_cutoff`, aynı testin base çıktısına göre belirgin kısa kalırsa `possibly_cutoff` işareti yazılır. Bu işaretler otomatik kalite garantisi değildir; erken kesilmeyi anlamak için karşılaştırmalı dinleme gerekir.
+Raporlarda `likely_cutoff` ve `possibly_cutoff` gibi işaretler görülebilir. Bu işaretler kalite garantisi değildir; erken kesilme karşılaştırmalı dinleme ile doğrulanmalıdır.
 
-Dinleme sırası:
-
-1. Önce `default` parametrelerini dinleyin.
-2. Sonra `stable` ve `longer_attempt` çıktılarıyla karşılaştırın.
-3. Erken kesilme azalıyorsa o parametre setini not alın.
-4. Kalite bozuluyorsa checkpoint yerine `best_model` veya daha fazla veri tercih edilmelidir.
-
-Daha fazla training basmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
-
-## Uzun metinlerde chunking
+## 13. Uzun metinlerde chunking
 
 XTTS Türkçe inference tarafında uzun metinler için karakter sınırı uyarısı verebilir:
 
@@ -409,35 +348,42 @@ XTTS Türkçe inference tarafında uzun metinler için karakter sınırı uyarı
 The text length exceeds the character limit of 226 for language 'tr', this might cause truncated audio
 ```
 
-Bu uyarı görüldüğünde uzun metin tek parça olarak verilirse ses erken kesilmiş gibi duyulabilir. VoxForge eval scriptleri bu riski azaltmak için 220 karakter üstündeki metinleri güvenli parçalara böler.
+VoxForge eval scriptleri bu riski azaltmak için 220 karakter üstündeki metinleri parçalara böler. Her parça ayrı üretilir ve FFmpeg ile tek final WAV dosyasına birleştirilir.
 
-Bölme önceliği:
-
-1. Cümle sonu: `.`, `?`, `!`
-2. Noktalı virgül veya iki nokta: `;`, `:`
-3. Virgül
-4. Boşluk
-5. Hiç uygun yer yoksa zorunlu kesim
-
-Chunking şu scriptlerde kullanılır:
+Chunking kullanılan scriptler:
 
 - `scripts/evaluate_xtts_finetuned_checkpoint.py`
 - `scripts/evaluate_xtts_checkpoint_matrix.py`
 - `scripts/evaluate_xtts_inference_params.py`
 
-Her chunk ayrı üretilir ve FFmpeg ile tek final WAV dosyasına birleştirilir. Raporlara `chunking_used`, `chunk_count` ve `chunks` alanları yazılır. Matrix ve param sweep raporlarında hangi test metninin kaç parçaya bölündüğü ayrıca görülebilir.
+Raporlarda `chunking_used`, `chunk_count` ve `chunks` alanları yer alır.
 
-Chunking ses kalitesini garanti etmez. Ama uzun metnin sessizce kırpılmasını azaltır. Parçalar sonradan birleştirildiği için cümleler arası küçük geçiş farkları, ton değişimleri veya nefes hissi farklılıkları duyulabilir.
+Chunking ses kalitesini garanti etmez. Uzun metnin sessizce kırpılmasını azaltır; ancak parça geçişlerinde küçük ton veya ritim farkları duyulabilir.
 
-## Training sonrası model nasıl değerlendirilecek?
+## 14. Çıktı klasörleri ve GitHub sınırı
 
-İlk inference scripti yalnızca teknik pipeline kontrolüdür. Kalite değerlendirmesi için şu kontroller ayrıca yapılmalıdır:
+Deney sırasında oluşan gerçek dosyalar local kalmalıdır:
 
-- Aynı test metinlerini base XTTS ve fine-tuned checkpoint ile karşılaştırmak
-- Ses benzerliğini kulakla değerlendirmek
-- Telaffuz, gürültü, hız ve stabilite notları tutmak
-- Kısa datasetin overfit davranışı üretip üretmediğini kontrol etmek
+```text
+experiments/<run_slug>/dataset/
+experiments/<run_slug>/checkpoints/
+experiments/<run_slug>/training_output/
+fine_tuned_models/
+outputs/finetuned_eval/
+outputs/reports/
+```
 
-## Bu aşamanın portfolyo değeri
+Bu klasörlerde WAV dosyaları, checkpointler, model çıktıları, trainer logları ve değerlendirme raporları bulunabilir. GitHub'a eklenmemelidir.
 
-Bu çalışma, yalnızca demo üretiminden ileri gidip veri hazırlama, dataset doğrulama, export, deney manifesti, checkpoint hijyeni ve kontrollü training başlatma altyapısını gösterir. Model kalitesini abartmadan, yerel ve etik bir fine-tuning deneyi için gereken mühendislik iskeletini ortaya koyar.
+## 15. Sonuç nasıl yorumlanmalı?
+
+Mevcut deney şu teknik sonucu gösterir:
+
+- Dataset export çalışır.
+- Training dry-run ortam ve config kontrolü yapar.
+- Gerçek training checkpoint üretebilir.
+- Fine-tuned checkpoint ile inference çalışır.
+- Base ve fine-tuned çıktılar karşılaştırmalı üretilebilir.
+- Matrix ve human evaluation ile manuel değerlendirme yapılabilir.
+
+Kalite garantisi yoktur. Mevcut yaklaşık 7.45 dakikalık dataset ile kalite artışı sınırlıdır. Daha iyi sonuç için daha fazla veri, daha tutarlı kayıt, checkpoint seçimi, training ayarı ve inference parametresi denemeleri gerekir.

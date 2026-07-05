@@ -2,88 +2,160 @@
 
 ## 1. VoxForge nedir?
 
-VoxForge, Windows üzerinde local çalışacak şekilde tasarlanmış bir Python ses üretim MVP'sidir. Proje, Coqui XTTS-v2 modeliyle referans ses kullanarak Türkçe metin seslendirme denemesi yapar.
+VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Proje, Coqui XTTS-v2 modeliyle referans sese dayalı ses üretimi, yerel voice profile yönetimi, referans ses ön işleme, kalite raporlama ve deneysel XTTS GPT fine-tuning akışlarını tek bir local çalışma düzeninde toplar.
 
-Bu ilk aşama, zero-shot/reference-based voice cloning yaklaşımına odaklanır. Yani model, ayrıca eğitilmiş özel bir ses modeli olmadan, verilen referans ses dosyasından konuşma karakteristiği almaya çalışır. Fine-tuning daha sonraki gelişmiş aşama olarak planlanmıştır.
+Ana kullanım modeli local-first olarak tasarlanmıştır. Ses kayıtları, profiller, datasetler, deney çıktıları, checkpointler ve raporlar kullanıcının makinesinde kalır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu kapsamda yoktur.
 
-## 2. Mevcut MVP durumu
+VoxForge kalite garantisi veren bir ses klonlama ürünü değildir. Model çıktısı; referans kayıt kalitesi, veri miktarı, metin içeriği, inference ayarları ve XTTS model davranışına bağlıdır.
 
-Mevcut durumda proje local ortamda çalışan bir MVP seviyesindedir:
+## 2. Mevcut durum
 
-- XTTS-v2 ile referans ses kullanarak Türkçe metin seslendirme yapılır.
-- Terminalden çalışan ilk minimum XTTS deneme akışı vardır.
-- Gradio tabanlı local web demo vardır.
-- Varsayılan referans ses yolu `samples/my_voice.wav` olarak kullanılır.
-- Kullanıcı Gradio arayüzünden harici referans ses yükleyebilir.
-- Kullanıcı Gradio arayüzünden profil adı, referans ses ve izin checkbox'ı ile yeni yerel voice profile oluşturabilir.
-- Yerel voice profile sistemi ile sık kullanılan referans sesler `profiles/` altında saklanabilir.
-- Gradio arayüzünde yerel ses profili dropdown'ı vardır.
-- Profil oluşturulduktan sonra dropdown güncellenir ve mümkünse yeni profil seçili hale gelir.
-- Oluşturulan profil `profiles/<profile_slug>/` altında kalıcı kalır; Gradio kapanınca silinmez.
-- Aynı profil adı tekrar kullanılırsa mevcut profilin üzerine yazılmaz.
-- Gradio üretim önceliği açıkça şudur: seçili profil > yüklenen referans ses > varsayılan `samples/my_voice.wav`.
-- Ses üretimi için izin checkbox kontrolü vardır.
-- Boş metin girişi kontrol edilir.
-- FFmpeg ile referans ses ön işleme yapılır.
-- Ön işlenmiş referanslar `outputs/preprocessed_references/` altına kaydedilir.
-- Gradio ile üretilen sesler `outputs/gradio_outputs/` altına kaydedilir.
-- Referans ses kalite analizi yapılır.
-- Ham ve ön işlenmiş referans kalite raporları Gradio'da gösterilir.
-- Kalite raporları `outputs/reports/gradio_quality_reports/` altına JSON olarak kaydedilir.
-- Fine-tuning'e geçmeden önce local dataset iskeleti oluşturma ve doğrulama desteği vardır.
-- Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training başlatma altyapısı vardır; bu akış kalite garantisi vermez ve Gradio UI'a bağlı değildir.
-- Deneysel fine-tuned checkpoint için ilk inference ve base XTTS karşılaştırma çıktısı üretme akışı vardır.
-- Fine-tuned checkpoint kalitesini birden fazla checkpoint ve Türkçe test cümlesiyle karşılaştıran matrix evaluation akışı vardır.
-- Fine-tuned matrix çıktıları için manuel dinleme scorecard raporu oluşturma akışı vardır.
-- Fine-tuned checkpointlerde görülebilecek erken kesilme riskini inference parametreleriyle karşılaştıran param sweep akışı vardır.
-- Türkçe XTTS karakter sınırı aşılırsa eval scriptleri uzun metni güvenli parçalara bölüp final WAV olarak birleştirir.
+Proje şu anda yerel kullanım için çalışan bir teknik prototip seviyesindedir:
 
-Proje sadece local çalışacak şekilde tasarlanmıştır. Public hosting, hesap sistemi, uzak API servisi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
+- Local Gradio demo çalışır.
+- XTTS-v2 ile reference-based / zero-shot Türkçe ses üretimi yapılır.
+- Yerel voice profile oluşturma, seçme, yenileme ve silme akışları vardır.
+- Referans sesler FFmpeg ile mono, 24000 Hz WAV formatına ön işlenir.
+- Ham ve ön işlenmiş referanslar için kalite raporu üretilir.
+- Fine-tuning dataset iskeleti oluşturma, metadata üretme, dataset doğrulama ve readiness report akışları vardır.
+- Deneysel XTTS GPT fine-tuning için dataset export ve kontrollü training runner bulunur.
+- Mevcut deneyde yaklaşık 7.45 dakika / 80 örnek ile training pipeline çalıştırılmış, checkpoint üretilmiş ve fine-tuned checkpoint inference denenmiştir.
+- Matrix evaluation, human evaluation scorecard ve inference parameter sweep akışları eklenmiştir.
+- Uzun Türkçe metinlerde chunking ve WAV birleştirme desteği vardır.
 
-## 3. Temel özellikler
+Deneysel fine-tuning sonucu teknik olarak çalışır durumdadır; ancak kalite artışı sınırlıdır. Daha güçlü sonuçlar için daha fazla veri, daha dengeli kayıt seti, checkpoint seçimi ve inference ayarı denemeleri gerekir.
 
-- Windows odaklı PowerShell çalıştırma dosyaları
-- Coqui XTTS-v2 modeli ile Türkçe ses üretimi
-- Referans ses ile zero-shot ses klonlama denemesi
-- Local Gradio demo arayüzü
-- Varsayılan referans ses kullanımı: `samples/my_voice.wav`
-- Harici referans ses yükleme desteği
-- Web arayüzünden yerel voice profile oluşturma desteği
-- Terminalden yerel voice profile oluşturma alternatifi
-- Gradio'da profil seçme ve profil dropdown'ını güncelleme desteği
-- İzin checkbox kontrolü
-- Boş metin kontrolü
-- FFmpeg ile mono, 24000 Hz WAV referans hazırlama
-- Ham ve ön işlenmiş referans kalite raporu
-- Yerel fine-tuning dataset hazırlığı ve doğrulama scriptleri
-- Deneysel XTTS fine-tuning dataset export ve training runner scriptleri
-- Deneysel fine-tuned checkpoint değerlendirme runner scripti
-- Çoklu checkpoint matrix evaluation runner scripti
-- Manuel human evaluation scorecard runner scripti
-- Erken kesilme / inference ayarı param sweep runner scripti
-- Uzun Türkçe metinler için güvenli text chunking ve WAV birleştirme yardımcıları
-- Üretilen sesleri ve raporları local `outputs/` klasöründe tutma
-- Hassas ses dosyalarını, voice profile dosyalarını ve çıktıları GitHub dışında bırakmaya uygun `.gitignore` yapısı
+## 3. Mühendislik kapsamı
 
-## 4. Kullanıcı akışı
+VoxForge aşağıdaki teknik alanları kapsar:
 
-1. Projeyi Windows makinede local olarak açın.
-2. Python sanal ortamını oluşturun ve bağımlılıkları kurun.
-3. Kendi sesinizi veya açık izinli bir referans sesi `samples/my_voice.wav` olarak ekleyin.
-4. İlk terminal denemesini çalıştırarak XTTS akışını doğrulayın.
-5. Gradio demosunu başlatın.
-6. İsterseniz web arayüzünden yeni bir yerel voice profile oluşturun.
-7. Profil oluşturmak için profil adını girin, referans ses yükleyin, izin checkbox'ını işaretleyin ve `Profil oluştur` butonuna basın.
-8. Oluşturulan profil `profiles/<profile_slug>/` altında kalıcı olarak saklanır; Gradio kapansa bile silinmez.
-9. Türkçe metni girin.
-10. Gradio'da bir yerel profil seçin veya profil seçmeden harici referans ses yükleyin.
-11. Sesin size ait olduğunu veya kullanma izniniz olduğunu checkbox ile onaylayın.
-12. Ses üretimini başlatın.
-13. Üretilen sesi Gradio arayüzünde dinleyin.
-14. Ham ve ön işlenmiş referans kalite raporlarını kontrol edin.
-15. Local çıktı dosyalarını `outputs/` altında inceleyin.
+- Windows PowerShell runner yapısı
+- Python sanal ortamı ve local dosya sözleşmeleri
+- Coqui XTTS-v2 model entegrasyonu
+- Gradio tabanlı yerel kullanım arayüzü
+- Referans ses ön işleme ve kalite analizi
+- Kalıcı yerel voice profile yönetimi
+- Fine-tuning dataset hazırlığı ve doğrulama
+- Artifact temelli training başarı kontrolü
+- Base / fine-tuned checkpoint karşılaştırması
+- Yerel veri gizliliği ve GitHub hijyeni
 
-## 5. Proje yapısı
+## 4. Temel özellikler
+
+- Türkçe metin için XTTS-v2 tabanlı ses üretimi
+- Seçili profil > yüklenen referans ses > `samples/my_voice.wav` önceliği
+- Gradio üzerinden yerel voice profile oluşturma
+- Terminalden profil oluşturma, listeleme, yenileme ve silme
+- Referans ses için safe preprocessing
+- `GOOD`, `WARNING`, `BAD` durumlarıyla kalite raporu
+- Fine-tuning dataset klasörü ve kayıt planı üretimi
+- Metadata üretimi ve dataset validation
+- Readiness report ile dataset hazırlık seviyesi
+- Deneysel XTTS GPT fine-tuning export ve training akışı
+- Checkpoint üretimi zorunlu training başarı kriteri
+- Fine-tuned checkpoint inference
+- Matrix evaluation ve manuel human scorecard
+- Inference parameter sweep
+- Uzun metinlerde chunking ve final WAV birleştirme
+- Yerel ses, model, dataset ve çıktı dosyalarını Git dışında tutan `.gitignore`
+
+## 5. Sistem akışı
+
+Temel reference-based kullanım akışı:
+
+1. Proje Windows makinede açılır.
+2. Python sanal ortamı hazırlanır ve bağımlılıklar kurulur.
+3. Kullanıcının kendi sesi veya açık izinli bir referans ses local klasöre eklenir.
+4. Gradio demo başlatılır.
+5. Kullanıcı mevcut voice profile seçer veya yeni referans ses yükler.
+6. Referans ses ön işlenir ve kalite raporu üretilir.
+7. Kullanıcı Türkçe metni girer ve izin checkbox'ını onaylar.
+8. XTTS-v2 inference çalışır.
+9. Üretilen WAV ve raporlar `outputs/` altında local olarak saklanır.
+
+Fine-tuning deney akışı:
+
+1. Dataset klasörü oluşturulur.
+2. Kayıt planı hazırlanır.
+3. Tamamlanan kayıtlar metadata dosyasına aktarılır.
+4. Dataset validation ve readiness report çalıştırılır.
+5. Dataset deney klasörüne export edilir.
+6. Training için dry-run yapılır.
+7. Gerçek training yalnızca kullanıcı komutu çalıştırırsa başlar.
+8. Training başarı kriteri olarak checkpoint artifact aranır.
+9. Checkpoint ile inference, matrix evaluation ve human evaluation yapılır.
+
+## 6. Yerel voice profile yönetimi
+
+Voice profile sistemi, sık kullanılan referans sesleri local bir profil klasörü olarak saklar. Bu sistem yeni model eğitmez; sadece referans ses seçimini, ön işlemeyi ve tekrar kullanımı düzenler.
+
+Profil klasörü yapısı:
+
+```text
+profiles/<profile_slug>/
+|-- original_reference.wav
+|-- preprocessed_reference.wav
+`-- profile.json
+```
+
+Gradio arayüzünden profil oluşturmak için kullanıcı profil adı girer, referans ses yükler ve ses üzerinde hakkı veya açık izni olduğunu checkbox ile onaylar. Profil oluşturulduktan sonra dropdown güncellenir. Aynı profil adı tekrar kullanılırsa mevcut profilin üzerine yazılmaz.
+
+Bir profil seçildiğinde `profiles/<slug>/preprocessed_reference.wav` doğrudan XTTS `speaker_wav` olarak kullanılır. Bu durumda ayrıca yüklenen referans ses bilinçli olarak yok sayılır.
+
+Profil yenileme işlemi `original_reference.wav` dosyasını korur, `preprocessed_reference.wav` dosyasını yeniden üretir ve `profile.json` içindeki kalite bilgisini günceller. Profil silme işlemi yalnızca ilgili profil klasörünü kaldırır; `profiles/.gitkeep` korunur.
+
+## 7. Reference-based ses üretimi
+
+Reference-based / zero-shot üretimde kişiye özel yeni bir model eğitilmez. XTTS-v2, verilen referans sesin konuşma karakteristiğini inference sırasında kullanmaya çalışır.
+
+Referans seçim sırası:
+
+1. Seçili yerel voice profile
+2. Gradio üzerinden yüklenen referans ses
+3. Varsayılan local dosya: `samples/my_voice.wav`
+
+Referans ses için pratik koşullar:
+
+- Tek kişinin konuştuğu temiz kayıt kullanılmalıdır.
+- Arka plan müziği, ortam gürültüsü ve clipping olmamalıdır.
+- 30-90 saniye arası doğal konuşma reference-based kullanım için daha tutarlı sonuç verebilir.
+- Kalite raporu teknik sinyal verir; nihai ses kalitesi dinlenerek değerlendirilmelidir.
+
+## 8. Fine-tuning hazırlığı
+
+Fine-tuning hazırlığı, yerel datasetin teknik olarak kullanılabilir olup olmadığını kontrol eder. Bu aşama tek başına training başlatmaz.
+
+Hazırlık bileşenleri:
+
+- Dataset klasörü ve `wavs/` alt klasörü
+- `metadata.csv` dosyası
+- Kayıt planı üretimi
+- DONE kayıtlarından metadata oluşturma
+- WAV dosyası, süre, kanal, sample rate ve clipping kontrolleri
+- Toplam süre ve örnek sayısına göre readiness report
+
+10 dakikadan kısa ama hatasız datasetler teknik olarak geçerli olabilir; ancak gerçek kalite beklentisi açısından küçük kabul edilir. Bu durumda readiness seviyesi `DATASET_VALID_BUT_SMALL` olarak raporlanabilir.
+
+## 9. Deneysel fine-tuning ve değerlendirme
+
+VoxForge içinde XTTS-v2 GPT encoder fine-tuning deneyi için export, dry-run, training, checkpoint doğrulama ve değerlendirme akışları bulunur.
+
+Mevcut deney özeti:
+
+- Dataset: yaklaşık 7.45 dakika / 80 örnek
+- Training pipeline çalıştı.
+- Checkpoint üretildi.
+- Fine-tuned checkpoint inference çalıştı.
+- Matrix evaluation yapıldı.
+- Human evaluation scorecard oluşturuldu.
+- Kalite artışı sınırlı kaldı.
+- Uzun metinlerde chunking ve WAV birleştirme eklendi.
+
+Training başarısı yalnızca trainer loglarına göre değerlendirilmez. Gerçek training sonunda `training_output/` altında `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunmalıdır. Checkpoint yoksa işlem başarısız kabul edilir.
+
+Bu deney kalite garantisi vermez. Küçük dataset, checkpoint seçimi, inference parametreleri ve kayıt çeşitliliği çıktıyı doğrudan etkiler.
+
+## 10. Proje yapısı
 
 ```text
 VoxForge/
@@ -93,9 +165,9 @@ VoxForge/
 |   |-- first_xtts_test.py
 |   |-- create_voice_profile.py
 |   |-- list_voice_profiles.py
-|   |-- voice_profile_utils.py
 |   |-- delete_voice_profile.py
 |   |-- recreate_voice_profile.py
+|   |-- voice_profile_utils.py
 |   |-- init_finetune_dataset.py
 |   |-- validate_finetune_dataset.py
 |   |-- finetune_readiness_report.py
@@ -107,81 +179,35 @@ VoxForge/
 |   |-- evaluate_xtts_inference_params.py
 |   |-- text_chunking_utils.py
 |   |-- audio_concat_utils.py
-|   |-- generate_recording_plan.py
-|   |-- build_metadata_from_recording_plan.py
-|   |-- smoke_check.py
 |   |-- prepare_reference_audio.py
-|   |-- compare_reference_quality.py
-|   |-- analyze_reference_audio.py
-|   |-- audio_preprocessing_utils.py
 |   `-- audio_quality_utils.py
-|-- samples/
-|   `-- .gitkeep
-|-- profiles/
-|   |-- .gitkeep
-|   `-- <profile-slug>/
-|       |-- original_reference.wav
-|       |-- preprocessed_reference.wav
-|       `-- profile.json
-|-- datasets/
-|   |-- .gitkeep
-|   `-- <dataset-slug>/
-|       |-- wavs/
-|       |-- metadata.csv
-|       `-- dataset_report.json
-|-- experiments/
-|   `-- .gitkeep
-|-- fine_tuned_models/
-|   `-- .gitkeep
-|-- outputs/
-|   |-- .gitkeep
-|   |-- gradio_outputs/
-|   |   `-- .gitkeep
-|   |-- preprocessed_references/
-|   |-- reports/
-|   |   `-- gradio_quality_reports/
-|   `-- ab_tests/
-|-- requirements.txt
-|-- run_first_xtts_test.ps1
-|-- run_gradio_demo.ps1
-|-- run_create_voice_profile.ps1
-|-- run_list_voice_profiles.ps1
-|-- run_delete_voice_profile.ps1
-|-- run_recreate_voice_profile.ps1
-|-- run_smoke_check.ps1
-|-- run_audio_quality_report.ps1
-|-- run_compare_reference_quality.ps1
-|-- run_init_finetune_dataset.ps1
-|-- run_validate_finetune_dataset.ps1
-|-- run_finetune_readiness_report.ps1
-|-- run_export_xtts_finetune_dataset.ps1
-|-- run_train_xtts_experiment.ps1
-|-- run_evaluate_xtts_finetuned.ps1
-|-- run_evaluate_xtts_matrix.ps1
-|-- run_create_human_eval_report.ps1
-|-- run_evaluate_xtts_inference_params.ps1
-|-- run_generate_recording_plan.ps1
-|-- run_build_metadata.ps1
 |-- docs/
 |   |-- DEMO_SCRIPT.md
 |   |-- FINE_TUNING_PREP.md
+|   |-- PROJECT_STATUS.md
 |   |-- RECORDING_TEXT_SET_TR.md
 |   |-- SETUP_WINDOWS.md
 |   |-- TEST_CHECKLIST.md
+|   |-- VOICE_PROFILES.md
 |   |-- VOICE_REFERENCE_GUIDE.md
-|   |-- XTTS_FINETUNING_EXPERIMENT.md
-|   `-- VOICE_PROFILES.md
+|   `-- XTTS_FINETUNING_EXPERIMENT.md
+|-- samples/
+|-- profiles/
+|-- datasets/
+|-- experiments/
+|-- fine_tuned_models/
+|-- outputs/
+|-- requirements.txt
+|-- run_*.ps1
 |-- .gitignore
 `-- README.md
 ```
 
-Not: `samples/`, `profiles/`, `datasets/`, `experiments/`, `fine_tuned_models/` ve `outputs/` altındaki gerçek ses, dataset, checkpoint, model ve rapor dosyaları GitHub'a yüklenmemelidir. Bu klasörler local çalışma verileri içindir. `.gitkeep` dosyaları, boş klasör niyetinin GitHub'da görünür kalması için tutulur.
+`samples/`, `profiles/`, `datasets/`, `experiments/`, `fine_tuned_models/` ve `outputs/` altındaki gerçek çalışma dosyaları GitHub'a eklenmemelidir. Bu klasörlerde yalnızca `.gitkeep` gibi iskelet dosyaları repoda tutulur.
 
-## 6. Kurulum notları
+## 11. Kurulum
 
-Proje Windows odaklıdır ve local Python sanal ortamı ile çalıştırılır. `.venv/` klasörü GitHub'a yüklenmez.
-
-Genel kurulum akışı:
+Proje Windows ve PowerShell odaklıdır.
 
 ```powershell
 python -m venv .venv
@@ -189,105 +215,51 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-XTTS modeli ilk çalıştırmada model dosyalarını indirebilir. Bu dosyalar büyük olabilir ve repoya dahil edilmez.
+XTTS ilk çalıştırmada model dosyalarını indirebilir. Model cache dosyaları büyük olabilir ve repoya dahil edilmez.
 
-Referans ses için:
+FFmpeg/FFprobe, referans ses ön işleme ve kalite analizi için gereklidir. PowerShell runner dosyaları `Gyan.FFmpeg.Shared` kurulumunu yaygın WinGet dizinlerinde bulmaya çalışır; bulunursa ilgili klasör geçici olarak `PATH` başına eklenir.
 
-- Kişisel ses dosyaları repoya dahil edilmez.
-- Varsayılan local referans yolu `samples/my_voice.wav` olarak kullanılır.
-- Bu dosya kullanıcının kendi sesi veya açık izinli bir ses olmalıdır.
+## 12. Çalıştırma komutları
 
-## 7. Windows / FFmpeg Shared notu
-
-PowerShell çalıştırma dosyaları Windows için hazırlanmıştır. Scriptler, `Gyan.FFmpeg.Shared` paketiyle gelen `ffmpeg.exe` dosyasını yaygın WinGet kurulum dizinlerinde otomatik bulmaya çalışır.
-
-Bulunursa FFmpeg klasörü geçici olarak `PATH` başına eklenir ve ilgili Python scripti bu ortamla çalıştırılır. Bulunamazsa mevcut `PATH` ile devam edilir.
-
-Kalite analizi ve referans ses ön işleme için FFmpeg/FFprobe gereklidir. FFmpeg bulunamazsa kalite analizi eksik kalabilir veya ön işleme adımı başarısız olabilir.
-
-## 8. Çalıştırma komutları
-
-İlk minimum XTTS terminal denemesi:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_first_xtts_test.ps1
-```
-
-Local Gradio web demosu:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
-```
-
-Hızlı smoke test:
+Temel kontroller:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_smoke_check.ps1
+powershell -ExecutionPolicy Bypass -File .\run_first_xtts_test.ps1
+powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 ```
 
-Terminalden yerel voice profile oluşturma (Gradio içindeki web akışına alternatif yöntem):
+Voice profile yönetimi:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
-```
-
-Yerel voice profile silme:
-
-```powershell
+powershell -ExecutionPolicy Bypass -File .\run_list_voice_profiles.ps1
+powershell -ExecutionPolicy Bypass -File .\run_recreate_voice_profile.ps1 -Slug baglare
 powershell -ExecutionPolicy Bypass -File .\run_delete_voice_profile.ps1 -Slug baglare -Yes
 ```
 
-Yerel voice profile yenileme:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_recreate_voice_profile.ps1 -Slug baglare
-```
-
-Referans ses kalite raporu:
+Referans ses kalite kontrolleri:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_audio_quality_report.ps1
-```
-
-Ham ve ön işlenmiş referans ses A/B karşılaştırması:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_compare_reference_quality.ps1
 ```
 
-Fine-tuning dataset iskeleti oluşturma:
+Fine-tuning dataset hazırlığı:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
-```
-
-Fine-tuning dataset doğrulama:
-
-```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
+powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
 powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Fine-tuning readiness report:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
 ```
 
-Deneysel XTTS fine-tuning dataset export:
+Deneysel XTTS fine-tuning:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
-```
-
-Deneysel XTTS training dry-run:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
-```
-
-Deneysel XTTS training başlatma:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
 ```
 
@@ -295,279 +267,51 @@ Fine-tuned checkpoint değerlendirme:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Merhaba, bu ilk fine-tuned testidir."
-```
-
-Checkpoint matrix karşılaştırması:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
-```
-
-Manuel kalite değerlendirme scorecard raporu:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
-```
-
-Erken kesilme / inference ayarı testi:
-
-```powershell
 powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
 ```
 
-Fine-tuning kayıt planı üretme:
+## 13. Yerel veri, gizlilik ve etik kullanım
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
-```
+VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle kullanılmalıdır. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
 
-Kayıt planından metadata oluşturma:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-## 9. Test / kontrol
-
-Hızlı smoke test, model ağırlıklarını yüklemeden ve ses üretmeden temel proje sağlığını kontrol eder. Dosya yapısını, `.gitignore` kurallarını, gerekli Python importlarını, FFmpeg/FFprobe erişimini ve yerel profil klasörlerini raporlar.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_smoke_check.ps1
-```
-
-Smoke test sonucu terminalde `SMOKE CHECK PASSED`, `SMOKE CHECK PASSED WITH WARNINGS` veya `SMOKE CHECK FAILED` olarak görünür. JSON raporu local olarak `outputs/reports/smoke_check_report.json` dosyasına yazılır; bu rapor GitHub'a yüklenmemelidir.
-
-Manuel demo kontrol listesi için `docs/TEST_CHECKLIST.md` dosyasına bakın.
-
-## 10. Referans ses hazırlama
-
-Varsayılan referans ses yolu:
+GitHub'a eklenmemesi gereken klasörler:
 
 ```text
-samples/my_voice.wav
-```
-
-Gradio akışı, referans sesi XTTS için daha tutarlı hale getirmek amacıyla FFmpeg ile ön işler. Bu adımda ses mono WAV formatına ve 24000 Hz sample rate değerine dönüştürülür.
-
-Ön işlenmiş referanslar şu klasöre kaydedilir:
-
-```text
-outputs/preprocessed_references/
-```
-
-Referans ses için pratik notlar:
-
-- 30-90 saniye arası temiz ve doğal konuşma tercih edin.
-- Arka plan müziği, klavye sesi ve ortam gürültüsünden kaçının.
-- Tek kişinin konuştuğu kayıt kullanın.
-- Mikrofona çok yakın konuşup clipping oluşturmayın.
-- Ses benzerliği model davranışına, kayıt kalitesine ve referans süresine bağlıdır.
-
-## 11. Voice profile sistemi
-
-Voice profile sistemi, sık kullanılan bir referans sesi yerel bir profil klasörü olarak saklama akışıdır. Bu sistem yeni bir model eğitmez ve fine-tuning yapmaz; mevcut aşama hâlâ reference-based / zero-shot voice cloning MVP'sidir.
-
-Gradio arayüzünden profil oluşturmak için kullanıcı şu alanları doldurur:
-
-1. Profil adı
-2. Referans ses dosyası
-3. Ses üzerinde hakkı veya açık izni olduğunu onaylayan izin checkbox'ı
-
-Bu alanlar tamamlandıktan sonra `Profil oluştur` butonuna basılır. Başarılı oluşturulan profil `profiles/<profile_slug>/` altında kalıcı olarak tutulur. Gradio kapatıldığında profil silinmez; sonraki çalıştırmada aynı klasörden tekrar listelenir.
-
-Profil klasöründe şu dosyalar bulunur:
-
-```text
-profiles/<profile_slug>/
-|-- original_reference.wav
-|-- preprocessed_reference.wav
-`-- profile.json
-```
-
-Profil oluşturulduktan sonra Gradio profil dropdown'ı güncellenir ve mümkünse yeni profil seçili hale gelir. Aynı profil adı tekrar oluşturulursa mevcut profilin üzerine yazılmaz; bu davranış kişisel referans seslerin yanlışlıkla değiştirilmesini engeller.
-
-Terminalden profil oluşturma hâlâ alternatif yöntem olarak kullanılabilir:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
-```
-
-Örnek profil yapısı:
-
-```text
+samples/
 profiles/
-|-- .gitkeep
-`-- baglare/
-    |-- original_reference.wav
-    |-- preprocessed_reference.wav
-    `-- profile.json
+datasets/
+outputs/
+experiments/
+fine_tuned_models/
 ```
 
-Bu yapıda `original_reference.wav`, giriş sesinin yerel kopyasıdır. `preprocessed_reference.wav`, XTTS'e verilecek güvenli ön işlenmiş referanstır. `profile.json` içinde profil adı, slug, dosya yolları, kalite raporları, seçilen ön işleme varyantı ve ön işleme uyarısı tutulur.
+Bu klasörlerde kişisel ses kayıtları, profile metadata'sı, dataset dosyaları, üretilen WAV dosyaları, kalite raporları, checkpointler ve model çıktıları bulunabilir. `.gitignore` bu klasörlerdeki gerçek dosyaları dışarıda bırakır; `.gitkeep` dosyaları ise boş klasör niyetini korur.
 
-Gradio arayüzünde yerel ses profili dropdown'ı vardır. Bir profil seçilirse `profiles/<slug>/preprocessed_reference.wav` doğrudan `speaker_wav` olarak kullanılır. Bu durumda yüklenen ses dosyası bilinçli olarak yok sayılır; çünkü profil seçimi kullanıcının daha önce hazırlanmış, kalite raporu alınmış ve güvenli ön işlenmiş referansı kullanmak istediği anlamına gelir.
+## 14. Bilinen sınırlamalar
 
-Profil seçilmezse mevcut davranış korunur. Referans öncelik sırası şudur:
+- Proje Windows odaklıdır.
+- Gradio demo local arayüzdür; ürünleşmiş web uygulaması değildir.
+- Ses benzerliği garanti değildir.
+- Kalite raporu nihai ses kalitesini otomatik ölçmez.
+- Yerel voice profile sistemi fine-tuning değildir.
+- Fine-tuning akışı deneysel ve local runner düzeyindedir.
+- Küçük dataset ile üretilen checkpointlerde kalite artışı sınırlı olabilir.
+- `best_model.pth` tek başına kalite garantisi değildir.
+- Matrix ve human evaluation çıktıları insan dinlemesiyle yorumlanmalıdır.
+- Uzun metin chunking, kırpılma riskini azaltır; ses geçişlerinin tamamen doğal olacağını garanti etmez.
 
-1. Seçili profil
-2. Yüklenen referans ses
-3. Varsayılan ses: `samples/my_voice.wav`
+## 15. Yol haritası
 
-`profiles/` altındaki gerçek dosyalar GitHub'a yüklenmez. Bu klasörde kişisel ses kayıtları, ön işlenmiş sesler ve kalite metadata'sı bulunabilir; bunlar hem mahremiyet hem de repo boyutu nedeniyle local kalmalıdır. `.gitignore` içinde `profiles/*` kuralı gerçek profil içeriklerini dışarıda bırakır, `!profiles/.gitkeep` kuralı ise boş klasör niyetinin repoda görünmesini sağlar.
+Sonraki teknik adımlar:
 
-Seçili profil Gradio arayüzünden veya terminal komutlarıyla yönetilebilir. Profil yenileme işlemi `original_reference.wav` dosyasını korur, `preprocessed_reference.wav` dosyasını safe preprocessing ile yeniden üretir ve `profile.json` içindeki kalite bilgisini günceller. Profil silme işlemi yalnızca ilgili `profiles/<slug>/` klasörünü kaldırır; `profiles/.gitkeep` dosyasına dokunmaz.
+- Windows kurulum ve hata ayıklama notlarını sadeleştirmek
+- Referans kayıt kalite yönergelerini güçlendirmek
+- Voice profile kalite geçmişini daha izlenebilir hale getirmek
+- Dataset büyütme ve kayıt çeşitliliği stratejisini netleştirmek
+- Fine-tuning deneylerinde farklı checkpoint ve inference ayarlarını sistematik karşılaştırmak
+- Matrix ve human evaluation raporlarını daha okunabilir hale getirmek
+- Uzun metin chunking davranışını daha fazla örnekle test etmek
 
-Güvenli ön işleme varsayılan olarak `safe_normalized` yaklaşımını kullanır. Bu yaklaşım sesi mono, 24000 Hz, `pcm_s16le` WAV formatına getirir ve ses seviyesini dengeler. Agresif sessizlik kırpma varsayılan akışta kullanılmaz; çünkü bazı referans sesleri fazla kısaltıp konuşmacı karakterini zayıflatabilir.
-
-Daha ayrıntılı profil dokümanı için `docs/VOICE_PROFILES.md` dosyasına bakın.
-
-## 12. Fine-tuning hazırlığı
-
-Bu projede fine-tuning ürünleşmiş bir kullanıcı özelliği değildir. Mevcut ana çalışma hâlâ reference-based / zero-shot voice cloning MVP'sidir. Bu bölüm local dataset hazırlığını anlatır; dataset export ve deneysel training başlatma akışı bir sonraki bölümde ayrı olarak açıklanır.
-
-Boş dataset iskeleti oluşturmak için:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
-```
-
-Bu komut `datasets/<dataset_slug>/`, `datasets/<dataset_slug>/wavs/` ve başlığı `audio_path|text` olan boş `metadata.csv` dosyasını oluşturur. Aynı dataset zaten varsa üzerine yazmaz.
-
-Dataset doğrulamak için:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Doğrulama scripti `metadata.csv` satırlarını, WAV dosyalarını, süreyi, sample rate değerini, mono kanal durumunu ve kalite analizini kontrol eder. Fine-tuning datasetindeki tekil klipler referans ses profili gibi 30-90 saniye beklenmez; çoğu klip 2.5-15 saniye aralığında olabilir ve datasetin toplam süresi ayrıca raporlanır. Rapor local olarak `outputs/reports/finetune_dataset_report.json` dosyasına yazılır; bu rapor ve gerçek dataset dosyaları GitHub'a yüklenmez.
-
-Readiness report, doğrulama özetinden datasetin teknik hazırlık seviyesini çıkarır. 10 dakikadan kısa ama hatasız datasetler `DATASET_VALID_BUT_SMALL` olarak raporlanır; bu, verinin teknik olarak geçerli olduğunu fakat gerçek fine-tuning kalitesi için daha fazla veri önerildiğini anlatır.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Kayıt toplama için `docs/RECORDING_TEXT_SET_TR.md` içinde özgün Türkçe metinler bulunur. Bu metinlerden kayıt planı üretmek için:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
-```
-
-`recording_plan.csv`, Excel'de Türkçe karakterlerin bozulmadan ve sütunların düzgün ayrılarak açılabilmesi için `utf-8-sig` encoding ve noktalı virgül (`;`) delimiter ile yazılır. Dosya zaten varsa varsayılan olarak üzerine yazılmaz; bilinçli yeniden üretim için `-Overwrite` eklenebilir.
-
-Kayıtlar tamamlandığında `recording_plan.csv` içindeki ilgili satırların `status` alanı `DONE` yapılır. DONE satırlardan `metadata.csv` oluşturmak için:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Ayrıntılı hazırlık rehberi için `docs/FINE_TUNING_PREP.md` dosyasına bakın.
-
-## 13. Deneysel XTTS fine-tuning
-
-VoxForge artık mevcut geçerli datasetten deneysel XTTS-v2 GPT encoder fine-tuning denemesi için export ve training başlatma altyapısı içerir. Bu, ürünleşmiş veya kalite garantili bir fine-tuned model akışı değildir; amaç önce local training pipeline'ın başlayıp başlamadığını görmektir.
-
-Export adımı kaynak dataset dosyalarını değiştirmez. `experiments/<run_slug>/dataset/` altında LJSpeech uyumlu `metadata_train.csv`, varsa `metadata_eval.csv`, WAV kopyaları ve `experiment_manifest.json` üretir:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
-```
-
-Training komutu kullanıcı çalıştırmadıkça eğitim başlamaz. Önce dry-run ile manifest, dataset dosyaları, checkpoint varlığı, CUDA, GPT trainer importları ve config oluşturma kontrolü yapılabilir:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
-```
-
-Dry-run başarılıysa terminalde `XTTS fine-tuning dry-run completed successfully` satırı görünür. Bu adım modeli eğitmez ve checkpoint indirme başlatmaz. Script, XTTS GPT recipe tarafında `GPTArgs`, `GPTTrainer` ve `GPTTrainerConfig` yolunu kullanır. Bazı `coqui-tts` sürümlerinde `XttsAudioConfig` farklı modülde bulunduğu için script fallback import kullanır ve import kaynağını terminalde yazar; desteklenmeyen config argümanlarını da uyarı olarak gösterir. Dry-run ayrıca `limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints`, `save_n_checkpoints` ve `TrainerArgs` içindeki `start_with_eval`, `skip_train_epoch`, `grad_accum_steps` bilgisini yazar. Varsayılan akışta `start_with_eval=False` ve `skip_train_epoch=False` beklenir. Gerçek training, güvenli bir `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı bulunamazsa başlatılmaz.
-
-Training başlatmak için:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
-```
-
-Training bittikten sonra script `training_output/` klasörünü recursive tarar. `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact bulunmazsa işlem başarısız sayılır ve exit code `1` ile biter. Mevcut yaklaşık 7.45 dakikalık dataset teknik olarak geçerlidir, ancak gerçek fine-tuning kalitesi için küçük kabul edilir. Deney çıktıları, checkpointler, trainer logları ve model dosyaları `experiments/` veya `fine_tuned_models/` altında local kalmalı ve GitHub'a yüklenmemelidir.
-
-Not: `EPOCH: 0/0`, yalnızca evaluation çalışması veya checkpoint oluşmaması başarı sayılmaz. Bu durumda `-StartWithEval` kullanılmadığını, epoch fallback değerinin `1` veya daha büyük olduğunu ve kısa denemede `-SaveStep 1` kullanıldığını kontrol edin.
-
-Fine-tuned checkpoint değerlendirme komutu training başlatmaz. `training_output/` altında `best_model.pth`, en yeni `best_model_*.pth` veya en yüksek numaralı `checkpoint_*.pth` dosyasını seçer; base XTTS ve fine-tuned çıktılarını `outputs/finetuned_eval/` altına yazar. `best_model.pth` kalite garantisi değildir. Base ve fine-tuned çıktı dinlenerek karşılaştırılmalı, küçük dataset nedeniyle ses benzerliğinin sınırlı olabileceği unutulmamalıdır.
-
-Checkpoint matrix karşılaştırması, `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantlarını en az 6 Türkçe test cümlesiyle dener. Bu akış kaliteyi otomatik ölçmez; insan kulağıyla base ve fine-tuned çıktılar karşılaştırılır. Robotiklik varsa daha fazla training başlatmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
-
-Manuel kalite değerlendirme scorecard akışı, matrix klasörleri dinlendikten sonra verilen 1-5 puanları `outputs/reports/human_eval_scorecard.csv`, `outputs/reports/human_eval_summary.json` ve `outputs/reports/human_eval_summary.md` dosyalarına yazar. Bu otomatik kalite ölçümü değildir; ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır.
-
-Erken kesilme / inference ayarı testi, `checkpoint_71` veya `best_model` gibi seçilen bir varyantı `default`, `conservative`, `stable` ve `longer_attempt` parametre setleriyle dener. Bu akış kalite garantisi vermez; cümlenin erken kesilip kesilmediğini anlamak için base ve fine-tuned çıktılar karşılaştırmalı dinlenmelidir. Daha fazla training başlatmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
-
-Uzun Türkçe metinlerde XTTS karakter sınırı aşılırsa eval scriptleri metni 220 karakteri aşmayan güvenli parçalara böler, her parçayı ayrı üretir ve FFmpeg ile tek final WAV olarak birleştirir. Chunking ses kalitesini garanti etmez; ama uzun metnin sessizce kırpılmasını azaltır. Parçalar birleştirildiği için cümleler arası küçük geçiş farkları duyulabilir.
-
-Ayrıntılı deney rehberi için `docs/XTTS_FINETUNING_EXPERIMENT.md` dosyasına bakın.
-
-## 14. Kalite raporu sistemi
-
-VoxForge, referans ses dosyası için basit bir kalite analizi üretir. Analiz; dosya varlığı, süre, sample rate, kanal sayısı, codec, ortalama ses seviyesi, maksimum ses seviyesi, clipping riski ve kısa/uzun kayıt uyarıları gibi bilgileri kontrol eder.
-
-Terminal kalite raporu varsayılan olarak şu dosyaya yazılır:
-
-```text
-outputs/reports/reference_audio_report.json
-```
-
-Gradio akışı her üretim denemesinde ham referans ve ön işlenmiş referans raporunu arayüzde gösterir. Aynı raporlar JSON olarak şu klasöre kaydedilir:
-
-```text
-outputs/reports/gradio_quality_reports/
-```
-
-Kalite sonucu `GOOD`, `WARNING` veya `BAD` olabilir. `BAD` sonuç, her zaman ses üretiminin teknik olarak imkansız olduğu anlamına gelmez; ancak çıktının mutlaka dinlenerek kontrol edilmesi gerektiğini gösterir.
-
-## 15. Etik kullanım notu
-
-VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle denenmelidir. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
-
-Gradio arayüzündeki izin checkbox'ı bu sınırı kullanıcıya açık şekilde hatırlatmak için vardır. Kullanıcı, ses üretmeden önce referans ses üzerinde hakkı veya açık izni olduğunu onaylamalıdır.
-
-## 16. Bilinen sınırlamalar
-
-- Proje şu anda Windows odaklıdır.
-- Proje sadece local çalışma için tasarlanmıştır.
-- Gerçek ses dosyaları GitHub'a yüklenmemelidir.
-- Yerel voice profile klasörleri GitHub'a yüklenmemelidir.
-- Yerel fine-tuning dataset, experiment ve model klasörleri GitHub'a yüklenmemelidir.
-- `outputs/` klasörü üretilen sesleri ve raporları yerelde tutar; GitHub'a yüklenmez.
-- `.venv/`, model dosyaları, cache dosyaları ve büyük çıktılar repoya dahil edilmez.
-- Ses benzerliği garanti değildir; model, kayıt kalitesi, referans süresi ve metin içeriğine bağlıdır.
-- Bu aşama zero-shot/reference-based voice cloning MVP'sidir.
-- Fine-tuning ürünleşmiş bir kullanıcı özelliği değildir; yalnızca deneysel local XTTS training altyapısı vardır.
-- Fine-tuning dataset exportu eğitim başlatmaz; training yalnızca kullanıcı ilgili komutu çalıştırırsa başlar.
-- Yerel voice profile sistemi fine-tuning değildir; sadece referans ses seçimini ve tekrar kullanımını düzenler.
-- Gradio demo local arayüzdür; ürünleşmiş bir web uygulaması değildir.
-- Kalite raporu teknik sinyaller verir, nihai ses kalitesini tek başına garanti etmez.
-
-## 17. Sonraki adımlar
-
-Planlanan geliştirme yönleri:
-
-- Windows kurulum deneyimini daha net hale getirmek
-- Referans ses hazırlama notlarını güçlendirmek
-- Voice profile kalite geçmişi akışını eklemek
-- Demo anlatımı ve ekran görüntüleriyle portfolyo sunumunu desteklemek
-- Daha ayrıntılı kalite metrikleri eklemek
-- Farklı referans süreleriyle karşılaştırma yapmak
-- Deneysel fine-tuning sonuçlarını base XTTS çıktılarıyla karşılaştırmak
-
-## 18. Portfolyo değeri
-
-VoxForge, local yapay zeka modeli kullanımı, Python tabanlı ses işleme, Gradio ile hızlı demo arayüzü, Windows PowerShell otomasyonu, FFmpeg tabanlı ses ön işleme ve hassas dosya yönetimi gibi alanlarda somut bir MVP örneği sunar.
-
-Portfolyo açısından proje şu noktaları gösterir:
-
-- Yerel AI model entegrasyonu
-- Referans ses tabanlı Türkçe TTS denemesi
-- Kullanıcı izni ve etik sınır kontrolü
-- Ses ön işleme ve kalite raporu akışı
-- Yerel voice profile yönetimi
-- Fine-tuning öncesi local dataset hazırlığı ve doğrulama yaklaşımı
-- Deneysel XTTS fine-tuning export, manifest ve training başlatma altyapısı
-- Üretilen dosyaları GitHub dışında tutan repo hijyeni
-- MVP kapsamında sade ama çalışan bir local demo yapısı
+Güncel proje durumu için `docs/PROJECT_STATUS.md`, fine-tuning ayrıntıları için `docs/XTTS_FINETUNING_EXPERIMENT.md`, manuel test adımları için `docs/TEST_CHECKLIST.md` dosyalarına bakın.

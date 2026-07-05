@@ -1,65 +1,90 @@
 # VoxForge Demo Anlatımı
 
-Bu doküman, VoxForge'u kısa bir portfolyo demosunda anlatmak için kullanılabilir. Amaç, projeyi teknik olarak abartmadan, mevcut MVP akışını net şekilde göstermektir.
+Bu doküman, VoxForge'un teknik demo sırasında hangi sırayla anlatılacağını ve hangi davranışların gösterileceğini özetler. Anlatım, mevcut sistemi abartmadan ve kalite garantisi vermeden açıklamaya odaklanır.
 
-## 1. Proje kısa tanıtımı
+## 1. Kısa tanıtım
 
-VoxForge, Windows üzerinde local çalışan bir Python ses üretim MVP'sidir. Coqui XTTS-v2 modeliyle referans ses kullanarak Türkçe metin seslendirme denemesi yapar.
+VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS deney aracıdır. Coqui XTTS-v2 modeliyle referans sese dayalı ses üretimi yapar, yerel voice profile yönetimi sağlar ve fine-tuning hazırlık/değerlendirme akışlarını local dosya sistemi üzerinde tutar.
 
-Bu aşama fine-tuning değildir. Proje, reference-based / zero-shot voice cloning yaklaşımıyla çalışır; yani model, seçilen referans sesin konuşma karakteristiğini üretim sırasında kullanmaya çalışır.
+Sistem public servis değildir. Ses kayıtları, profiller, datasetler, checkpointler ve üretilen çıktılar kullanıcının makinesinde kalır.
 
-## 2. Gradio demosunu başlatma
+## 2. Demo kapsamı
 
-Proje kök dizininde Gradio demosu şu komutla başlatılır:
+Bu demo şu akışları gösterebilir:
+
+1. Local Gradio arayüzünü başlatma
+2. Yerel voice profile oluşturma
+3. Var olan profili seçerek reference-based ses üretme
+4. Referans ses kalite raporunu yorumlama
+5. Üretilen dosyaların local klasörlerde kaldığını gösterme
+6. İsteğe bağlı olarak fine-tuning deney durumunu doküman üzerinden özetleme
+
+## 3. Gradio demosunu başlatma
+
+Proje kök dizininde:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 ```
 
-Demo local çalışır. Public hosting, hesap sistemi veya bulut tabanlı ses depolama bu MVP kapsamında yoktur.
+Beklenen davranış:
 
-## 3. Yeni profil oluşturma
+- Arayüz local olarak açılır.
+- Public paylaşım veya uzak depolama kullanılmaz.
+- Kullanıcı ses üretmeden önce izin checkbox'ını onaylamalıdır.
 
-Gradio arayüzünde yeni bir yerel voice profile oluşturmak için:
+## 4. Yeni voice profile oluşturma
+
+Gradio arayüzünde:
 
 1. Profil adı girilir.
 2. Referans ses dosyası yüklenir.
 3. Ses üzerinde hak veya açık izin olduğunu belirten checkbox işaretlenir.
 4. `Profil oluştur` butonuna basılır.
 
-Oluşturulan profil `profiles/<profile_slug>/` altında saklanır. Profil klasöründe `original_reference.wav`, `preprocessed_reference.wav` ve `profile.json` bulunur.
+Oluşan yapı:
 
-## 4. Profil seçme
+```text
+profiles/<profile_slug>/
+|-- original_reference.wav
+|-- preprocessed_reference.wav
+`-- profile.json
+```
 
-Profil oluşturulduktan sonra Gradio profil dropdown'ı güncellenir ve mümkünse yeni profil seçili hale gelir.
+Bu profil local kalır. Gradio kapatılsa bile silinmez ve sonraki çalıştırmada tekrar listelenir.
 
-Demo sırasında referans seçimi şu öncelikle çalışır:
+## 5. Profil seçerek ses üretme
+
+Referans seçim önceliği:
 
 1. Seçili profil
 2. Yüklenen referans ses
-3. Varsayılan ses: `samples/my_voice.wav`
+3. Varsayılan dosya: `samples/my_voice.wav`
 
-Bir profil seçiliyse yüklenen ses dosyası yok sayılır. Çünkü profil, daha önce hazırlanmış ve kalite raporu alınmış yerel referansı temsil eder.
+Bir profil seçiliyse ayrıca yüklenen ses dosyası kullanılmaz. Çünkü profil daha önce hazırlanmış ve kalite raporu alınmış yerel referansı temsil eder.
 
-## 5. Metin seslendirme
-
-Seslendirmek istenen Türkçe metin Gradio arayüzündeki metin alanına yazılır. İzin checkbox'ı işaretlendikten sonra üretim başlatılır.
-
-Üretilen ses Gradio arayüzünde dinlenebilir ve local çıktı klasöründe saklanır.
+Demo sırasında kısa ve anlaşılır bir Türkçe metin kullanılmalıdır. Çıktı Gradio arayüzünde dinlenir ve local çıktı klasörüne yazılır.
 
 ## 6. Kalite raporunu yorumlama
 
-VoxForge, referans ses için kalite raporu üretir. Rapor; süre, sample rate, kanal sayısı, ses seviyesi ve clipping riski gibi teknik sinyalleri gösterir.
+VoxForge, referans ses için teknik kalite raporu üretir. Rapor şu sinyalleri içerir:
 
-Sonuç `GOOD`, `WARNING` veya `BAD` olabilir:
+- Dosya varlığı ve süre
+- Sample rate
+- Kanal sayısı
+- Ortalama ve maksimum ses seviyesi
+- Clipping riski
+- Kayıt uzunluğu uyarıları
 
-- `GOOD`: Referans teknik olarak daha temiz görünüyor.
-- `WARNING`: Kullanılabilir, ama dikkat edilmesi gereken bir durum var.
-- `BAD`: Daha temiz bir kayıtla tekrar denemek daha doğru olabilir.
+Sonuçlar:
 
-Kalite raporu nihai ses benzerliğini garanti etmez. Üretilen ses her zaman dinlenerek kontrol edilmelidir.
+- `GOOD`: Teknik olarak daha temiz görünen referans
+- `WARNING`: Kullanılabilir, ancak dikkat edilmesi gereken durum var
+- `BAD`: Daha temiz kayıtla tekrar denemek daha doğru olabilir
 
-## 7. Çıktılar yerelde nereye kaydedilir?
+Kalite raporu nihai ses benzerliğini garanti etmez. Üretilen ses dinlenerek değerlendirilmelidir.
+
+## 7. Yerel çıktı klasörleri
 
 Demo sırasında oluşan dosyalar local klasörlerde tutulur:
 
@@ -70,24 +95,38 @@ outputs/preprocessed_references/
 outputs/reports/gradio_quality_reports/
 ```
 
-Bu klasörlerdeki gerçek ses dosyaları, profiller ve üretim çıktıları GitHub'a yüklenmemelidir.
+Bu klasörlerdeki gerçek ses dosyaları, profil içerikleri ve rapor çıktıları GitHub'a eklenmemelidir.
 
-## 8. Etik kullanım notu
+## 8. Fine-tuning durumunu kısa anlatma
 
-VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle denenmelidir. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
+Fine-tuning anlatılacaksa demo sırasında eğitim başlatmak yerine mevcut durum dokümanından özet verilmelidir:
 
-Gradio içindeki izin checkbox'ı bu sınırı kullanıcıya açık şekilde hatırlatmak için vardır.
+- Dataset yaklaşık 7.45 dakika / 80 örnektir.
+- Training pipeline çalışmıştır.
+- Checkpoint üretilmiştir.
+- Fine-tuned checkpoint inference çalışmıştır.
+- Matrix ve human evaluation yapılmıştır.
+- Kalite artışı sınırlıdır.
+- Daha iyi sonuç için daha fazla veri ve ayar denemesi gerekir.
 
-## 9. Portfolyo videosu için kısa konuşma metni
+Bu bölümde kalite garantisi verilmemelidir. Fine-tuning çıktısı teknik olarak değerlendirilmiş deney sonucu olarak anlatılmalıdır.
 
-Bu projede VoxForge adlı local bir ses üretim MVP'si geliştiriyorum. Proje Windows üzerinde Python ile çalışıyor ve Coqui XTTS-v2 modelini kullanarak Türkçe metni referans sese göre seslendirmeyi deniyor.
+## 9. Etik kullanım notu
 
-Buradaki önemli nokta, sistemin fine-tuning yapmaması. Yani kişiye özel yeni bir model eğitilmiyor. Bunun yerine reference-based, yani zero-shot voice cloning yaklaşımı kullanılıyor. Kullanıcı bir referans ses veriyor, model de bu referansı üretim sırasında kullanıyor.
+VoxForge yalnızca kullanıcının kendi sesiyle veya açık izinli seslerle kullanılmalıdır. Başka bir kişinin sesini izinsiz kopyalamak, taklit etmek, yayınlamak veya ticari amaçla kullanmak etik değildir ve hukuki risk oluşturabilir.
 
-Gradio arayüzünde artık local voice profile oluşturma akışı var. Kullanıcı profil adını giriyor, referans sesini yüklüyor, ses üzerinde hakkı veya açık izni olduğunu checkbox ile onaylıyor ve profil oluşturuyor. Bu profil `profiles` klasörü altında local olarak saklanıyor. Gradio kapatılsa bile profil silinmiyor.
+Gradio içindeki izin checkbox'ı bu sınırı kullanıcıya açık şekilde hatırlatır.
 
-Sonraki üretimlerde kullanıcı dropdown'dan bu profili seçebiliyor. Sistem referans seçiminde önce seçili profili, sonra yüklenen sesi, en son da varsayılan `samples/my_voice.wav` dosyasını kullanıyor. Böylece demo sırasında aynı referans sesi tekrar tekrar yüklemek gerekmiyor.
+## 10. Kısa konuşma metni
 
-Proje ayrıca referans ses için kalite raporu üretiyor. Bu rapor, kaydın süresi, sample rate değeri, ses seviyesi ve clipping riski gibi teknik sinyalleri gösteriyor. Bu rapor nihai ses kalitesini garanti etmiyor, ama demo sırasında kaydın neden iyi veya sorunlu olabileceğini yorumlamayı kolaylaştırıyor.
+VoxForge, Windows üzerinde local çalışan bir Türkçe TTS deney aracıdır. Sistem Coqui XTTS-v2 modelini kullanır ve referans sese dayalı ses üretimi yapar.
 
-Tüm profiller, referans sesler ve üretilen çıktılar local kalıyor. GitHub'a gerçek ses dosyası veya üretim çıktısı yüklenmiyor. Bu da projeyi hem portfolyo için daha temiz hem de kişisel ses verisi açısından daha kontrollü hale getiriyor.
+Bu bölümde kişiye özel yeni bir model eğitilmiyor. Seçilen referans ses, üretim sırasında XTTS'e `speaker_wav` olarak veriliyor. Kullanıcı isterse referans sesi tek seferlik yükleyebilir veya kalıcı bir yerel voice profile oluşturabilir.
+
+Voice profile oluşturulduğunda sistem referansı local olarak saklar, ön işler ve kalite raporunu kaydeder. Sonraki üretimlerde kullanıcı dropdown üzerinden bu profili seçebilir. Profil seçiliyse sistem doğrudan profilin ön işlenmiş referansını kullanır.
+
+Referans ses kalite raporu kayıt süresi, sample rate, kanal sayısı, ses seviyesi ve clipping riski gibi teknik sinyalleri gösterir. Bu rapor kalite garantisi değildir; üretilen ses yine dinlenerek değerlendirilir.
+
+Fine-tuning tarafında deneysel bir pipeline bulunur. Yaklaşık 7.45 dakikalık 80 örnekli dataset ile training pipeline çalışmış, checkpoint üretilmiş ve fine-tuned inference denenmiştir. Sonuç teknik olarak doğrulanmıştır, ancak kalite artışı sınırlıdır ve daha fazla veri/ayar çalışması gerektirir.
+
+Tüm kişisel sesler, profiller, datasetler, checkpointler ve üretilen çıktılar local klasörlerde kalır. GitHub'a gerçek ses dosyası, model checkpointi veya üretim çıktısı eklenmez.

@@ -1,255 +1,406 @@
 # VoxForge Manuel Test Checklist
 
-Bu doküman, VoxForge MVP için hızlı manuel kontrol listesidir. Amaç, demo öncesinde ana akışların çalıştığını ve kişisel ses/veri dosyalarının GitHub'a girmediğini kontrol etmektir.
+Bu checklist, VoxForge'un local çalışma akışlarını hızlı ve kontrollü şekilde doğrulamak için kullanılır. Testler tamamlandıktan sonra GitHub Desktop değişiklik listesinde yalnızca kaynak kod, runner, dokümantasyon ve `.gitkeep` dosyaları bulunmalıdır.
 
 ## 1. Smoke test
 
-Adım:
+Komut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_smoke_check.ps1
 ```
 
-Beklenen sonuç: Terminalde `SMOKE CHECK PASSED` veya yalnızca uyarılar varsa `SMOKE CHECK PASSED WITH WARNINGS` görünür. Kritik eksik varsa `SMOKE CHECK FAILED` görünür ve düzeltilmeden demo yapılmaz.
+Kontrol:
 
-## 2. Fine-tuning dataset başlatma testi
+- Terminalde `SMOKE CHECK PASSED` veya yalnızca uyarılar varsa `SMOKE CHECK PASSED WITH WARNINGS` görünür.
+- Kritik eksik varsa `SMOKE CHECK FAILED` görünür.
+- JSON rapor `outputs/reports/smoke_check_report.json` altına yazılır ve GitHub'a eklenmez.
 
-Adım:
+## 2. Gradio testleri
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
-```
+### 2.1 Gradio açılış testi
 
-Beklenen sonuç: `datasets/baglare-finetune-v1/`, `datasets/baglare-finetune-v1/wavs/` ve başlığı `audio_path|text` olan boş `metadata.csv` oluşur. Aynı isimle tekrar çalıştırılırsa üzerine yazılmaz.
-
-## 3. Fine-tuning kayıt planı üretme testi
-
-Adım:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
-```
-
-Beklenen sonuç: `recording_plan.csv` oluşur. Dosyada `clip_id;target_audio_path;text;status;notes` başlığı bulunur, ilk 80 kayıt metni listelenir ve tüm satırların `status` alanı `TODO` olur. Dosya `utf-8-sig` encoding ve noktalı virgül (`;`) delimiter ile yazılır. Dosya zaten varsa üzerine yazılmaz.
-
-Excel kontrolü: `recording_plan.csv` dosyasını Excel'de çift tıklayarak aç. `Bugün` gibi Türkçe karakterler bozulmadan görünmeli ve alanlar ayrı sütunlara bölünmelidir. Eski dosya bozuk görünüyorsa şu komutla kontrollü yeniden üret:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80 -Overwrite
-```
-
-## 4. Fine-tuning metadata oluşturma testi
-
-Adım:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Beklenen sonuç: Yalnızca `recording_plan.csv` içinde `DONE` olan ve ses dosyası gerçekten bulunan satırlar `metadata.csv` içine yazılır. Eksik WAV dosyaları için terminalde uyarı görünür.
-
-## 5. Fine-tuning dataset doğrulama testi
-
-Adım:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Beklenen sonuç: Metadata satırları, WAV dosyaları, fine-tuning klip süresi, sample rate, mono kanal, ses seviyesi ve clipping riski kontrol edilir. Ortalama 5-6 saniye civarındaki temiz klipler normal kabul edilir; 80 kayıt için toplu şekilde `30 saniyeden kısa` uyarısı beklenmez. Terminal özetinde toplam süre, ortalama örnek süresi ve tahmini dakika bilgisi görünür. Rapor `outputs/reports/finetune_dataset_report.json` dosyasına yazılır ve GitHub'a eklenmez.
-
-## 6. Fine-tuning readiness report testi
-
-Adım:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
-```
-
-Beklenen sonuç: Terminalde toplam satır, geçerli/uyarılı/hatalı örnek sayısı, toplam süre, ortalama süre ve hazırlık seviyesi görünür. Yaklaşık 7-8 dakikalık hatasız dataset için `DATASET_VALID_BUT_SMALL` beklenir. JSON ve Markdown raporları `outputs/reports/` altına yazılır ve GitHub'a eklenmez.
-
-## 7. Deneysel XTTS dataset export testi
-
-Adım:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
-```
-
-Beklenen sonuç: `experiments/baglare-xtts-exp01/` altında `dataset/wavs/`, `metadata_train.csv`, `metadata_eval.csv` ve `experiment_manifest.json` oluşur. Train/eval sayıları manifest içinde görünür. Export edilen dataset GitHub'a eklenmez.
-
-## 8. Deneysel XTTS training dry-run testi
-
-Adım:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
-```
-
-Beklenen sonuç: Experiment path, dataset path, train/eval sayıları, language, max steps, epoch fallback, batch size, grad accumulation, save step, `Start with eval: False` ve CUDA bilgisi görünür. Dataset klasörü, `metadata_train.csv`, varsa `metadata_eval.csv`, checkpoint dosyaları ve GPT trainer importları kontrol edilir. `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` ayrı ayrı `Import OK` olarak görünür. `XttsAudioConfig` için `Import OK: XttsAudioConfig` ve `XttsAudioConfig import source: ...` satırları görünür; fallback kaynak kullanılması hata değildir. `TrainerArgs ozeti` altında `start_with_eval: False`, `skip_train_epoch: False` ve `grad_accum_steps: 16` görünür. Config oluşturma başarılı olursa terminal sonunda `Dry-run config ve TrainerArgs olusturma OK.` ve `XTTS fine-tuning dry-run completed successfully` görünür. `-DryRun` kullanıldığı için training başlamaz, `load_tts_samples` çalıştırılmaz, checkpoint aranmaz ve checkpoint indirme yapılmaz.
-
-## 9. Dry-run limit config kontrolü
-
-Adım: Dry-run çıktısında `Training config ozeti` bölümünü kontrol et.
-
-Beklenen sonuç: `requested max_steps`, `requested epochs`, `resolved limit_mode`, `config.epochs`, `config.num_epochs`, `save_step`, `save_checkpoints` ve `save_n_checkpoints` satırları görünür. `save_step` değeri `1`, `save_checkpoints` değeri `True`, `save_n_checkpoints` değeri `1` olmalıdır. `TrainerArgs ozeti` altında `start_with_eval: False`, `skip_train_epoch: False` ve `grad_accum_steps` görünmelidir. `limit_mode: epochs_fallback` görünüyorsa config üzerinde `epochs` veya `num_epochs` alanlarından en az biri `1` veya daha büyük görünmelidir.
-
-## 10. MaxSteps / epoch limit kontrolü
-
-Adım: Dry-run çıktısında `limit_mode` satırını kontrol et.
-
-Beklenen sonuç: `limit_mode: max_steps` görünüyorsa adım sınırı doğrudan uygulanacaktır. `limit_mode: epochs_fallback` görünüyorsa `max_steps` desteklenmediği için güvenli fallback olarak `epochs=1` kullanılacaktır. `limit_mode: unsupported` görünüyorsa dry-run uyarıyla tamamlanabilir, fakat gerçek training başlatılmamalı ve script gerçek training modunda exit code `1` ile durmalıdır.
-
-## 11. Deneysel XTTS training başlatma kontrolü
-
-Adım: Dry-run başarılıysa ve kullanıcı bilinçli olarak training denemesi yapmak istiyorsa şu komut çalıştırılır:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
-```
-
-Beklenen sonuç: Script training öncesi aynı özet bilgileri basar ve güvenli limit mekanizmasını kontrol eder. `Training baslangic akisi` altında gerçek `train sample count`, `eval sample count`, `start_with_eval: False`, `skip_train_epoch: False`, `save_step: 1` ve `save_checkpoints: True` görünür. `max_steps` veya doğrulanmış `epochs/num_epochs` sınırı uygulanabiliyorsa Coqui trainer süreci başlar. Güvenli limit uygulanamıyorsa `Bu coqui-tts/trainer sürümünde max_steps güvenli şekilde uygulanamıyor. Eğitim başlatılmadı.` veya `Epoch fallback config üzerinde doğrulanamadı. Eğitim başlatılmadı.` hatasıyla durur. CUDA OOM olursa `-BatchSize 1` korunmalı ve gerekirse `-GradAccum` artırılmalıdır. Training çıktıları ve checkpointler GitHub'a eklenmez.
-
-## 12. Gerçek training sonrası checkpoint kontrolü
-
-Adım: Gerçek training komutu bittikten sonra terminal çıktısını ve `experiments/baglare-xtts-exp01/training_output/` klasörünü kontrol et.
-
-Beklenen sonuç: Script `training_output/` altında `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri artifact arar. Artifact bulunursa yolları terminale yazar ve `Training completed and checkpoint artifacts were found.` mesajı görünür.
-
-## 13. Checkpoint yoksa başarısız sayılması
-
-Adım: Training sonunda checkpoint artifact oluşmazsa terminal çıktısını kontrol et.
-
-Beklenen sonuç: `Training finished but no checkpoint artifact was found.` mesajı görünür ve script exit code `1` ile biter. `EPOCH: 0/0`, yalnızca eval çalışması veya checkpoint üretmeyen akış başarı sayılmaz. Hata çıktısında `start_with_eval=False` kullanılması, epoch fallback değerinin kontrol edilmesi ve `save_step` değerinin `1` tutulması önerilir.
-
-## 14. Fine-tuned checkpoint inference testi
-
-Adım: Training başarıyla checkpoint ürettiyse şu komut çalıştırılır:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Merhaba, bu ilk fine-tuned testidir."
-```
-
-Beklenen sonuç: Script `training_output/` altında `best_model.pth`, en yeni `best_model_*.pth` veya en yüksek numaralı `checkpoint_*.pth` adaylarından birini seçer ve seçilen checkpoint yolunu terminale yazar. Speaker wav olarak varsa `profiles/baglare/preprocessed_reference.wav`, yoksa `samples/my_voice.wav`, o da yoksa dataset içinden kısa bir WAV kullanılır. Fine-tuned inference başarılıysa `outputs/finetuned_eval/finetuned_test.wav` oluşur. Base output başarılıysa `outputs/finetuned_eval/base_test.wav` oluşur; base output başarısızlığı fine-tuned denemeyi engellemez. Rapor `outputs/reports/finetuned_eval_report.json` dosyasına yazılır. Bu test deneysel pipeline kontrolüdür; `best_model.pth` kalite garantisi değildir. Base ve fine-tuned çıktı dinlenerek karşılaştırılmalı, küçük dataset nedeniyle ses benzerliğinin sınırlı olabileceği unutulmamalıdır.
-
-## 15. Checkpoint matrix evaluation testi
-
-Adım: Tek cümlelik fine-tuned testten sonra daha sistematik dinleme karşılaştırması için şu komut çalıştırılır:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
-```
-
-Beklenen sonuç: Script `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantlarını listeler. Aynı checkpoint iki kez seçilmez; eksik varyantlar rapora hata/not olarak yazılır. Her varyant için `outputs/finetuned_eval/matrix/<timestamp>/<variant>/test_01.wav` gibi dosyalar oluşur ve her üretilen dosya terminale yazılır. JSON rapor `outputs/reports/finetuned_matrix_report.json`, Markdown rapor `outputs/reports/finetuned_matrix_report.md` dosyasına yazılır. Bu test kaliteyi otomatik ölçmez; önce `base` klasörü, sonra fine-tuned varyantlar dinlenir. Benzerlik, doğallık, telaffuz ve robotiklik için 1-5 puan verilmelidir. Robotiklik varsa daha fazla training başlatmadan önce veri, referans ve checkpoint seçimi değerlendirilmelidir.
-
-## 16. Human evaluation scorecard testi
-
-Adım: Matrix evaluation çıktıları dinlendikten sonra manuel puan raporu oluşturmak için şu komut çalıştırılır:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
-```
-
-Beklenen sonuç: Script kullanılan Python yolunu ve matrix root klasörünü terminale yazar. `outputs/reports/human_eval_scorecard.csv`, `outputs/reports/human_eval_summary.json` ve `outputs/reports/human_eval_summary.md` oluşur. CSV başlığı `variant;naturalness;similarity;pronunciation;human_likeness;text_accuracy;total_score;notes` olmalıdır. Bu otomatik kalite ölçümü değildir; ses benzerliği insan kulağıyla değerlendirilir ve sonuçlar küçük dataset ile deneysel fine-tuning bağlamında yorumlanmalıdır. `checkpoint_71` için erken kesilme uyarısı raporda görünmelidir. Rapor dosyaları `outputs/` altında kaldığı için GitHub'a eklenmez.
-
-## 17. Inference parameter sweep testi
-
-Adım: `checkpoint_71` çıktılarındaki erken kesilme riskini training başlatmadan incelemek için şu komut çalıştırılır:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
-```
-
-Beklenen sonuç: Runner kullanılan Python, FFmpeg, experiment, variant ve speaker wav bilgisini terminale yazar. Script seçilen checkpoint yolunu ve kullanılan speaker wav yolunu gösterir. `default`, `conservative`, `stable` ve `longer_attempt` parametre setleri denenir. Çıktılar `outputs/finetuned_eval/param_sweep/<timestamp>/<variant>/<param_set>/test_01.wav` yapısına yazılır. Seçilen varyant `base` değilse aynı metinler `base/default` ile de üretilmeye çalışılır. JSON rapor `outputs/reports/inference_param_sweep_report.json`, Markdown rapor `outputs/reports/inference_param_sweep_report.md` dosyasına yazılır. Bu otomatik kalite garantisi değildir; erken kesilmeyi anlamak için karşılaştırmalı dinleme gerekir. Daha fazla training başlatmadan önce inference ayarları ve checkpoint seçimi değerlendirilmelidir.
-
-## 18. Uzun metin chunking testi
-
-Adım: Türkçe XTTS karakter sınırını aşan uzun bir metinle fine-tuned eval komutu çalıştırılır:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Bu uzun test metni, Türkçe XTTS karakter sınırı aşıldığında sistemin metni güvenli parçalara bölüp bölmediğini kontrol etmek için hazırlanmıştır. Cümleler doğal noktalama işaretleriyle ayrılır ve final ses dosyasında son cümlenin sessizce kırpılmadan duyulması beklenir."
-```
-
-Beklenen sonuç: Script uzun metni 220 karakteri aşmayan parçalara böler. Final WAV yine `outputs/finetuned_eval/finetuned_test.wav` olarak oluşur. Chunk parçaları output klasörü altında `chunks/` alt klasörüne yazılır ve FFmpeg ile birleştirilir. JSON raporda `chunking_used: true`, `chunk_count` ve `chunks` alanları görünür. Chunking ses kalitesini garanti etmez; ama uzun metnin sessizce kırpılmasını azaltır. Parçalar birleştirildiği için cümleler arası küçük geçiş farkları duyulabilir.
-
-## 19. Gradio demo açılış testi
-
-Adım:
+Komut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_gradio_demo.ps1
 ```
 
-Beklenen sonuç: Local Gradio arayüzü açılır. Demo public paylaşım açmadan local makinede çalışır.
+Kontrol:
 
-## 20. Web üzerinden profil oluşturma testi
+- Local Gradio arayüzü açılır.
+- Public paylaşım veya uzak servis kullanılmaz.
 
-Adım: Gradio arayüzünde profil adı gir, referans ses yükle, izin checkbox'ını işaretle ve `Profil oluştur` butonuna bas.
+### 2.2 Varsayılan referans ses testi
 
-Beklenen sonuç: Yeni profil `profiles/<profile_slug>/` altında oluşur. Profil klasöründe `original_reference.wav`, `preprocessed_reference.wav` ve `profile.json` bulunur.
+Adım:
 
-## 21. Profil seçme testi
+1. Profil seçmeden kısa bir Türkçe metin gir.
+2. Harici referans ses yükleme.
+3. İzin checkbox'ını işaretle ve üretimi başlat.
 
-Adım: Gradio profil dropdown'ından oluşturulan profili seç.
+Kontrol:
 
-Beklenen sonuç: Seçili profil üretimde öncelikli referans olur. Profil seçiliyken ayrıca yüklenen ses dosyası kullanılmaz.
+- Sistem `samples/my_voice.wav` dosyasını kullanmaya çalışır.
+- Dosya yoksa anlaşılır hata gösterilir.
 
-## 22. Profil dropdown yenileme testi
+### 2.3 Harici referans ses testi
 
-Adım: Yeni profil oluşturduktan sonra profil dropdown'ının güncellenip güncellenmediğini kontrol et.
+Adım:
 
-Beklenen sonuç: Dropdown yeni profili gösterir ve mümkünse yeni profil seçili hale gelir.
+1. Profil seçme.
+2. Açık izinli bir referans ses yükle.
+3. Kısa bir metinle üretim başlat.
 
-## 23. Seçili profil yenileme testi
+Kontrol:
 
-Adım: Gradio'da bir profil seç ve `Seçili profili yenile` butonuna bas.
+- Yüklenen referans ses ön işlenir.
+- Üretim bu referansla yapılır.
+- Çıktı `outputs/gradio_outputs/` altında oluşur.
 
-Beklenen sonuç: `original_reference.wav` korunur, `preprocessed_reference.wav` yeniden üretilir ve `profile.json` içindeki kalite bilgisi güncellenir. XTTS modeli yüklenmez ve ses üretimi yapılmaz.
+### 2.4 İzin ve boş metin kontrolleri
 
-## 24. Seçili profil silme testi
+Kontrol:
 
-Adım: Gradio'da bir profil seç, silme onay checkbox'ını işaretle ve `Seçili profili sil` butonuna bas.
+- İzin checkbox'ı işaretli değilse üretim başlamaz.
+- Metin alanı boşsa üretim başlamaz.
+- Kullanıcıya anlaşılır uyarı verilir.
 
-Beklenen sonuç: `profiles/<profile_slug>/` klasörü silinir, dropdown güncellenir, seçim temizlenir ve `profiles/.gitkeep` dosyası korunur. Onay checkbox'ı işaretli değilse silme yapılmaz.
+### 2.5 Kalite raporu testi
 
-## 25. Varsayılan referans ses testi
+Kontrol:
 
-Adım: Profil seçmeden ve harici ses yüklemeden kısa bir metinle üretim denemesi yap.
+- Ham ve/veya ön işlenmiş referans için `GOOD`, `WARNING` veya `BAD` sonucu görünür.
+- Rapor teknik sinyal olarak yorumlanır; nihai kalite dinlenerek kontrol edilir.
+- Raporlar `outputs/reports/gradio_quality_reports/` altında local kalır.
 
-Beklenen sonuç: Sistem varsayılan `samples/my_voice.wav` referansını kullanmaya çalışır. Dosya yoksa kullanıcıya anlaşılır hata gösterilir.
+## 3. Profile testleri
 
-## 26. Harici referans ses yükleme testi
+### 3.1 Web üzerinden profil oluşturma
 
-Adım: Profil seçmeden Gradio üzerinden açık izinli bir referans ses yükle ve metin seslendir.
+Adım:
 
-Beklenen sonuç: Yüklenen referans ses ön işlenir ve üretimde kullanılır.
+1. Gradio arayüzünde profil adı gir.
+2. Referans ses yükle.
+3. İzin checkbox'ını işaretle.
+4. `Profil oluştur` butonuna bas.
 
-## 27. İzin checkbox testi
+Kontrol:
 
-Adım: İzin checkbox'ını işaretlemeden üretim veya profil oluşturma denemesi yap.
+- `profiles/<profile_slug>/` klasörü oluşur.
+- Klasörde `original_reference.wav`, `preprocessed_reference.wav` ve `profile.json` bulunur.
+- Aynı profil adı tekrar kullanılırsa mevcut profilin üzerine yazılmaz.
 
-Beklenen sonuç: İşlem başlamaz ve kullanıcıdan ses üzerinde hakkı veya açık izni olduğunu onaylaması istenir.
+### 3.2 Profil seçme
 
-## 28. Boş metin testi
+Adım:
 
-Adım: Metin alanını boş bırakıp ses üretmeyi dene.
+1. Gradio profil dropdown'ından oluşturulan profili seç.
+2. İstersen ayrıca harici referans ses yükle.
+3. Metin üretimi başlat.
 
-Beklenen sonuç: Ses üretimi başlamaz ve boş metin için anlaşılır uyarı verilir.
+Kontrol:
 
-## 29. Kalite raporu testi
+- Seçili profil üretimde öncelikli referans olur.
+- Profil seçiliyken ayrıca yüklenen ses dosyası kullanılmaz.
 
-Adım: Profil oluşturma veya ses üretimi sonrasında kalite raporu alanını kontrol et.
+### 3.3 Profil dropdown yenileme
 
-Beklenen sonuç: Ham ve/veya ön işlenmiş referans için `GOOD`, `WARNING` veya `BAD` sonucu görünür. Rapor teknik sinyal verir; nihai kalite dinlenerek kontrol edilir.
+Kontrol:
 
-## 30. Çıktı dosyaları testi
+- Yeni profil oluşturulduktan sonra dropdown güncellenir.
+- Mümkünse yeni profil seçili hale gelir.
 
-Adım: Üretimden sonra local çıktı klasörlerini kontrol et.
+### 3.4 Seçili profili yenileme
 
-Beklenen sonuç: Gradio çıktıları `outputs/gradio_outputs/`, kalite raporları `outputs/reports/`, ön işlenmiş referanslar `outputs/preprocessed_references/` altında tutulur.
+Adım:
 
-## 31. GitHub'a gitmemesi gereken dosyalar kontrolü
+1. Gradio'da bir profil seç.
+2. `Seçili profili yenile` butonuna bas.
 
-Adım: GitHub Desktop değişiklik listesini kontrol et.
+Kontrol:
 
-Beklenen sonuç: `samples/`, `profiles/`, `datasets/`, `experiments/`, `fine_tuned_models/`, `outputs/`, `.venv/`, gerçek ses dosyaları, checkpointler ve model dosyaları commit listesine girmez. Commit listesinde yalnızca kod, PowerShell runner, `.gitkeep` ve dokümantasyon değişiklikleri bulunur.
+- `original_reference.wav` korunur.
+- `preprocessed_reference.wav` yeniden üretilir.
+- `profile.json` kalite bilgisi güncellenir.
+- XTTS modeli yüklenmez ve ses üretimi yapılmaz.
+
+### 3.5 Seçili profili silme
+
+Adım:
+
+1. Gradio'da bir profil seç.
+2. Silme onay checkbox'ını işaretle.
+3. `Seçili profili sil` butonuna bas.
+
+Kontrol:
+
+- `profiles/<profile_slug>/` klasörü silinir.
+- Dropdown güncellenir ve seçim temizlenir.
+- `profiles/.gitkeep` korunur.
+- Onay checkbox'ı işaretli değilse silme yapılmaz.
+
+### 3.6 Terminalden profil yönetimi
+
+Komutlar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_create_voice_profile.ps1 -Name baglare -InputPath .\samples\my_voice.wav
+powershell -ExecutionPolicy Bypass -File .\run_list_voice_profiles.ps1
+powershell -ExecutionPolicy Bypass -File .\run_recreate_voice_profile.ps1 -Slug baglare
+powershell -ExecutionPolicy Bypass -File .\run_delete_voice_profile.ps1 -Slug baglare -Yes
+```
+
+Kontrol:
+
+- Profil komutları yalnızca `profiles/` altında local dosya üretir veya siler.
+- Gerçek profil dosyaları GitHub'a eklenmez.
+
+## 4. Fine-tuning hazırlık testleri
+
+### 4.1 Dataset başlatma
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_init_finetune_dataset.ps1 -Name baglare_finetune_v1
+```
+
+Kontrol:
+
+- `datasets/baglare-finetune-v1/` oluşur.
+- `wavs/` alt klasörü ve `metadata.csv` oluşur.
+- `metadata.csv` başlığı `audio_path|text` olur.
+- Aynı isimle tekrar çalıştırılırsa üzerine yazılmaz.
+
+### 4.2 Kayıt planı üretme
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80
+```
+
+Kontrol:
+
+- `recording_plan.csv` oluşur.
+- Başlık `clip_id;target_audio_path;text;status;notes` olur.
+- Satırlar `TODO` durumuyla başlar.
+- Dosya `utf-8-sig` encoding ve noktalı virgül delimiter ile yazılır.
+- Dosya zaten varsa üzerine yazılmaz.
+
+Gerekirse kontrollü yeniden üretim:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_generate_recording_plan.ps1 -Dataset .\datasets\baglare-finetune-v1 -Count 80 -Overwrite
+```
+
+### 4.3 Metadata oluşturma
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_build_metadata.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Kontrol:
+
+- Yalnızca `recording_plan.csv` içinde `DONE` olan ve WAV dosyası bulunan satırlar `metadata.csv` içine yazılır.
+- Eksik WAV dosyaları terminalde uyarı olarak görünür.
+
+### 4.4 Dataset validation
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_validate_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Kontrol:
+
+- Metadata satırları ve WAV dosyaları kontrol edilir.
+- Süre, sample rate, mono kanal, ses seviyesi ve clipping riski raporlanır.
+- Toplam süre ve ortalama örnek süresi terminalde görünür.
+- Rapor `outputs/reports/finetune_dataset_report.json` altına yazılır ve GitHub'a eklenmez.
+
+### 4.5 Readiness report
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_finetune_readiness_report.ps1 -Dataset .\datasets\baglare-finetune-v1
+```
+
+Kontrol:
+
+- Toplam satır, geçerli/uyarılı/hatalı örnek sayısı ve toplam süre görünür.
+- Yaklaşık 7-8 dakikalık hatasız dataset için `DATASET_VALID_BUT_SMALL` beklenir.
+- JSON ve Markdown raporları `outputs/reports/` altında local kalır.
+
+## 5. Deneysel fine-tuning testleri
+
+### 5.1 Dataset export
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_export_xtts_finetune_dataset.ps1 -Dataset .\datasets\baglare-finetune-v1 -RunName baglare_xtts_exp01
+```
+
+Kontrol:
+
+- `experiments/baglare-xtts-exp01/` oluşur.
+- `dataset/wavs/`, `metadata_train.csv`, `metadata_eval.csv` ve `experiment_manifest.json` bulunur.
+- Export edilen dataset GitHub'a eklenmez.
+
+### 5.2 Training dry-run
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1 -DryRun
+```
+
+Kontrol:
+
+- Experiment path, dataset path, train/eval sayıları ve CUDA bilgisi görünür.
+- `GPTArgs`, `GPTTrainer`, `GPTTrainerConfig` importları `Import OK` olur.
+- `XttsAudioConfig import source` satırı görünür.
+- `Start with eval: False` görünür.
+- `TrainerArgs ozeti` altında `start_with_eval: False`, `skip_train_epoch: False`, `grad_accum_steps: 16` görünür.
+- `Training config ozeti` altında `requested max_steps`, `requested epochs`, `resolved limit_mode`, `save_step`, `save_checkpoints`, `save_n_checkpoints` görünür.
+- Son satırlarda `Dry-run config ve TrainerArgs olusturma OK.` ve `XTTS fine-tuning dry-run completed successfully` görünür.
+- Dry-run training başlatmaz ve checkpoint üretmez.
+
+### 5.3 Limit config kontrolü
+
+Kontrol:
+
+- `limit_mode: max_steps` görünüyorsa adım sınırı doğrudan uygulanır.
+- `limit_mode: epochs_fallback` görünüyorsa config üzerinde `epochs` veya `num_epochs` değeri `1` veya daha büyük olmalıdır.
+- `limit_mode: unsupported` görünüyorsa gerçek training başlatılmamalıdır.
+
+### 5.4 Gerçek training
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_train_xtts_experiment.ps1 -Experiment .\experiments\baglare-xtts-exp01 -MaxSteps 300 -Epochs 1 -BatchSize 1 -GradAccum 16 -SaveStep 1
+```
+
+Kontrol:
+
+- `start_with_eval: False` ve `skip_train_epoch: False` görünür.
+- `save_step: 1` ve `save_checkpoints: True` görünür.
+- Güvenli limit uygulanamıyorsa script training başlatmadan durur.
+- CUDA OOM durumunda `-BatchSize 1` korunur ve gerekirse `-GradAccum` artırılır.
+
+### 5.5 Checkpoint artifact kontrolü
+
+Kontrol:
+
+- Training sonunda script `training_output/` altında checkpoint artifact arar.
+- `.pth`, `.pt`, `.ckpt`, `.safetensors` veya checkpoint benzeri dosya bulunursa yollar terminale yazılır.
+- Başarı mesajı: `Training completed and checkpoint artifacts were found.`
+- Checkpoint yoksa hata mesajı: `Training finished but no checkpoint artifact was found.`
+- `EPOCH: 0/0` ve checkpoint üretmeyen eval akışı başarı sayılmaz.
+
+## 6. Inference ve değerlendirme testleri
+
+### 6.1 Fine-tuned checkpoint inference
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Merhaba, bu ilk fine-tuned testidir."
+```
+
+Kontrol:
+
+- Script seçilen checkpoint yolunu terminale yazar.
+- Speaker wav önceliği doğru uygulanır.
+- Fine-tuned inference başarılıysa `outputs/finetuned_eval/finetuned_test.wav` oluşur.
+- Base output başarılıysa `outputs/finetuned_eval/base_test.wav` oluşur.
+- Rapor `outputs/reports/finetuned_eval_report.json` altına yazılır.
+- Bu test kalite garantisi değildir; çıktı dinlenerek değerlendirilir.
+
+### 6.2 Checkpoint matrix evaluation
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experiment .\experiments\baglare-xtts-exp01
+```
+
+Kontrol:
+
+- `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantları denenir.
+- Aynı checkpoint iki kez seçilmez.
+- Çıktılar `outputs/finetuned_eval/matrix/<timestamp>/` altına yazılır.
+- Raporlar `outputs/reports/finetuned_matrix_report.json` ve `.md` olarak oluşur.
+- Önce base, sonra fine-tuned varyantlar dinlenir.
+
+### 6.3 Human evaluation scorecard
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
+```
+
+Kontrol:
+
+- `outputs/reports/human_eval_scorecard.csv` oluşur.
+- `outputs/reports/human_eval_summary.json` oluşur.
+- `outputs/reports/human_eval_summary.md` oluşur.
+- CSV başlığı `variant;naturalness;similarity;pronunciation;human_likeness;text_accuracy;total_score;notes` olur.
+- Sonuçlar insan dinlemesine dayanır; otomatik kalite ölçümü değildir.
+
+### 6.4 Inference parameter sweep
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_inference_params.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Variant checkpoint_71
+```
+
+Kontrol:
+
+- `default`, `conservative`, `stable` ve `longer_attempt` parametre setleri denenir.
+- Çıktılar `outputs/finetuned_eval/param_sweep/<timestamp>/<variant>/<param_set>/` altına yazılır.
+- Raporlar `outputs/reports/inference_param_sweep_report.json` ve `.md` olarak oluşur.
+- `likely_cutoff` veya `possibly_cutoff` işaretleri dinleme ile doğrulanır.
+
+### 6.5 Uzun metin chunking
+
+Komut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_finetuned.ps1 -Experiment .\experiments\baglare-xtts-exp01 -Text "Bu uzun test metni, Türkçe XTTS karakter sınırı aşıldığında sistemin metni güvenli parçalara bölüp bölmediğini kontrol etmek için hazırlanmıştır. Cümleler doğal noktalama işaretleriyle ayrılır ve final ses dosyasında son cümlenin sessizce kırpılmadan duyulması beklenir."
+```
+
+Kontrol:
+
+- Uzun metin 220 karakteri aşmayan parçalara bölünür.
+- Final WAV `outputs/finetuned_eval/finetuned_test.wav` olarak oluşur.
+- JSON raporda `chunking_used: true`, `chunk_count` ve `chunks` alanları görünür.
+- Chunking kırpılma riskini azaltır; ses kalitesini garanti etmez.
+
+## 7. Yerel dosya ve GitHub kontrolü
+
+GitHub Desktop'ta commit öncesi kontrol:
+
+- `samples/` içindeki gerçek ses dosyaları commit listesinde olmamalıdır.
+- `profiles/` içindeki gerçek profil dosyaları commit listesinde olmamalıdır.
+- `datasets/` içindeki dataset dosyaları commit listesinde olmamalıdır.
+- `experiments/` içindeki trainer çıktıları ve checkpointler commit listesinde olmamalıdır.
+- `fine_tuned_models/` içindeki model dosyaları commit listesinde olmamalıdır.
+- `outputs/` içindeki WAV, JSON, Markdown ve CSV rapor çıktıları commit listesinde olmamalıdır.
+- `.venv/`, model cache dosyaları ve checkpoint uzantılı dosyalar commit listesinde olmamalıdır.
+
+Commit listesinde beklenen dosya türleri:
+
+- Kaynak kod değişiklikleri
+- PowerShell runner değişiklikleri
+- Dokümantasyon değişiklikleri
+- Gerekli `.gitkeep` dosyaları
