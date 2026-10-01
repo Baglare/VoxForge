@@ -75,3 +75,6 @@ checkpoints/
 
 # Gradio
 flagged/
+
+# KnowledgeCompiler local operational state
+.knowledge-compiler/
