@@ -121,6 +121,11 @@ class StudioProject:
 
     # ---- settings & keys -------------------------------------------
     @property
+    def name(self) -> str:
+        with self.store.connect() as db:
+            return db.execute("SELECT name FROM project WHERE id = 1").fetchone()["name"]
+
+    @property
     def settings(self) -> ProjectSettings:
         with self.store.connect() as db:
             row = db.execute("SELECT settings_json FROM project WHERE id = 1").fetchone()
@@ -190,6 +195,7 @@ class StudioProject:
                         "paragraph": row["paragraph"],
                         "source_text": row["source_text"],
                         "spoken_text": row["spoken_text"],
+                        "transformations": json.loads(row["transformations_json"]),
                         "cache_key": key,
                         "state": state,
                         "error": error,
@@ -222,6 +228,24 @@ class StudioProject:
                 (utc_now_iso(), segment_id),
             )
         return normalization.spoken
+
+    def set_spoken_text(self, segment_id: int, spoken_text: str) -> None:
+        """Manual pronunciation override; the original text stays as written."""
+        spoken = " ".join(spoken_text.split())
+        if not spoken:
+            raise ValueError("Okunacak metin bos olamaz.")
+        manual = json.dumps([{"rule": "manual", "original": None, "spoken": spoken}], ensure_ascii=False)
+        with self.store.transaction() as db:
+            updated = db.execute(
+                "UPDATE segment SET spoken_text = ?, transformations_json = ?, updated_at = ? WHERE id = ?",
+                (spoken, manual, utc_now_iso(), segment_id),
+            ).rowcount
+            if not updated:
+                raise KeyError(f"Segment yok: {segment_id}")
+            db.execute(
+                "UPDATE job SET status = 'cancelled', finished_at = ? WHERE segment_id = ? AND status = 'queued'",
+                (utc_now_iso(), segment_id),
+            )
 
     # ---- jobs ------------------------------------------------------
     def enqueue_missing(self, segment_ids: Iterable[int] | None = None) -> int:
