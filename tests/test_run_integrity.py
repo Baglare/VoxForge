@@ -12,6 +12,7 @@ from pathlib import Path
 
 from scripts import create_human_eval_report as human_eval
 from voxforge.runs import (
+    RunRecordError,
     finish_training_run,
     new_run_id,
     start_training_run,
@@ -69,6 +70,12 @@ class TrainingRunTests(unittest.TestCase):
         self.assertEqual(provenance["source"], "legacy_discovery")
         self.assertIsNotNone(provenance["warning"])
         self.assertEqual(len(candidates), 1)
+
+    def test_failed_runs_only_do_not_fall_back_to_legacy(self) -> None:
+        manifest = start_training_run(self.experiment, self.output, settings={})
+        finish_training_run(self.experiment, manifest)  # no new checkpoint -> failed
+        with self.assertRaises(RunRecordError):
+            training_checkpoint_candidates(self.experiment, self.output)
 
     def test_run_ids_are_unique(self) -> None:
         self.assertNotEqual(new_run_id(), new_run_id())

@@ -150,6 +150,12 @@ def read_run_manifest(experiment_path: Path, run_id: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def has_run_manifests(experiment_path: Path) -> bool:
+    """Any manifest file (even failed/unreadable) means this is not a legacy experiment."""
+    directory = run_manifest_dir(experiment_path)
+    return directory.is_dir() and any(directory.glob("*.json"))
+
+
 def latest_successful_run(experiment_path: Path) -> dict[str, Any] | None:
     directory = run_manifest_dir(experiment_path)
     if not directory.is_dir():
@@ -171,8 +177,9 @@ def training_checkpoint_candidates(
 ) -> tuple[list[Path], dict[str, Any]]:
     """Checkpoint files to choose from plus provenance for reports.
 
-    With a run id (or any successful manifest) only that run's checkpoints are
-    returned. Without manifests the legacy recursive scan is used and flagged.
+    With a run id (or the latest successful manifest) only that run's checkpoints
+    are returned. If manifests exist but none succeeded, selection fails instead
+    of falling back. The flagged legacy scan is used only when no manifest exists.
     """
     if run_id:
         manifest = read_run_manifest(experiment_path, run_id)
@@ -180,6 +187,11 @@ def training_checkpoint_candidates(
             raise RunRecordError(f"Run basarili degil ({manifest.get('status')}): {run_id}")
     else:
         manifest = latest_successful_run(experiment_path)
+        if manifest is None and has_run_manifests(experiment_path):
+            raise RunRecordError(
+                "Run manifestleri var ama basarili egitim kosusu yok; eski checkpointlere "
+                "otomatik gecilmedi. Gerekirse --run-id ile basarili bir kosu secin."
+            )
 
     if manifest is None:
         paths = sorted(
