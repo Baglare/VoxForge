@@ -18,8 +18,13 @@ $EnvDir = Join-Path $DataRoot "Environments\VoxForge-bench-$Engine"
 $Defaults = @{ chatterbox = "3.11"; voxcpm = "3.12"; eval = "3.12" }
 if (-not $PythonVersion) { $PythonVersion = $Defaults[$Engine] }
 
+# Chatterbox V3: PyPI'daki chatterbox-tts 0.1.7 t3_model="v3" desteklemiyor. Resmi GitHub kaynagi
+# engine_pins.json'daki commit'e sabitlenir (surum numarasi iki kaynakta da 0.1.7 oldugu icin yetmez).
+$Pins = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot "engine_pins.json") | ConvertFrom-Json
+$ChatterboxSpec = "$($Pins.chatterbox.package) @ git+$($Pins.chatterbox.repo)@$($Pins.chatterbox.commit)"
+
 $Packages = @{
-    chatterbox = @("chatterbox-tts")
+    chatterbox = @($ChatterboxSpec)
     voxcpm     = @("voxcpm", "soundfile")
     eval       = @("faster-whisper", "speechbrain", "soundfile")
 }
@@ -42,6 +47,13 @@ if ($Engine -eq "eval") {
     # Degerlendirme ortami: once CUDA'li torch, sonra ASR ve konusmaci benzerligi paketleri.
     & $Py -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
 }
+if ($Engine -eq "chatterbox") {
+    & git --version *> $null
+    if ($LASTEXITCODE -ne 0) { throw "git bulunamadi; GitHub kaynagindan kurulum icin gerekli (winget install Git.Git)." }
+    # Ayni surum numarali PyPI kurulumu (V3'suz) varsa kaldir; yalniz bu izole ortamda.
+    & $Py -m pip uninstall -y chatterbox-tts *> $null
+    Write-Host "Chatterbox kaynagi: $ChatterboxSpec"
+}
 & $Py -m pip install @($Packages[$Engine])
 if ($LASTEXITCODE -ne 0) { throw "Paket kurulumu basarisiz." }
 
@@ -60,4 +72,11 @@ if ($CudaOk -ne "True") {
 
 & $Py -c "import torch, platform; print('Python', platform.python_version(), '| torch', torch.__version__, '| CUDA', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else '-')"
 & $Py -m pip freeze | Out-File -Encoding utf8 (Join-Path $EnvDir "requirements-lock.txt")
-Write-Host "Hazir. Surum kilidi: $(Join-Path $EnvDir 'requirements-lock.txt')"
+Write-Host "Surum kilidi: $(Join-Path $EnvDir 'requirements-lock.txt')"
+
+if ($Engine -eq "chatterbox") {
+    # Model indirmeden: kaynak commit'i, t3_model="v3" API'si, Turkce destegi ve CUDA.
+    & $Py (Join-Path $PSScriptRoot "check_engine.py") --engine chatterbox
+    if ($LASTEXITCODE -ne 0) { throw "Chatterbox V3 API kontrolu basarisiz (yukaridaki JSON'a bakin)." }
+}
+Write-Host "Hazir."

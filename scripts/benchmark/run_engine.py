@@ -33,17 +33,32 @@ if str(REPO_ROOT) not in sys.path:
 
 from voxforge.runs import utc_now_iso, write_json_atomic  # noqa: E402  (stdlib-only helpers)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sources import chatterbox_pin_problem, load_pins, source_revision  # noqa: E402
+
 ENGINE_CHOICES = ("xtts", "chatterbox-v3", "voxcpm2", "voxcpm2-ultimate", "mock")
 VERSION_PACKAGES = ("torch", "torchaudio", "chatterbox-tts", "voxcpm", "coqui-tts", "TTS", "transformers", "numpy")
+SOURCE_TRACKED_PACKAGES = ("chatterbox-tts", "resemble-perth", "voxcpm")
 
 
 def package_versions() -> dict[str, str]:
+    """Versions plus the real install source (PEP 610) for packages that may come from git.
+
+    The source revision is part of the dict, so resuming a run with a different commit is
+    refused like a different version would be.
+    """
     found = {"python": platform.python_version()}
     for name in VERSION_PACKAGES:
         try:
             found[name] = metadata.version(name)
         except metadata.PackageNotFoundError:
             continue
+    for name in SOURCE_TRACKED_PACKAGES:
+        info = source_revision(name)
+        if info is not None:
+            found[f"{name}@source"] = (
+                f"{info['url']}@{info['commit']}" if info.get("commit") else info["source"]
+            )
     return found
 
 
@@ -124,6 +139,12 @@ def load_xtts(ctx: dict[str, Any]):
 
 
 def load_chatterbox(ctx: dict[str, Any]):
+    pin = load_pins()["chatterbox"]
+    installed = source_revision(pin["package"])
+    problem = chatterbox_pin_problem(installed, pin)
+    if problem:
+        raise RuntimeError(problem)  # PyPI 0.1.7 de ayni surumu gosterir ama V3 icermez
+
     import torchaudio
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
@@ -133,7 +154,7 @@ def load_chatterbox(ctx: dict[str, Any]):
     if "t3_model" in dropped:
         raise RuntimeError(
             "Kurulu chatterbox-tts sürümü t3_model='v3' desteklemiyor; V3 yerine V2 çalışırdı. "
-            "Ortamı güncelleyin (setup_benchmark_env.ps1 -Engine chatterbox)."
+            "Ortamı güncelleyin (scripts/benchmark/setup_env.ps1 -Engine chatterbox)."
         )
     model = ChatterboxMultilingualTTS.from_pretrained(**load_kwargs)
     generate_kwargs, generate_dropped = supported_kwargs(
@@ -148,6 +169,7 @@ def load_chatterbox(ctx: dict[str, Any]):
 
     return synth, {
         "model": "ResembleAI/chatterbox t3_model=v3",
+        "source": f"{pin['repo']}@{installed['commit']}",
         "language_id": "tr",
         "sample_rate": model.sr,
         "note": "Çıktılar PerTh filigranı içerir (kütüphane varsayılanı).",

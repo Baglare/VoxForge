@@ -1,0 +1,12 @@
+{
+  "chatterbox": {
+    "package": "chatterbox-tts",
+    "repo": "https://github.com/resemble-ai/chatterbox.git",
+    "commit": "5de7a54aa4e5e2baadb0182dde554908b48b85c2",
+    "commit_date": "2026-07-21",
+    "why": "PyPI chatterbox-tts 0.1.7 t3_model='v3' desteklemiyor; resmi GitHub master bu commit'te destekliyor (MULTILINGUAL_T3_MODELS['v3'] = t3_mtl23ls_v3.safetensors). Paket surumu her iki kaynakta da 0.1.7 oldugu icin surum numarasi yeterli degil.",
+    "unpinned_dependencies": {
+      "resemble-perth": "chatterbox pyproject.toml bunu git+https://github.com/resemble-ai/Perth.git@master olarak istiyor; kurulan revizyon sonuclara kaydedilir."
+    }
+  }
+}
