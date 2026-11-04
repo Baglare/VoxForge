@@ -50,6 +50,12 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def engine_supports_presets(engine_id: str) -> bool:
+    from voxforge.engines import ENGINE_SPECS
+
+    return bool(ENGINE_SPECS.get(engine_id, {}).get("supports_presets", False))
+
+
 def _recover_stale_jobs(db) -> int:
     """Requeue running jobs without a live lease (no heartbeat, or older than LEASE_SECONDS)."""
     return db.execute(
@@ -67,7 +73,7 @@ class StudioProject:
     def __init__(self, store: ProjectStore) -> None:
         self.store = store
         self.worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
-        self._reference_cache: tuple[tuple[str, int, int], str] | None = None
+        self._reference_cache: dict[str, tuple[tuple[int, int], str]] = {}
 
     # ---- lifecycle -------------------------------------------------
     @classmethod
@@ -131,30 +137,100 @@ class StudioProject:
             row = db.execute("SELECT settings_json FROM project WHERE id = 1").fetchone()
         return ProjectSettings(**json.loads(row["settings_json"]))
 
-    def reference_hash(self) -> str | None:
-        """Content hash of the reference WAV, re-read whenever its size or mtime changes."""
-        reference = self.settings.reference_path
+    def reference_hash(self, reference: str | None = None, *, use_project_default: bool = True) -> str | None:
+        """Content hash of a reference WAV, re-read whenever its size or mtime changes."""
+        if reference is None and use_project_default:
+            reference = self.settings.reference_path
         if reference is None:
             return None
         path = Path(reference)
         try:
             stat = path.stat()
         except OSError:
-            self._reference_cache = None
+            self._reference_cache.pop(str(path), None)
             return f"missing:{reference}"
-        signature = (str(path), stat.st_size, stat.st_mtime_ns)
-        if self._reference_cache is None or self._reference_cache[0] != signature:
-            self._reference_cache = (signature, file_sha256(path))
-        return self._reference_cache[1]
+        signature = (stat.st_size, stat.st_mtime_ns)
+        cached = self._reference_cache.get(str(path))
+        if cached is None or cached[0] != signature:
+            cached = (signature, file_sha256(path))
+            self._reference_cache[str(path)] = cached
+        return cached[1]
 
-    def cache_key(self, spoken_text: str, settings: ProjectSettings | None = None) -> str:
+    # ---- voices (VF-007) -------------------------------------------
+    def voices(self) -> dict[str, dict[str, Any]]:
+        with self.store.connect() as db:
+            rows = db.execute("SELECT * FROM voice ORDER BY created_at, key").fetchall()
+        return {
+            row["key"]: {
+                "key": row["key"],
+                "name": row["name"],
+                "reference_path": row["reference_path"],
+                "preset": json.loads(row["preset_json"]),
+            }
+            for row in rows
+        }
+
+    def add_voice(self, key: str, name: str, reference_path: str | None, preset: dict[str, Any]) -> None:
+        with self.store.transaction() as db:
+            if db.execute("SELECT 1 FROM voice WHERE key = ? OR lower(name) = lower(?)", (key, name)).fetchone():
+                raise ValueError(f"Bu adla bir ses zaten var: {name}")
+            db.execute(
+                "INSERT INTO voice (key, name, reference_path, preset_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (key, name, reference_path, json.dumps(preset, ensure_ascii=False), utc_now_iso()),
+            )
+
+    def update_voice_preset(self, key: str, preset: dict[str, Any]) -> None:
+        """Changing a voice's preset invalidates only segments using that voice (via the cache key)."""
+        with self.store.transaction() as db:
+            if not db.execute(
+                "UPDATE voice SET preset_json = ? WHERE key = ?", (json.dumps(preset, ensure_ascii=False), key)
+            ).rowcount:
+                raise KeyError(f"Ses yok: {key}")
+
+    def assign_voice(self, segment_ids: Iterable[int], voice_key: str | None) -> int:
+        """Assign a voice (``None`` = narrator); queued jobs of those segments are cancelled."""
+        ids = list(segment_ids)
+        with self.store.transaction() as db:
+            if voice_key is not None and not db.execute("SELECT 1 FROM voice WHERE key = ?", (voice_key,)).fetchone():
+                raise KeyError(f"Ses yok: {voice_key}")
+            now = utc_now_iso()
+            changed = 0
+            for segment_id in ids:
+                changed += db.execute(
+                    "UPDATE segment SET voice_id = ?, updated_at = ? WHERE id = ? AND voice_id IS NOT ?",
+                    (voice_key, now, segment_id, voice_key),
+                ).rowcount
+                db.execute(
+                    "UPDATE job SET status = 'cancelled', finished_at = ? WHERE segment_id = ? AND status = 'queued'",
+                    (now, segment_id),
+                )
+        return changed
+
+    def synthesis_voice(self, voice_key: str | None, voices: dict[str, dict[str, Any]] | None = None,
+                        settings: ProjectSettings | None = None) -> tuple[str | None, dict[str, Any]]:
+        """``(reference_path, preset)`` for a segment's voice; narrator uses the project defaults."""
         settings = settings or self.settings
+        voice = (voices if voices is not None else self.voices()).get(voice_key) if voice_key else None
+        if voice is None:
+            return settings.reference_path, settings.preset
+        preset = voice["preset"] if engine_supports_presets(settings.engine_id) else {}
+        return voice["reference_path"], preset
+
+    def cache_key(
+        self,
+        spoken_text: str,
+        settings: ProjectSettings | None = None,
+        voice_key: str | None = None,
+        voices: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
+        settings = settings or self.settings
+        reference, preset = self.synthesis_voice(voice_key, voices, settings)
         payload = {
             "spoken_text": spoken_text,
             "engine_id": settings.engine_id,
             "model_id": settings.model_id,
-            "reference_sha256": self.reference_hash(),
-            "preset": settings.preset,
+            "reference_sha256": self.reference_hash(reference, use_project_default=False),
+            "preset": preset,
             "language": settings.language,
             "max_chars": settings.max_chars,
             "normalizer_version": NORMALIZER_VERSION,
@@ -167,11 +243,12 @@ class StudioProject:
     def segments(self) -> list[dict[str, Any]]:
         """Segments in order with derived state: done / queued / running / failed / cancelled / pending."""
         settings = self.settings
+        voices = self.voices()
         with self.store.connect() as db:
             rows = db.execute("SELECT * FROM segment ORDER BY ord").fetchall()
             result = []
             for row in rows:
-                key = self.cache_key(row["spoken_text"], settings)
+                key = self.cache_key(row["spoken_text"], settings, row["voice_id"], voices)
                 artifact = db.execute(
                     "SELECT path, duration_s FROM artifact WHERE segment_id = ? AND cache_key = ?",
                     (row["id"], key),
@@ -196,6 +273,8 @@ class StudioProject:
                         "source_text": row["source_text"],
                         "spoken_text": row["spoken_text"],
                         "transformations": json.loads(row["transformations_json"]),
+                        "voice_id": row["voice_id"],
+                        "voice_name": voices[row["voice_id"]]["name"] if row["voice_id"] in voices else None,
                         "cache_key": key,
                         "state": state,
                         "error": error,
@@ -282,7 +361,7 @@ class StudioProject:
         with self.store.transaction() as db:
             _recover_stale_jobs(db)
             row = db.execute(
-                "SELECT job.id, job.segment_id, job.cache_key, job.attempts, segment.spoken_text"
+                "SELECT job.id, job.segment_id, job.cache_key, job.attempts, segment.spoken_text, segment.voice_id"
                 " FROM job JOIN segment ON segment.id = job.segment_id"
                 " WHERE job.status = 'queued' ORDER BY segment.ord, job.id LIMIT 1"
             ).fetchone()
@@ -344,8 +423,26 @@ class StudioProject:
 
     def current_key_for(self, segment_id: int) -> str | None:
         with self.store.connect() as db:
-            row = db.execute("SELECT spoken_text FROM segment WHERE id = ?", (segment_id,)).fetchone()
-        return self.cache_key(row["spoken_text"]) if row else None
+            row = db.execute("SELECT spoken_text, voice_id FROM segment WHERE id = ?", (segment_id,)).fetchone()
+        return self.cache_key(row["spoken_text"], voice_key=row["voice_id"]) if row else None
+
+    def set_spoken_from_text(self, segment_id: int, text: str) -> str:
+        """Normalise ``text`` into the segment's spoken text, keeping the original source (e.g. drop a speaker label)."""
+        settings = self.settings
+        normalization = normalize_text(" ".join(text.split()), settings.lexicon_entries())
+        if not normalization.spoken:
+            raise ValueError("Okunacak metin bos olamaz.")
+        with self.store.transaction() as db:
+            if not db.execute(
+                "UPDATE segment SET spoken_text = ?, transformations_json = ?, updated_at = ? WHERE id = ?",
+                (normalization.spoken, _transformations_json(normalization), utc_now_iso(), segment_id),
+            ).rowcount:
+                raise KeyError(f"Segment yok: {segment_id}")
+            db.execute(
+                "UPDATE job SET status = 'cancelled', finished_at = ? WHERE segment_id = ? AND status = 'queued'",
+                (utc_now_iso(), segment_id),
+            )
+        return normalization.spoken
 
     def orphan_audio_files(self) -> list[Path]:
         """Audio files not referenced by any artifact. Reported only; never deleted automatically."""

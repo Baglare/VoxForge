@@ -28,9 +28,12 @@ from voxforge.studio.project import ProjectSettings, StudioProject
 from voxforge.studio.queue import StudioWorker
 from voxforge.studio.store import DB_FILENAME
 from voxforge.text import LexiconEntry
+from voxforge.text.dialogue import dialogue_hint, speaker_label
 
 REFERENCE_FILENAME = "reference.wav"
 EXPORTS_DIRNAME = "exports"
+VOICES_DIRNAME = "voices"
+NARRATOR_LABEL = "Anlatıcı"
 STATE_LABELS = {
     "done": "Tamam",
     "running": "Üretiliyor",
@@ -182,6 +185,121 @@ class StudioService:
             self.open(slug).set_spoken_text(segment_id, spoken)
         except ValueError as exc:
             raise StudioError(str(exc)) from exc
+
+    # ---- voices (VF-007) ------------------------------------------------
+    def voices(self, slug: str) -> list[dict[str, Any]]:
+        return list(self.open(slug).voices().values())
+
+    def add_voice(
+        self,
+        slug: str,
+        name: str,
+        reference: Path | None,
+        preset: dict[str, Any] | None = None,
+    ) -> str:
+        """Add a character voice; its reference is copied into ``voices/`` inside the project."""
+        project = self.open(slug)
+        name = (name or "").strip()
+        if not name:
+            raise StudioError("Karakter adı gerekli.")
+        spec = engine_spec(project.settings.engine_id)
+        if spec["needs_reference"] and (reference is None or not Path(reference).is_file()):
+            raise StudioError(f"{spec['engine_id']} motorunda her karakter için referans ses gerekir.")
+        existing = project.voices()
+        if any(voice["name"].lower() == name.lower() for voice in existing.values()):
+            raise StudioError(f"Bu adla bir karakter zaten var: {name}")
+        base = slugify(name)
+        key, counter = base, 2
+        while key in existing:
+            key, counter = f"{base}-{counter}", counter + 1
+        reference_path = None
+        if reference is not None and Path(reference).is_file():
+            voices_dir = self.project_dir(slug) / VOICES_DIRNAME
+            voices_dir.mkdir(exist_ok=True)
+            reference_path = voices_dir / f"{key}.wav"
+            shutil.copy2(reference, reference_path)
+        try:
+            project.add_voice(
+                key, name, str(reference_path) if reference_path else None,
+                dict(preset or {}) if spec["supports_presets"] else {},
+            )
+        except ValueError as exc:
+            raise StudioError(str(exc)) from exc
+        return key
+
+    def segment_ids_from_numbers(self, slug: str, numbers: str) -> list[int]:
+        """``"3, 5-8"`` (1-based, as shown in the table) -> segment ids."""
+        by_number = {item["ord"] + 1: item["id"] for item in self.segments(slug)}
+        wanted: list[int] = []
+        for part in (numbers or "").replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                if "-" in part:
+                    first, last = (int(value) for value in part.split("-", 1))
+                    span = range(min(first, last), max(first, last) + 1)
+                else:
+                    span = [int(part)]
+            except ValueError as exc:
+                raise StudioError(f"Geçersiz segment numarası: {part}") from exc
+            for number in span:
+                if number not in by_number:
+                    raise StudioError(f"Segment {number} yok (1–{len(by_number)}).")
+                if by_number[number] not in wanted:
+                    wanted.append(by_number[number])
+        if not wanted:
+            raise StudioError("Segment numarası girin; örnek: 3, 5-8")
+        return wanted
+
+    def assign_voice(self, slug: str, segment_ids: list[int], voice_key: str | None) -> int:
+        try:
+            return self.open(slug).assign_voice(segment_ids, voice_key or None)
+        except KeyError as exc:
+            raise StudioError("Seçilen karakter bulunamadı.") from exc
+
+    def dialogue_suggestions(self, slug: str) -> list[dict[str, Any]]:
+        """Segments that look like dialogue, with the matching existing voice if the speaker is named."""
+        by_name = {voice["name"].lower(): voice["key"] for voice in self.voices(slug)}
+        suggestions = []
+        for item in self.segments(slug):
+            hint = dialogue_hint(item["source_text"])
+            if hint is None:
+                continue
+            suggestions.append(
+                {
+                    "segment_id": item["id"],
+                    "number": item["ord"] + 1,
+                    "kind": hint.kind,
+                    "speaker": hint.speaker,
+                    "line": hint.line,
+                    "voice_key": by_name.get(hint.speaker.lower()) if hint.speaker else None,
+                    "current_voice": item["voice_id"],
+                }
+            )
+        return suggestions
+
+    def apply_suggestions(self, slug: str, strip_labels: bool = True) -> dict[str, Any]:
+        """Assign named speakers that match an existing character; optionally drop ``Ad:`` from the spoken text.
+
+        Unnamed dialogue and speakers without a character are only reported.
+        """
+        project = self.open(slug)
+        spoken_by_id = {item["id"]: item["spoken_text"] for item in self.segments(slug)}
+        assigned = relabelled = 0
+        unmatched: set[str] = set()
+        for suggestion in self.dialogue_suggestions(slug):
+            if suggestion["kind"] != "named":
+                continue
+            if suggestion["voice_key"] is None:
+                unmatched.add(suggestion["speaker"])
+                continue
+            assigned += project.assign_voice([suggestion["segment_id"]], suggestion["voice_key"])
+            if strip_labels:
+                if speaker_label(spoken_by_id[suggestion["segment_id"]]):
+                    project.set_spoken_from_text(suggestion["segment_id"], suggestion["line"])
+                    relabelled += 1
+        return {"assigned": assigned, "relabelled": relabelled, "unmatched": sorted(unmatched)}
 
     # ---- generation --------------------------------------------------
     def is_running(self, slug: str) -> bool:

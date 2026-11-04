@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 
 from scripts.text_chunking_utils import find_split_index
+from voxforge.text.dialogue import starts_dialogue_line
 
 ABBREVIATIONS = frozenset(
     {
@@ -116,6 +117,21 @@ def _sentence_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
     return spans
 
 
+def _dialogue_line_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Inside a paragraph a newline stays a space, except before a dialogue turn
+    (``Ayşe: ...``, ``— ...``, opening quote): script lines never merge into one segment."""
+    blocks: list[tuple[int, int]] = []
+    block_start = start
+    position = text.find("\n", start, end)
+    while position != -1:
+        if starts_dialogue_line(text[position + 1:end].split("\n", 1)[0]):
+            blocks.append(_strip_span(text, block_start, position))
+            block_start = position + 1
+        position = text.find("\n", position + 1, end)
+    blocks.append(_strip_span(text, block_start, end))
+    return [block for block in blocks if block[1] > block[0]]
+
+
 def _split_long(text: str, start: int, end: int, max_chars: int) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     while end - start > max_chars:
@@ -135,7 +151,12 @@ def segment_text(text: str, max_chars: int = 220) -> list[Segment]:
         raise ValueError("max_chars en az 20 olmali.")
     segments: list[Segment] = []
     for paragraph_index, (p_start, p_end) in enumerate(_paragraph_spans(text)):
-        for s_start, s_end in _sentence_spans(text, p_start, p_end):
+        sentence_spans = [
+            span
+            for b_start, b_end in _dialogue_line_spans(text, p_start, p_end)
+            for span in _sentence_spans(text, b_start, b_end)
+        ]
+        for s_start, s_end in sentence_spans:
             for start, end in _split_long(text, s_start, s_end, max_chars):
                 segments.append(
                     Segment(

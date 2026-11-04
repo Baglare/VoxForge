@@ -65,6 +65,17 @@ MIGRATIONS: dict[int, str] = {
     ALTER TABLE job ADD COLUMN worker_id TEXT;
     ALTER TABLE job ADD COLUMN heartbeat_at REAL;
     """,
+    # v3: character voices (VF-007). segment.voice_id holds a voice key; NULL = narrator
+    # (the project's default reference and preset).
+    3: """
+    CREATE TABLE voice (
+        key TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        reference_path TEXT,
+        preset_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+    );
+    """,
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 
