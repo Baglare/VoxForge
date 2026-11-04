@@ -37,6 +37,15 @@ API sürüm farklarına karşı çalıştırıcı, kurulu kütüphanenin kabul e
 - Chatterbox'ta `t3_model="v3"` desteklenmiyorsa koşu V2'ye düşmek yerine hata verir.
 - Kurulu paket sürümleri her `results.json` dosyasına yazılır.
 
+**Chatterbox kaynak sabitlemesi.**
+- PyPI'daki `chatterbox-tts` 0.1.7 `t3_model="v3"` parametresini **desteklemiyor**. V3 desteği resmî GitHub kaynağında var.
+- İki kaynakta da sürüm numarası `0.1.7` olduğu için sürüm numarasına bakmak yetmez.
+- Kurulum, `scripts/benchmark/engine_pins.json` dosyasındaki commit'e sabitlenir: `resemble-ai/chatterbox@5de7a54aa4e5e2baadb0182dde554908b48b85c2` (21 Temmuz 2026). Bu commit'te `MULTILINGUAL_T3_MODELS["v3"]` değeri `t3_mtl23ls_v3.safetensors` ve Türkçe (`tr`) destekli.
+- Commit'i değiştirmek için yalnız bu dosya güncellenir; ardından ortam yeniden kurulur.
+- pip'in kaydettiği gerçek kaynak (PEP 610 `direct_url.json`) `results.json` içinde `versions["chatterbox-tts@source"]` alanına yazılır.
+- Çalıştırıcı, sabitlenen commit dışındaki bir kurulumla (ör. PyPI) Chatterbox'ı yüklemeyi reddeder. Farklı commit'le bir koşuya devam etmek de reddedilir.
+- `resemble-perth` bağımlılığı Chatterbox'ın kendi `pyproject.toml` dosyasında `@master` olarak istendiği için sabitlenemiyor. Kurulan revizyonu `resemble-perth@source` alanına kaydedilir; değişirse görünür olur.
+
 ## 2. Deney tasarımı
 
 **Sabitler.**
@@ -127,6 +136,14 @@ Model indirmeleri ve GPU işleri yalnız bu adımlarda olur. Varsayılan konumla
    ```
    - Chatterbox Python 3.11 ister; bu makinede 3.11 yok. Kurmak için `winget install Python.Python.3.11`. Ya da `-PythonVersion 3.10` ile deneyin (resmî olarak test edilmemiş).
    - Betik, CUDA'sız torch gelirse aynı sürümü CUDA indeksinden yeniden kurar ve `requirements-lock.txt` yazar.
+   - Chatterbox ortamı sabitlenen GitHub commit'inden kurulur; bunun için `git` gerekir.
+   - Aynı sürüm numaralı PyPI kurulumu varsa betik önce onu yalnız bu izole ortamdan kaldırır.
+   - Kaynak commit'i `torch==2.6.0` sabitliyor; betik bunu CUDA (cu126) derlemesiyle değiştirir.
+   - Kurulum sonunda model indirmeden `check_engine.py` çalışır. Kaynak commit'ini, `t3_model` parametresini, "v3" adının V3 ağırlık dosyasına çözüldüğünü, Türkçe desteğini ve CUDA'yı kontrol eder. Biri başarısızsa kurulum hata verir.
+   - Kontrolü elle çalıştırmak için:
+     ```powershell
+     C:\AvenoxData\Environments\VoxForge-bench-chatterbox\Scripts\python.exe scripts\benchmark\check_engine.py --engine chatterbox
+     ```
 2. **Koşuyu hazırla** (profilin ön işlenmiş referansı kopyalanır). Referansın birebir metnini biliyorsanız `-ReferenceText` ekleyin; VoxCPM2 "ultimate" modu bunu ister.
    ```powershell
    .\run_voice_benchmark.ps1 -Step prepare -ProfileSlug <profil_slug>
