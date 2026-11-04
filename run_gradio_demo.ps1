@@ -6,6 +6,13 @@ $VenvDir = Join-Path $ProjectRoot ".venv"
 $PythonExe = Join-Path $VenvDir "Scripts\python.exe"
 $GradioScript = Join-Path $ProjectRoot "app\gradio_xtts_demo.py"
 
+# Ayni model onbellegini kod klasorunden bagimsiz kullan; kullanici tercihini koru.
+$DataRoot = if ($env:AVENOX_DATA_ROOT) { $env:AVENOX_DATA_ROOT } else { Join-Path ([IO.Path]::GetPathRoot($ProjectRoot)) 'AvenoxData' }
+$CoquiRoot = Join-Path $DataRoot 'Models\Coqui'
+if (-not $env:TTS_HOME -and (Test-Path -LiteralPath (Join-Path $CoquiRoot 'tts') -PathType Container)) {
+    $env:TTS_HOME = $CoquiRoot
+}
+
 function Find-GyanSharedFfmpeg {
     # Winget genellikle Gyan.FFmpeg.Shared paketini bu koklerde tutar.
     $candidateRoots = @(
