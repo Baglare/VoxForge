@@ -189,7 +189,12 @@ class StudioService:
         return bool(worker and worker.running)
 
     def start(self, slug: str) -> int:
-        """Queue every segment that is missing audio for its current key and start the worker."""
+        """Queue segments missing audio for their current key and start the worker.
+
+        Returns the number of jobs waiting in the queue. Jobs queued earlier but never
+        processed (e.g. after a crash and reopen) also start the worker, even when
+        nothing new was queued.
+        """
         project = self.open(slug)
         if self.is_running(slug):
             raise StudioError("Üretim zaten devam ediyor.")
@@ -199,12 +204,13 @@ class StudioService:
             raise StudioError(
                 f"Bu proje {settings.engine_id} motoruyla oluşturuldu; uygulama şu an {spec['engine_id']} ile çalışıyor."
             )
-        queued = project.enqueue_missing()
-        if queued:
+        project.enqueue_missing()
+        waiting = project.queued_job_count()
+        if waiting:
             worker = StudioWorker(project, self.engine_provider())
             self._workers[slug] = worker
             worker.start()
-        return queued
+        return waiting
 
     def stop(self, slug: str) -> int:
         """Stop after the current segment; queued segments are cancelled (restart re-queues them)."""

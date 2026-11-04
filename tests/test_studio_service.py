@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 import wave
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
 from scripts.mock_tts_engine import MockTTSEngine
 from voxforge.engines import wrap_backend
+from voxforge.studio.project import LEASE_SECONDS
 from voxforge.studio.service import StudioError, StudioService, parse_lexicon, slugify
 
 TEXT = "Toplantı 14:30'da başladı. Katılım %25 arttı. VoxForge sunuldu.\n\nİkinci paragraf burada."
@@ -81,6 +84,25 @@ class StudioServiceTests(unittest.TestCase):
         self.assertEqual(self.service.start(slug), 4)
         self.service.wait(slug, timeout=30)
         self.assertEqual(self.service.progress(slug)["counts"], {"done": 4})
+
+    def test_start_resumes_jobs_left_by_a_crash(self) -> None:
+        slug = self.service.create("Çökme", "Bir. İki. Üç. Dört.", None)
+        project = self.service.open(slug)
+        self.assertEqual(project.enqueue_missing(), 4)
+        crashed = project.claim_next_job()  # worker bu işi alırken uygulama çöktü
+        with closing(sqlite3.connect(project.store.db_path)) as db:
+            db.execute("UPDATE job SET heartbeat_at = heartbeat_at - ? WHERE id = ?", (LEASE_SECONDS + 1, crashed["id"]))
+            db.commit()
+
+        # Uygulama yeniden açıldı: yeni servis, yeni proje nesnesi. Yeni kuyruğa alınacak segment yok.
+        restarted = StudioService(self.root, lambda: self.engine)
+        self.assertEqual(restarted.progress(slug)["counts"], {"queued": 4})
+        self.assertEqual(restarted.open(slug).enqueue_missing(), 0)
+        self.assertEqual(restarted.start(slug), 4)  # bekleyen işler yine de worker'ı başlatır
+        restarted.wait(slug, timeout=30)
+        self.assertEqual(restarted.progress(slug)["counts"], {"done": 4})
+        self.assertEqual(len(self.backend.calls), 4)  # her segment bir kez üretildi
+        self.assertEqual(restarted.start(slug), 0)
 
     def test_safety_rules(self) -> None:
         with self.assertRaises(StudioError):

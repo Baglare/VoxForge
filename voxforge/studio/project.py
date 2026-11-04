@@ -264,6 +264,12 @@ class StudioProject:
             )
         return len(rows)
 
+    def queued_job_count(self) -> int:
+        """Jobs waiting for a worker, after requeueing abandoned (stale-lease) running jobs."""
+        with self.store.transaction() as db:
+            _recover_stale_jobs(db)
+            return int(db.execute("SELECT COUNT(*) FROM job WHERE status = 'queued'").fetchone()[0])
+
     def cancel_queued(self) -> int:
         with self.store.transaction() as db:
             return db.execute(

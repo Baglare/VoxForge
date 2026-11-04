@@ -225,7 +225,11 @@ def build_studio(
                 return f"⚠️ {exc}", *view(slug)
             except Exception as exc:  # noqa: BLE001 - e.g. model load failure
                 return f"⚠️ Motor başlatılamadı: {exc}", *view(slug)
-            message = f"{queued} segment kuyruğa alındı." if queued else "Tüm segmentler güncel; üretilecek bir şey yok."
+            message = (
+                f"Üretim başladı: {queued} segment kuyrukta."
+                if queued
+                else "Tüm segmentler güncel; üretilecek bir şey yok."
+            )
             return message, *view(slug)
 
         start_button.click(on_start, inputs=slug_state, outputs=[action_status, *view_outputs])
