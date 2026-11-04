@@ -6,7 +6,6 @@ from pathlib import Path
 import json
 import os
 import re
-import shutil
 import sys
 import subprocess
 from threading import Lock
@@ -65,7 +64,6 @@ INFERENCE_PRESET_KWARGS: dict[str, dict[str, Any]] = {
         "length_penalty": 1.0,
     },
 }
-OUTPUT_NORMALIZE_FILTER = "loudnorm=I=-18:TP=-2:LRA=11"
 NO_PROFILE_INFO_TEXT = (
     "### Seçili profil bilgisi\n"
     "Profil seçilmedi. Ses yüklenirse yüklenen ses, yüklenmezse "
@@ -76,11 +74,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_reference_audio
-from scripts.audio_concat_utils import concatenate_wavs
 from scripts.audio_quality_utils import analyze_audio_file, format_value
-from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
-from scripts.tts_engine_factory import create_tts_engine, selected_tts_engine_name
-from voxforge.runs import SCHEMA_VERSION, wav_part_status, write_json_atomic
+from scripts.tts_engine_factory import selected_tts_engine_name
+from voxforge.engines import create_engine
+from voxforge.generation import synthesize_text
+from voxforge.runs import SCHEMA_VERSION, write_json_atomic
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -102,14 +100,15 @@ class ProfileSelectionError(Exception):
 
 
 def get_tts_model() -> Any:
-    """Cache the selected engine; the default remains the real XTTS model."""
+    """Secili motor adaptorunu bir kez yukler; varsayilan gercek XTTS modelidir."""
     global _tts_model, _tts_device
 
     with _model_lock:
         if _tts_model is None:
             engine_name = selected_tts_engine_name()
             print(f"Motor yukleniyor: {engine_name}")
-            _tts_model, _tts_device = create_tts_engine(engine_name)
+            _tts_model = create_engine(engine_name)
+            _tts_device = _tts_model.capabilities.device
             print(f"Kullanilacak cihaz: {_tts_device}")
         return _tts_model
 
@@ -1347,165 +1346,27 @@ def normalize_inference_preset(preset_label: str | None) -> str:
     return INFERENCE_PRESET_DEFAULT
 
 
-def run_tts_to_file_with_preset(
-    tts: Any,
-    text: str,
-    speaker_wav: Path,
-    output_path: Path,
-    preset_label: str,
-) -> str | None:
-    """XTTS cagrısını preset kwargs ile dener; TypeError olursa default'a duser."""
-    kwargs = dict(INFERENCE_PRESET_KWARGS.get(preset_label, {}))
-    base_call = {
-        "text": text,
-        "speaker_wav": str(speaker_wav),
-        "language": LANGUAGE,
-        "file_path": str(output_path),
-    }
-
-    try:
-        tts.tts_to_file(**base_call, **kwargs)
-        return None
-    except TypeError as exc:
-        if not kwargs:
-            raise
-
-        print(f"Preset parametreleri desteklenmedi, default uretime dusuluyor: {exc}")
-        tts.tts_to_file(**base_call)
-        return (
-            "Seçilen üretim modu bu XTTS API sürümünde tamamen desteklenmedi; "
-            "default üretime geri düşüldü."
-        )
-
-
-def normalize_output_wav(input_path: Path, output_path: Path) -> tuple[bool, str]:
-    """Final WAV icin hafif FFmpeg loudnorm post-processing uygular."""
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path is None:
-        return False, "FFmpeg bulunamadı; ham çıktı korundu."
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        ffmpeg_path,
-        "-y",
-        "-hide_banner",
-        "-i",
-        str(input_path),
-        "-vn",
-        "-af",
-        OUTPUT_NORMALIZE_FILTER,
-        "-c:a",
-        "pcm_s16le",
-        str(output_path),
-    ]
-    print("Cikti post-processing FFmpeg komutu:")
-    print(subprocess.list2cmdline(command))
-
-    result = subprocess.run(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "bilinmeyen FFmpeg hatasi"
-        return False, f"Çıktı normalize edilemedi; ham çıktı korundu. Ayrıntı: {detail}"
-
-    if not output_path.is_file():
-        return False, "Normalize komutu tamamlandı ancak işlenmiş çıktı oluşmadı; ham çıktı korundu."
-
-    return True, "Çıktı sesi normalize edildi."
-
-
 def synthesize_gradio_output(
     tts: Any,
     text: str,
-    speaker_wav: Path,
+    speaker_wav: Path | None,
     output_stem: str,
     preset_label: str,
     post_processing_enabled: bool,
 ) -> dict[str, Any]:
-    """Tek veya chunked XTTS uretimini yapar ve final cikti yolunu dondurur."""
-    chunks = (
-        split_text_for_tts(text, max_chars=MAX_GRADIO_TTS_CHARS)
-        if len(text) > MAX_GRADIO_TTS_CHARS
-        else [text]
+    """Gradio ayarlarini ortak uretim cekirdegine aktarir."""
+    return synthesize_text(
+        tts,
+        text,
+        output_dir=OUTPUT_DIR,
+        output_stem=output_stem,
+        reference_path=speaker_wav,
+        preset=INFERENCE_PRESET_KWARGS.get(preset_label, {}),
+        preset_label=preset_label,
+        post_processing_enabled=post_processing_enabled,
+        language=LANGUAGE,
+        max_chars=MAX_GRADIO_TTS_CHARS,
     )
-    chunk_summary = summarize_chunks(chunks)
-    raw_output_path = OUTPUT_DIR / f"{output_stem}_raw.wav"
-    warnings: list[str] = []
-    chunk_paths: list[Path] = []
-    parts: list[dict[str, Any]] = []
-
-    if chunk_summary["chunking_used"]:
-        chunk_dir = OUTPUT_DIR / "chunks" / output_stem
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-        for index, chunk in enumerate(chunks, start=1):
-            chunk_path = chunk_dir / f"chunk_{index:02d}.wav"
-            warning = run_tts_to_file_with_preset(
-                tts,
-                chunk,
-                speaker_wav,
-                chunk_path,
-                preset_label,
-            )
-            if warning:
-                warnings.append(warning)
-            chunk_paths.append(chunk_path)
-            parts.append({"index": index, **wav_part_status(chunk_path)})
-
-        raise_on_failed_parts(parts)
-        concat_ok, concat_message = concatenate_wavs(chunk_paths, raw_output_path)
-        if not concat_ok:
-            raise RuntimeError(f"WAV parçaları birleştirilemedi: {concat_message}")
-    else:
-        warning = run_tts_to_file_with_preset(
-            tts,
-            chunks[0],
-            speaker_wav,
-            raw_output_path,
-            preset_label,
-        )
-        if warning:
-            warnings.append(warning)
-        parts.append({"index": 1, **wav_part_status(raw_output_path)})
-        raise_on_failed_parts(parts)
-
-    final_output_path = raw_output_path
-    post_processing_applied = False
-    if post_processing_enabled:
-        normalized_output_path = OUTPUT_DIR / f"{output_stem}_normalized.wav"
-        normalized_ok, normalized_message = normalize_output_wav(
-            raw_output_path,
-            normalized_output_path,
-        )
-        if normalized_ok:
-            final_output_path = normalized_output_path
-            post_processing_applied = True
-        else:
-            warnings.append(normalized_message)
-
-    return {
-        "preset_label": preset_label,
-        "raw_output_path": raw_output_path,
-        "final_output_path": final_output_path,
-        "post_processing_enabled": post_processing_enabled,
-        "post_processing_applied": post_processing_applied,
-        "chunking_used": chunk_summary["chunking_used"],
-        "chunk_count": chunk_summary["chunk_count"],
-        "chunks": chunk_summary["chunks"],
-        "parts": parts,
-        "warnings": warnings,
-    }
-
-
-def raise_on_failed_parts(parts: list[dict[str, Any]]) -> None:
-    """Eksik/bos/okunamayan parca varken basari raporlanmaz."""
-    failed = [part for part in parts if not part["ok"]]
-    if failed:
-        details = "; ".join(f"parca {part['index']}: {part['error']}" for part in failed)
-        raise RuntimeError(f"Uretilen ses parcalari gecersiz: {details}")
 
 
 def build_generation_report(
