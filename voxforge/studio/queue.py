@@ -73,6 +73,7 @@ def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) 
         return "done" if owned else "lost"
 
     settings = project.settings
+    reference, preset = project.synthesis_voice(job.get("voice_id"), settings=settings)
     audio_dir = project.store.audio_dir
     # Her deneme kendi gecici klasorune ve kendi son dosyasina yazar: kurtarilan is ayni job id ile
     # yeniden alindigindan, kiralamasi dusmus eski worker ile yeni worker hicbir yolu paylasmaz.
@@ -86,8 +87,8 @@ def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) 
                 job["spoken_text"],
                 output_dir=temp_dir,
                 output_stem="segment",
-                reference_path=Path(settings.reference_path) if settings.reference_path else None,
-                preset=settings.preset,
+                reference_path=Path(reference) if reference else None,
+                preset=preset,
                 language=settings.language,
                 max_chars=settings.max_chars,
             )

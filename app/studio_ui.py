@@ -13,9 +13,9 @@ from typing import Any, Callable
 
 import gradio as gr
 
-from voxforge.studio.service import STATE_LABELS, StudioError, StudioService
+from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
 
-TABLE_HEADERS = ["#", "Durum", "Orijinal metin", "Okunacak metin", "Süre (sn)", "Hata"]
+TABLE_HEADERS = ["#", "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Süre (sn)", "Hata"]
 REFRESH_SECONDS = 2.0
 NO_SELECTION = "Bir segment seçmek için tablodaki satıra tıklayın."
 
@@ -86,6 +86,7 @@ def build_studio(
                 [
                     item["ord"] + 1,
                     STATE_LABELS[item["state"]],
+                    item["voice_name"] or NARRATOR_LABEL,
                     _short(item["source_text"]),
                     _short(item["spoken_text"]),
                     round(item["duration_s"], 2) if item["duration_s"] else "",
@@ -105,7 +106,10 @@ def build_studio(
         if not slug or segment_id is None:
             return NO_SELECTION, "", "", "", None
         item = service.segment(slug, segment_id)
-        header = f"**Segment {item['ord'] + 1}** · {STATE_LABELS[item['state']]}"
+        header = (
+            f"**Segment {item['ord'] + 1}** · {STATE_LABELS[item['state']]}"
+            f" · ses: {item['voice_name'] or NARRATOR_LABEL}"
+        )
         if item["error"]:
             header += f"\n\n⚠️ {item['error']}"
         return (
@@ -160,7 +164,7 @@ def build_studio(
 
         segment_table = gr.Dataframe(
             headers=TABLE_HEADERS,
-            datatype=["number", "str", "str", "str", "number", "str"],
+            datatype=["number", "str", "str", "str", "str", "number", "str"],
             interactive=False,
             wrap=True,
             label="Segmentler",
@@ -175,6 +179,29 @@ def build_studio(
             transformations_md = gr.Markdown()
             segment_audio = gr.Audio(label="Segment sesi", type="filepath", interactive=False)
             segment_status = gr.Markdown()
+
+        with gr.Accordion("Karakterler ve sesler", open=False):
+            gr.Markdown(
+                "Atanmamış segmentler **Anlatıcı** (projenin referans sesi) ile üretilir. "
+                "Karakter ekleyip segmentlere atayın; ses değişen segmentler yeniden üretilir."
+            )
+            voices_md = gr.Markdown()
+            with gr.Row():
+                voice_name = gr.Textbox(label="Karakter adı", scale=2)
+                voice_profile = gr.Dropdown(label="Ses profili", choices=profile_choices(), value="", scale=2)
+                voice_upload = gr.Audio(label="veya referans ses", type="filepath", scale=2)
+                voice_preset = gr.Dropdown(label="Üretim modu", choices=preset_choices, value=default_preset, scale=1)
+            add_voice_button = gr.Button("Karakter ekle")
+            with gr.Row():
+                assign_numbers = gr.Textbox(label="Segmentler", placeholder="3, 5-8", scale=2)
+                assign_voice = gr.Dropdown(label="Ses", choices=[(NARRATOR_LABEL, "")], value="", scale=2)
+                assign_button = gr.Button("Ata", scale=1)
+            with gr.Row():
+                suggest_button = gr.Button("Diyalog önerilerini göster")
+                strip_labels = gr.Checkbox(label="'Ad:' etiketini okunuştan çıkar", value=True)
+                apply_button = gr.Button("Eşleşen önerileri uygula")
+            suggestions_md = gr.Markdown()
+            voice_status = gr.Markdown()
 
         timer = gr.Timer(REFRESH_SECONDS)
 
@@ -294,6 +321,94 @@ def build_studio(
             on_save("spoken"),
             inputs=[slug_state, selected_state, spoken_box],
             outputs=[segment_status, *view_outputs, *segment_outputs],
+        )
+
+        # ---- karakterler (VF-007) ----------------------------------------
+        def voice_panel(slug):
+            if not slug:
+                return "_Proje seçilmedi._", gr.update(choices=[(NARRATOR_LABEL, "")], value="")
+            voices = service.voices(slug)
+            usage: dict[str | None, int] = {}
+            for item in service.segments(slug):
+                usage[item["voice_id"]] = usage.get(item["voice_id"], 0) + 1
+            lines = ["| Ses | Referans | Segment |", "|---|---|---:|"]
+            lines.append(f"| {NARRATOR_LABEL} | proje sesi | {usage.get(None, 0)} |")
+            for voice in voices:
+                reference = Path(voice["reference_path"]).name if voice["reference_path"] else "—"
+                lines.append(f"| {voice['name']} | `{reference}` | {usage.get(voice['key'], 0)} |")
+            choices = [(NARRATOR_LABEL, "")] + [(voice["name"], voice["key"]) for voice in voices]
+            return "\n".join(lines), gr.update(choices=choices, value="")
+
+        voice_outputs = [voices_md, assign_voice]
+        project_dropdown.change(voice_panel, inputs=project_dropdown, outputs=voice_outputs)
+
+        def on_add_voice(slug, name, profile_slug, upload, preset_label):
+            if not slug:
+                return "⚠️ Önce bir proje seçin.", *voice_panel(None)
+            try:
+                reference = resolve_reference(profile_slug or None, upload)
+                service.add_voice(slug, name, reference, preset_kwargs.get(preset_label, {}))
+            except StudioError as exc:
+                return f"⚠️ {exc}", *voice_panel(slug)
+            return f"Karakter eklendi: **{name.strip()}**", *voice_panel(slug)
+
+        add_voice_button.click(
+            on_add_voice,
+            inputs=[slug_state, voice_name, voice_profile, voice_upload, voice_preset],
+            outputs=[voice_status, *voice_outputs],
+        )
+
+        def on_assign(slug, numbers, voice_key):
+            if not slug:
+                return "⚠️ Önce bir proje seçin.", *view(None), gr.skip()
+            try:
+                ids = service.segment_ids_from_numbers(slug, numbers)
+                changed = service.assign_voice(slug, ids, voice_key or None)
+            except StudioError as exc:
+                return f"⚠️ {exc}", *view(slug), gr.skip()
+            return (
+                f"{changed} segmentin sesi değişti; yalnız bunlar yeniden üretilecek.",
+                *view(slug),
+                voice_panel(slug)[0],
+            )
+
+        assign_button.click(
+            on_assign,
+            inputs=[slug_state, assign_numbers, assign_voice],
+            outputs=[voice_status, *view_outputs, voices_md],
+        )
+
+        def suggestions_text(slug):
+            items = service.dialogue_suggestions(slug)
+            if not items:
+                return "_Diyalog benzeri segment bulunamadı._"
+            lines = ["| # | Konuşmacı | Eşleşen karakter | Metin |", "|---:|---|---|---|"]
+            for item in items:
+                speaker = item["speaker"] or "belirsiz (tire/tırnak)"
+                match = item["voice_key"] or ("—" if item["speaker"] else "elle atayın")
+                lines.append(f"| {item['number']} | {speaker} | {match} | {_short(item['line'], 60).replace('|', '/')} |")
+            return "\n".join(lines)
+
+        def on_suggest(slug):
+            if not slug:
+                return "⚠️ Önce bir proje seçin."
+            return suggestions_text(slug)
+
+        suggest_button.click(on_suggest, inputs=slug_state, outputs=suggestions_md)
+
+        def on_apply(slug, strip):
+            if not slug:
+                return "⚠️ Önce bir proje seçin.", *view(None), gr.skip(), gr.skip()
+            result = service.apply_suggestions(slug, strip_labels=bool(strip))
+            message = f"{result['assigned']} segment atandı, {result['relabelled']} segmentte 'Ad:' etiketi okunuştan çıkarıldı."
+            if result["unmatched"]:
+                message += " Karakteri olmayan konuşmacılar: " + ", ".join(result["unmatched"]) + " (önce karakter ekleyin)."
+            return message, *view(slug), suggestions_text(slug), voice_panel(slug)[0]
+
+        apply_button.click(
+            on_apply,
+            inputs=[slug_state, strip_labels],
+            outputs=[voice_status, *view_outputs, suggestions_md, voices_md],
         )
 
         def on_tick(slug, was_running, segment_id):

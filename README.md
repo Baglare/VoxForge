@@ -137,6 +137,7 @@ Bu kontroller otomatik kalite ölçümü değildir. Ama farklı üretim ayarlar�
 - **Segment tablosu:** satıra tıklayınca orijinal metin, okunacak metin, dönüşümler ve segment sesi görünür. Orijinali kaydetmek okunuşu yeniden hesaplar; okunuş elle de düzeltilebilir. Yalnız düzenlenen segment yeniden üretilir.
 - **Eksikleri üret / Durdur:** yalnız sesi eksik veya değişmiş segmentler üretilir. Durdur, o anki segmenti bitirip kuyruğu boşaltır; tekrar başlatınca kaldığı yerden devam eder. Hatalı segmentler tabloda görünür ve yeniden denenebilir.
 - **Tümünü birleştir (önizleme):** tüm segmentler hazırsa sırasıyla tek WAV'a birleştirir (`exports/` altına).
+- **Karakterler ve sesler:** atanmamış segmentler Anlatıcı (projenin referans sesi) ile üretilir. Karakter ekleyip (profil veya yüklenen ses + üretim modu) segment numaralarıyla atayın (`3, 5-8`). `Ayşe: ...` biçimindeki senaryo satırları ve tire/tırnakla başlayan diyaloglar öneri olarak listelenir; adı mevcut bir karakterle eşleşenler tek tıkla atanır ve isterseniz `Ayşe:` etiketi okunuştan çıkarılır. Bu biçimdeki her satır ayrı segment olur. Sesi değişen segmentler yeniden üretilir.
 
 Projeler `studio_projects/` altında tutulur (Git dışı; `VOXFORGE_STUDIO_ROOT` ile değiştirilebilir). Proje, oluşturulduğu motorla üretilir: Mock ile oluşturulan proje XTTS modunda üretilmez (ve tersi).
 
