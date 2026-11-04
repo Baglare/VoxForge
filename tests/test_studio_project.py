@@ -138,14 +138,27 @@ class StudioProjectTests(unittest.TestCase):
                     db.commit()
                 project_b = StudioProject.open(folder)
                 job_b = project_b.claim_next_job()
-                self_status = process_job(project_b, mock_engine()[0], job_b)
-                winner.update(status=self_status, segment=project_b.segments()[0])
+                winner["same_job_id"] = job_b["id"] == job_a["id"]  # kurtarılan iş aynı job id ile alınır
+                engine_b, backend_b = mock_engine()
+                self_status = process_job(project_b, engine_b, job_b)
+                winner.update(
+                    status=self_status,
+                    segment=project_b.segments()[0],
+                    temp_dir=Path(backend_b.calls[0]["file_path"]).parent,
+                )
+                # B bitip kendi geçici klasörünü temizledikten sonra A'nın klasörü yerinde olmalı.
+                winner["a_temp_dir"] = Path(file_path).parent
+                winner["a_temp_survived"] = Path(file_path).parent.is_dir()
                 return MockTTSEngine().tts_to_file(text=text + " eski worker", file_path=file_path)
 
         status_a = process_job(project_a, wrap_backend("mock", SlowOldWorker(), "mock"), job_a)
 
         self.assertEqual(winner["status"], "done")
         self.assertEqual(status_a, "lost")
+        self.assertTrue(winner["same_job_id"])
+        self.assertNotEqual(winner["a_temp_dir"], winner["temp_dir"])
+        self.assertTrue(winner["a_temp_survived"])
+        self.assertEqual(list((project_a.store.audio_dir / ".tmp").iterdir()), [])
         segment = project_a.segments()[0]
         self.assertEqual(segment["state"], "done")
         self.assertEqual(segment["audio_path"], winner["segment"]["audio_path"])

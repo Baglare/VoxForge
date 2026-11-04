@@ -74,10 +74,11 @@ def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) 
 
     settings = project.settings
     audio_dir = project.store.audio_dir
-    temp_dir = audio_dir / TEMP_DIRNAME / f"job{job['id']}"
-    # Her deneme kendi dosyasina yazar: kiralamasi dusmus eski bir worker, ayni segment ve
-    # anahtari isleyen yeni worker'in tamamlanmis WAV'inin uzerine yazamaz.
-    final_path = audio_dir / f"seg{job['segment_id']:05d}_{job['cache_key'][:16]}_{uuid.uuid4().hex[:8]}.wav"
+    # Her deneme kendi gecici klasorune ve kendi son dosyasina yazar: kurtarilan is ayni job id ile
+    # yeniden alindigindan, kiralamasi dusmus eski worker ile yeni worker hicbir yolu paylasmaz.
+    attempt = uuid.uuid4().hex[:8]
+    temp_dir = audio_dir / TEMP_DIRNAME / f"job{job['id']}_{attempt}"
+    final_path = audio_dir / f"seg{job['segment_id']:05d}_{job['cache_key'][:16]}_{attempt}.wav"
     try:
         with _Heartbeat(project, job):
             result = synthesize_text(
