@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import uuid
 import wave
 from pathlib import Path
 from typing import Any, Callable
@@ -74,7 +75,9 @@ def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) 
     settings = project.settings
     audio_dir = project.store.audio_dir
     temp_dir = audio_dir / TEMP_DIRNAME / f"job{job['id']}"
-    final_path = audio_dir / f"seg{job['segment_id']:05d}_{job['cache_key'][:16]}.wav"
+    # Her deneme kendi dosyasina yazar: kiralamasi dusmus eski bir worker, ayni segment ve
+    # anahtari isleyen yeni worker'in tamamlanmis WAV'inin uzerine yazamaz.
+    final_path = audio_dir / f"seg{job['segment_id']:05d}_{job['cache_key'][:16]}_{uuid.uuid4().hex[:8]}.wav"
     try:
         with _Heartbeat(project, job):
             result = synthesize_text(
@@ -92,7 +95,10 @@ def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) 
             return "cancelled" if project.finish_job(job, "cancelled", CHANGED_MESSAGE) else "lost"
         os.replace(result["final_output_path"], final_path)
         owned = project.complete_job(job, final_path, file_sha256(final_path), wav_duration(final_path))
-        return "done" if owned else "lost"
+        if not owned:
+            final_path.unlink(missing_ok=True)  # sahipsiz deneme dosyasi; kayitli artefakt baska dosyada
+            return "lost"
+        return "done"
     except Exception as exc:  # noqa: BLE001 - every engine error must become a failed job
         failed = project.finish_job(job, "failed", f"{type(exc).__name__}: {exc}")
         return "failed" if failed else "lost"

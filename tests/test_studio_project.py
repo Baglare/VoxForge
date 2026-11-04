@@ -10,8 +10,8 @@ from pathlib import Path
 
 from scripts.mock_tts_engine import MockTTSEngine
 from voxforge.engines import MOCK_MODEL_ID, wrap_backend
-from voxforge.studio import ProjectSettings, StudioProject, run_pending
-from voxforge.studio.project import LEASE_SECONDS
+from voxforge.studio import ProjectSettings, StudioProject, process_job, run_pending
+from voxforge.studio.project import LEASE_SECONDS, file_sha256
 from voxforge.studio.store import DB_FILENAME, MIGRATIONS, SCHEMA_VERSION, ProjectStore
 
 FAULT = "ARIZA"
@@ -119,6 +119,40 @@ class StudioProjectTests(unittest.TestCase):
         run_pending(project, engine)
         self.assertEqual(len(backend.calls), 3)
         self.assertTrue(old_paths.isdisjoint({s["audio_path"] for s in project.segments()}))
+
+    def test_expired_worker_cannot_overwrite_new_workers_wav(self) -> None:
+        folder = Path(self._tmp.name) / "race"
+        project_a = StudioProject.create(
+            folder, "Yaris", "Tek cümle.", ProjectSettings(engine_id="mock", model_id=MOCK_MODEL_ID)
+        )
+        project_a.enqueue_missing()
+        job_a = project_a.claim_next_job()
+        winner: dict = {}
+
+        class SlowOldWorker:
+            """A'nın sentezi sürerken kiralaması düşer ve B aynı işi tamamlar."""
+
+            def tts_to_file(self, *, text, file_path, **kwargs):
+                with closing(sqlite3.connect(folder / DB_FILENAME)) as db:
+                    db.execute("UPDATE job SET heartbeat_at = heartbeat_at - ?", (LEASE_SECONDS + 1,))
+                    db.commit()
+                project_b = StudioProject.open(folder)
+                job_b = project_b.claim_next_job()
+                self_status = process_job(project_b, mock_engine()[0], job_b)
+                winner.update(status=self_status, segment=project_b.segments()[0])
+                return MockTTSEngine().tts_to_file(text=text + " eski worker", file_path=file_path)
+
+        status_a = process_job(project_a, wrap_backend("mock", SlowOldWorker(), "mock"), job_a)
+
+        self.assertEqual(winner["status"], "done")
+        self.assertEqual(status_a, "lost")
+        segment = project_a.segments()[0]
+        self.assertEqual(segment["state"], "done")
+        self.assertEqual(segment["audio_path"], winner["segment"]["audio_path"])
+        with closing(sqlite3.connect(folder / DB_FILENAME)) as db:
+            recorded_sha = db.execute("SELECT sha256 FROM artifact").fetchone()[0]
+        self.assertEqual(file_sha256(Path(segment["audio_path"])), recorded_sha)
+        self.assertEqual(list(project_a.store.audio_dir.glob("*.wav")), [Path(segment["audio_path"])])
 
     def test_cancel_and_engine_mismatch(self) -> None:
         project = StudioProject.open(self.folder)
