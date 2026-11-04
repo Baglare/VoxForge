@@ -13,6 +13,7 @@ from unittest import mock
 
 from scripts.mock_tts_engine import MockTTSEngine
 from voxforge.engines import wrap_backend
+from voxforge.studio import run_pending
 from voxforge.studio.project import LEASE_SECONDS
 from voxforge.studio.service import StudioError, StudioService, parse_lexicon, slugify
 
@@ -103,6 +104,32 @@ class StudioServiceTests(unittest.TestCase):
         self.assertEqual(restarted.progress(slug)["counts"], {"done": 4})
         self.assertEqual(len(self.backend.calls), 4)  # her segment bir kez üretildi
         self.assertEqual(restarted.start(slug), 0)
+
+    def test_snapshot_never_pairs_stopped_worker_with_stale_segments(self) -> None:
+        """UI son yenilemeyi kaçırmasın: running=False görülen anlık görüntü bitmiş tüm segmentleri içerir."""
+        slug = self.service.create("Yarış", "Bir. İki. Üç. Dört.", None)
+        project = self.service.open(slug)
+        project.enqueue_missing()
+        run_pending(project, self.engine, max_jobs=3)  # 3/4 tamam, son segment kuyrukta
+
+        engine = self.engine
+
+        class FinishesWhenAsked:
+            """Worker tam 'çalışıyor mu?' sorulduğu anda son segmenti bitirip kapanır."""
+
+            last_error = None
+            thread = None
+
+            @property
+            def running(self) -> bool:
+                run_pending(project, engine)
+                return False
+
+        self.service._workers[slug] = FinishesWhenAsked()
+        snap = self.service.snapshot(slug)
+        self.assertFalse(snap["running"])
+        self.assertEqual(snap["counts"], {"done": 4})
+        self.assertEqual([item["state"] for item in snap["segments"]], ["done"] * 4)
 
     def test_safety_rules(self) -> None:
         with self.assertRaises(StudioError):

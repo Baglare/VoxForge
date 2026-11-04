@@ -53,10 +53,9 @@ def build_studio(
     def project_choices() -> list[tuple[str, str]]:
         return service.list_projects()
 
-    def progress_text(slug: str | None) -> str:
-        if not slug:
+    def progress_text(slug: str | None, info: dict[str, Any] | None) -> str:
+        if not slug or info is None:
             return "Proje seçilmedi. Mevcut bir projeyi açın veya yeni proje oluşturun."
-        info = service.progress(slug)
         project = service.open(slug)
         settings = project.settings
         counts = info["counts"]
@@ -77,11 +76,11 @@ def build_studio(
             parts.append("Hatalı segmentler tabloda; düzeltip ya da doğrudan **Eksikleri üret** ile yeniden deneyebilirsiniz.")
         return "\n\n".join(parts)
 
-    def table(slug: str | None) -> tuple[list[list[Any]], list[int]]:
-        if not slug:
+    def table(info: dict[str, Any] | None) -> tuple[list[list[Any]], list[int]]:
+        if info is None:
             return [], []
         rows, ids = [], []
-        for item in service.segments(slug):
+        for item in info["segments"]:
             ids.append(item["id"])
             rows.append(
                 [
@@ -96,8 +95,11 @@ def build_studio(
         return rows, ids
 
     def view(slug: str | None):
-        rows, ids = table(slug)
-        return progress_text(slug), rows, ids, service.is_running(slug) if slug else False
+        # Tek tutarlı anlık görüntü: çalışma durumu segmentlerden önce okunur. Böylece
+        # running=False yazıldığında tablo son segmenti de içerir ve son yenileme kaçmaz.
+        info = service.snapshot(slug) if slug else None
+        rows, ids = table(info)
+        return progress_text(slug, info), rows, ids, bool(info and info["running"])
 
     def segment_view(slug: str | None, segment_id: int | None):
         if not slug or segment_id is None:

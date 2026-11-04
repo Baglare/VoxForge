@@ -224,19 +224,34 @@ class StudioService:
         if worker and worker.thread:
             worker.thread.join(timeout)
 
-    def progress(self, slug: str) -> dict[str, Any]:
+    def snapshot(self, slug: str) -> dict[str, Any]:
+        """Consistent view for the UI: worker state first, then segments.
+
+        The worker thread exits only after its last job is committed. Reading
+        ``running`` *before* the segments therefore guarantees that a snapshot
+        with ``running=False`` already contains every finished segment. (Reading it
+        last could pair a stale table with ``running=False`` and the UI would stop
+        refreshing on that stale state.)
+        """
+        running = self.is_running(slug)
+        worker = self._workers.get(slug)
         segments = self.segments(slug)
         counts: dict[str, int] = {}
         for item in segments:
             counts[item["state"]] = counts.get(item["state"], 0) + 1
-        worker = self._workers.get(slug)
         return {
+            "segments": segments,
             "total": len(segments),
             "counts": counts,
-            "running": self.is_running(slug),
+            "running": running,
             "worker_error": worker.last_error if worker else None,
             "duration_s": sum(item["duration_s"] or 0.0 for item in segments),
         }
+
+    def progress(self, slug: str) -> dict[str, Any]:
+        info = self.snapshot(slug)
+        info.pop("segments")
+        return info
 
     def build_preview(self, slug: str) -> Path:
         """Concatenate all segments in order into ``exports/``; refuses if any segment is missing."""
