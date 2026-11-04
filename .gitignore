@@ -54,6 +54,9 @@ experiments/*
 fine_tuned_models/*
 !fine_tuned_models/.gitkeep
 
+# Studio projects (SQLite metadata + generated audio; user content)
+studio_projects/
+
 # Audio files
 *.wav
 *.mp3
