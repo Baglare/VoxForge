@@ -453,7 +453,8 @@ powershell -ExecutionPolicy Bypass -File .\run_evaluate_xtts_matrix.ps1 -Experim
 
 Kontrol:
 
-- `base`, `best_model.pth`, varsa `best_model_72.pth` ve en yüksek numaralı `checkpoint_*.pth` varyantları denenir.
+- `base`, `best_model.pth`, varsa en yüksek numaralı `best_model_*.pth` ve `checkpoint_*.pth` varyantları denenir.
+- Run manifest varsa checkpoint'ler en son başarılı koşudan seçilir; yoksa terminalde `legacy_discovery` uyarısı görünür.
 - Aynı checkpoint iki kez seçilmez.
 - Çıktılar `outputs/finetuned_eval/matrix/<timestamp>/` altına yazılır.
 - Raporlar `outputs/reports/finetuned_matrix_report.json` ve `.md` olarak oluşur.
@@ -469,9 +470,10 @@ powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -Mat
 
 Kontrol:
 
-- `outputs/reports/human_eval_scorecard.csv` oluşur.
-- `outputs/reports/human_eval_summary.json` oluşur.
-- `outputs/reports/human_eval_summary.md` oluşur.
+- `<MatrixRoot>/human_eval/human_eval_scorecard.csv` oluşur.
+- `<MatrixRoot>/human_eval/human_eval_summary.json` oluşur.
+- `<MatrixRoot>/human_eval/human_eval_summary.md` oluşur.
+- `-UseDefaultScores` ile rapor "ÖRNEK PUAN" etiketi ve `score_source: example` taşır.
 - CSV başlığı `variant;naturalness;similarity;pronunciation;human_likeness;text_accuracy;total_score;notes` olur.
 - Sonuçlar insan dinlemesine dayanır; otomatik kalite ölçümü değildir.
 
@@ -523,10 +525,8 @@ Kontrol:
 
 - Terminalde base, exp_a ve exp_b için kullanılan checkpoint yolları görünür.
 - Çıktılar `outputs/finetuned_eval/experiment_compare/<timestamp>/` altında `base/`, `exp_a/`, `exp_b/` ve `blind/` klasörlerine yazılır.
-- `outputs/reports/experiment_compare_report.json` oluşur.
-- `outputs/reports/experiment_compare_report.md` oluşur.
-- `outputs/reports/experiment_blind_key.json` oluşur.
-- `outputs/reports/experiment_blind_scorecard.csv` oluşur.
+- Koşu klasöründe `compare_report.json`, `compare_report.md`, `blind_key.json` ve `blind_scorecard.csv` oluşur.
+- `outputs/reports/experiment_compare_report.json` ve `.md` son karşılaştırmanın kısayolu olarak güncellenir.
 - Blind klasördeki A/B dosyaları önce experiment bilgisi bilinmeden dinlenir.
 - Scorecard CSV doldurulduktan sonra blind key açılır.
 - Bu test otomatik kalite ölçümü değildir; beklenti yanlılığını azaltır.

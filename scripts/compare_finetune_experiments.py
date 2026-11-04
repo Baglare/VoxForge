@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import random
 import shutil
 import sys
@@ -26,7 +25,6 @@ from audio_quality_utils import analyze_audio_file  # noqa: E402
 from evaluate_xtts_finetuned_checkpoint import (  # noqa: E402
     CHUNK_MAX_CHARS,
     EvaluationError,
-    find_selected_checkpoint,
     import_xtts_api,
     init_model,
     load_config,
@@ -36,8 +34,10 @@ from evaluate_xtts_finetuned_checkpoint import (  # noqa: E402
     resolve_base_files,
     resolve_project_path,
     resolve_speaker_wav,
+    select_checkpoint,
     synthesize_text_with_chunking,
 )
+from voxforge.runs import SCHEMA_VERSION, write_json_atomic  # noqa: E402
 from text_chunking_utils import split_text_for_tts, summarize_chunks  # noqa: E402
 
 
@@ -45,8 +45,11 @@ OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "finetuned_eval" / "experiment_compare"
 REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
 REPORT_JSON_PATH = REPORTS_DIR / "experiment_compare_report.json"
 REPORT_MD_PATH = REPORTS_DIR / "experiment_compare_report.md"
-BLIND_KEY_PATH = REPORTS_DIR / "experiment_blind_key.json"
-BLIND_SCORECARD_PATH = REPORTS_DIR / "experiment_blind_scorecard.csv"
+# Kor anahtar ve scorecard her karsilastirma kosusunun kendi klasorunde tutulur;
+# eski global outputs/reports/experiment_blind_*.{json,csv} dosyalari artik yazilmaz.
+BLIND_KEY_FILENAME = "blind_key.json"
+BLIND_SCORECARD_FILENAME = "blind_scorecard.csv"
+COMPARE_REPORT_FILENAME = "compare_report.json"
 
 TEST_TEXTS = [
     {
@@ -398,28 +401,34 @@ def create_blind_set(
     return blind_entries, warnings
 
 
-def write_blind_key(timestamp: str, blind_entries: list[dict[str, Any]]) -> None:
-    BLIND_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+def write_blind_key(timestamp: str, output_root: Path, blind_entries: list[dict[str, Any]]) -> Path:
+    blind_key_path = output_root / BLIND_KEY_FILENAME
     payload = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": output_root.name,
         "created_at": timestamp,
         "warning": "Bu dosya dinleme puanlari girilmeden once acilmamalidir.",
         "entries": blind_entries,
     }
-    BLIND_KEY_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    print(f"Blind key yazildi: {BLIND_KEY_PATH}")
+    write_json_atomic(blind_key_path, payload)
+    print(f"Blind key yazildi: {blind_key_path}")
+    return blind_key_path
 
 
-def write_blind_scorecard(blind_entries: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> None:
-    BLIND_SCORECARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+def write_blind_scorecard(
+    output_root: Path,
+    blind_entries: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> Path:
+    blind_scorecard_path = output_root / BLIND_SCORECARD_FILENAME
+    output_root.mkdir(parents=True, exist_ok=True)
     missing_by_test = {
         warning["test_id"]: warning["message"]
         for warning in warnings
         if warning.get("type") == "blind_pair_missing"
     }
     fieldnames = [
+        "run_id",
         "test_id",
         "A_naturalness",
         "A_similarity",
@@ -435,12 +444,13 @@ def write_blind_scorecard(blind_entries: list[dict[str, Any]], warnings: list[di
         "notes",
     ]
     blind_test_ids = {entry["test_id"] for entry in blind_entries}
-    with BLIND_SCORECARD_PATH.open("w", encoding="utf-8-sig", newline="") as handle:
+    with blind_scorecard_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter=";")
         writer.writeheader()
         for test in TEST_TEXTS:
             writer.writerow(
                 {
+                    "run_id": output_root.name,
                     "test_id": test["test_id"],
                     "A_naturalness": "",
                     "A_similarity": "",
@@ -456,7 +466,8 @@ def write_blind_scorecard(blind_entries: list[dict[str, Any]], warnings: list[di
                     "notes": "" if test["test_id"] in blind_test_ids else missing_by_test.get(test["test_id"], ""),
                 }
             )
-    print(f"Blind scorecard yazildi: {BLIND_SCORECARD_PATH}")
+    print(f"Blind scorecard yazildi: {blind_scorecard_path}")
+    return blind_scorecard_path
 
 
 def build_report(
@@ -472,6 +483,8 @@ def build_report(
     errors: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": output_root.name,
         "created_at": timestamp,
         "exp_a": str(exp_a),
         "exp_b": str(exp_b),
@@ -490,8 +503,8 @@ def build_report(
             for item in outputs
         ],
         "blind_entries": blind_entries,
-        "blind_scorecard_path": str(BLIND_SCORECARD_PATH),
-        "blind_key_path": str(BLIND_KEY_PATH),
+        "blind_scorecard_path": str(output_root / BLIND_SCORECARD_FILENAME),
+        "blind_key_path": str(output_root / BLIND_KEY_FILENAME),
         "warnings": warnings,
         "errors": errors,
         "notes": [
@@ -503,12 +516,12 @@ def build_report(
 
 
 def write_json_report(report: dict[str, Any]) -> None:
-    REPORT_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_JSON_PATH.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    print(f"JSON rapor yazildi: {REPORT_JSON_PATH}")
+    # Kosu klasorundeki kopya kalicidir; global dosya yalniz "son karsilastirma" kisayoludur.
+    run_report_path = Path(report["output_root"]) / COMPARE_REPORT_FILENAME
+    write_json_atomic(run_report_path, report)
+    write_json_atomic(REPORT_JSON_PATH, report)
+    print(f"JSON rapor yazildi: {run_report_path}")
+    print(f"Son karsilastirma kisayolu: {REPORT_JSON_PATH}")
 
 
 def write_markdown_report(report: dict[str, Any]) -> None:
@@ -526,8 +539,8 @@ def write_markdown_report(report: dict[str, Any]) -> None:
         "",
         "1. Önce `blind/` klasöründeki A/B dosyalarını dinle.",
         "2. Dosya adlarına göre hangi experiment olduğunu bilmeden puanla.",
-        "3. `experiment_blind_scorecard.csv` dosyasını doldur.",
-        "4. Sonra `experiment_blind_key.json` ile hangi dosyanın hangi experiment olduğu açılabilir.",
+        f"3. Bu koşunun klasöründeki `{BLIND_SCORECARD_FILENAME}` dosyasını doldur (run_id: `{report['run_id']}`).",
+        f"4. Sonra aynı klasördeki `{BLIND_KEY_FILENAME}` ile hangi dosyanın hangi experiment olduğu açılabilir.",
         "",
         "Bu rapor otomatik kalite hükmü vermez. Objektif metrikler yalnızca yardımcı teknik sinyaldir; nihai karar blind dinleme puanlarıyla verilmelidir.",
         "",
@@ -569,8 +582,12 @@ def write_markdown_report(report: dict[str, Any]) -> None:
     for note in report["notes"]:
         lines.append(f"- {note}")
 
-    REPORT_MD_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Markdown rapor yazildi: {REPORT_MD_PATH}")
+    markdown = "\n".join(lines) + "\n"
+    run_markdown_path = Path(report["output_root"]) / "compare_report.md"
+    run_markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    run_markdown_path.write_text(markdown, encoding="utf-8")
+    REPORT_MD_PATH.write_text(markdown, encoding="utf-8")
+    print(f"Markdown rapor yazildi: {run_markdown_path}")
 
 
 def write_reports(report: dict[str, Any]) -> None:
@@ -615,8 +632,22 @@ def main(argv: list[str]) -> int:
         exp_b = resolve_experiment_path(args.exp_b)
         base_files_a = resolve_base_files(exp_a)
         base_files_b = resolve_base_files(exp_b)
-        checkpoint_a = find_selected_checkpoint(exp_a).resolve()
-        checkpoint_b = find_selected_checkpoint(exp_b).resolve()
+        checkpoint_a, provenance_a = select_checkpoint(exp_a)
+        checkpoint_b, provenance_b = select_checkpoint(exp_b)
+        checkpoint_a = checkpoint_a.resolve()
+        checkpoint_b = checkpoint_b.resolve()
+        for name, provenance in (("exp_a", provenance_a), ("exp_b", provenance_b)):
+            warnings.append(
+                {
+                    "test_id": "",
+                    "type": "checkpoint_source",
+                    "message": (
+                        f"{name}: {provenance['source']}"
+                        + (f" run {provenance['run_id']}" if provenance["run_id"] else "")
+                        + (f" — {provenance['warning']}" if provenance["warning"] else "")
+                    ),
+                }
+            )
         speaker_wav = resolve_speaker_wav(exp_a, args.speaker_wav)
 
         selected_checkpoints = {
@@ -673,8 +704,8 @@ def main(argv: list[str]) -> int:
             rng=random.SystemRandom(),
         )
         warnings.extend(blind_warnings)
-        write_blind_key(timestamp, blind_entries)
-        write_blind_scorecard(blind_entries, warnings)
+        write_blind_key(timestamp, output_root, blind_entries)
+        write_blind_scorecard(output_root, blind_entries, warnings)
 
         report = build_report(
             timestamp=timestamp,

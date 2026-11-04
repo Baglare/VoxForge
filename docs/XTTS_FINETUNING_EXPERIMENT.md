@@ -278,8 +278,10 @@ Denenen varyantlar:
 
 - `base`
 - `best_model.pth`
-- `best_model_72.pth`, varsa
+- En yüksek numaralı `best_model_*.pth`, varsa
 - En yüksek numaralı `checkpoint_*.pth`, varsa
+
+Checkpoint kaynağı (VF-002): Her gerçek eğitim `experiments/<slug>/run_manifests/<run_id>.json` kaydı yazar. Eğitim yalnız o koşuda oluşan veya değişen checkpoint'leri başarı sayar; önceki koşulardan kalan dosyalar başarı sayılmaz. Değerlendirme betikleri varsayılan olarak en son başarılı koşunun checkpoint'lerini kullanır; belirli bir koşu için `--run-id <run_id>` verilebilir. Manifest yoksa (eski deneyler) klasör taraması yapılır ve raporda `legacy_discovery` uyarısı görünür.
 
 Çıktılar:
 
@@ -304,13 +306,15 @@ Matrix çıktıları dinlendikten sonra manuel puanları raporlamak için:
 powershell -ExecutionPolicy Bypass -File .\run_create_human_eval_report.ps1 -MatrixRoot .\outputs\finetuned_eval\matrix\<timestamp> -UseDefaultScores
 ```
 
-Oluşan dosyalar:
+Oluşan dosyalar (her matrix koşusuna özel; iki koşunun puanları karışmaz):
 
 ```text
-outputs/reports/human_eval_scorecard.csv
-outputs/reports/human_eval_summary.json
-outputs/reports/human_eval_summary.md
+outputs/finetuned_eval/matrix/<timestamp>/human_eval/human_eval_scorecard.csv
+outputs/finetuned_eval/matrix/<timestamp>/human_eval/human_eval_summary.json
+outputs/finetuned_eval/matrix/<timestamp>/human_eval/human_eval_summary.md
 ```
+
+`-UseDefaultScores` ilk deneyden kalma örnek puanları kullanır; rapor `score_source: example` ve "ÖRNEK PUAN" etiketi taşır. Gerçek puanlarda genel sonuç yalnız scorecard'daki puanlardan hesaplanır; puan yoksa "Değerlendirilmedi" yazılır. Eski global `outputs/reports/human_eval_*` dosyaları artık okunmaz.
 
 CSV başlığı:
 
@@ -359,17 +363,19 @@ outputs/finetuned_eval/experiment_compare/<timestamp>/
 Rapor dosyaları:
 
 ```text
-outputs/reports/experiment_compare_report.json
-outputs/reports/experiment_compare_report.md
-outputs/reports/experiment_blind_key.json
-outputs/reports/experiment_blind_scorecard.csv
+outputs/finetuned_eval/experiment_compare/<timestamp>/compare_report.json
+outputs/finetuned_eval/experiment_compare/<timestamp>/compare_report.md
+outputs/finetuned_eval/experiment_compare/<timestamp>/blind_key.json
+outputs/finetuned_eval/experiment_compare/<timestamp>/blind_scorecard.csv
 ```
+
+`outputs/reports/experiment_compare_report.{json,md}` yalnız son karşılaştırmanın kısayoludur. Scorecard'ın `run_id` sütunu koşu klasörünün adıdır.
 
 Dinleme yönergesi:
 
 1. Önce `blind/` klasöründeki A/B dosyalarını dinleyin.
-2. Hangi dosyanın hangi experiment olduğunu bilmeden `experiment_blind_scorecard.csv` dosyasını doldurun.
-3. Puanlama bittikten sonra `experiment_blind_key.json` ile A/B eşleşmesini açın.
+2. Hangi dosyanın hangi experiment olduğunu bilmeden aynı klasördeki `blind_scorecard.csv` dosyasını doldurun.
+3. Puanlama bittikten sonra aynı klasördeki `blind_key.json` ile A/B eşleşmesini açın.
 4. Nihai yorum blind puanlara göre yapılmalıdır.
 
 Objektif metrikler süre, dosya boyutu, ses seviyesi ve clipping riski gibi yardımcı teknik sinyallerdir. Bu metrikler tek başına kalite kararı değildir.
