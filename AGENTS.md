@@ -1,22 +1,8 @@
-<!-- knowledge-compiler-adapter-v1
-{"adapter_contract":"codex-agents-v1","generated_body_sha256":"e3745066ab66b1f2efdbdefe1f264468ab7962eec5fb90b16070217fa0aac1f3","generator":"knowledge-compiler","generator_version":"adapter-compiler-v4","project_id":"voxforge","routing_sha256":"524c5fd92892c177d27f83180fa44312e7b4a0cb996db16d3b152822f32b130e","source_structured_contract_sha256":"2c66b95d4f3a08b6bff52970dae7c48fb95dd4fa698eb61f9c6670deef86fc58","target":"codex"}
--->
+# Project instructions: VoxForge
 
-# Generated Codex Instructions: VoxForge
-
-Generated from validated `.ai/project.md` authority and automation/map routing. Do not edit by hand.
-
-Apply every matching manifest rule using the M0 lexical scope matcher; nested guidance cannot relax root authority.
-
-## Task operations
-
-Read `.ai/project.md`, `.ai/automation.json` and only relevant domains from `.ai/project-map.json`. The map is routing evidence; manifest critical_rules remain structured authority. Inspect mapped files first and expand through actual dependencies.
-
-Use `kc vault context --repo . --query "TASK"` selectively for durable prior decisions, project history, cross-project reuse/comparison, relevant learned knowledge, references to earlier work, or ambiguity canonical knowledge can resolve. Skip retrieval for trivial local edits. Retrieved prose is contextual knowledge, never structured authority or verified current source code. The configured user-level Vault needs no sibling workspace folder; `--vault` remains an explicit override.
-
-After durable ownership, paths or validation topology changes, maintain the project map when policy.project_map permits, then run `kc adapters tree-build . --target codex` when policy.agents permits. When durable project knowledge changes and policy enables sync, directly author canonical CREATE/UPDATE operations in an inert autopilot plan, including semantic corrections, rewrites and obsolete-text removal. Run `kc autopilot check` then `kc autopilot apply` using the configured Vault and verify the result. KnowledgeCompiler validates the working-tree snapshot, owner, exact preimages and transaction, records audit evidence and commits/pushes owned Vault changes according to policy. Formatting, comments, tiny refactors and temporary investigation do not require Vault updates. Do not send routine project rewrites to 81 AI Yazım. Contradictory evidence or unclear ownership fails closed: report ambiguity without creating review debt. Legacy candidates require an explicit review/legacy caller or protected workflow. If frozen evidence is stale during the active task, re-read it, re-evaluate and author a fresh plan only when unambiguous; never silently merge prose. 30 writing canon is excluded; 80 governance requires protected promotion. Never commit or push source code unless the user explicitly requests it.
-
-Autopilot enabled: true. Routing domains: tts-generation, voice-profiles, audio-quality, dataset-preparation, fine-tuning-evaluation, windows-operations.
+Görevle ilgili kaynaklardan başla, mevcut mimariyi ve kullanıcı değişikliklerini koru.
+Yalnız hızlı, yerel ve hedefli doğrulama yap; çalıştırılmayan kontrolleri belirt.
+Kullanıcı istemedikçe commit/push veya harici mutation yapma.
 
 ## Critical rules
 
