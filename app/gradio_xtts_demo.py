@@ -2136,4 +2136,10 @@ if __name__ == "__main__":
     print(f"Model: {MODEL_NAME if selected_tts_engine_name() == 'xtts' else 'Mock synthetic WAV'}")
 
     app = build_demo()
-    app.launch(server_name="127.0.0.1", share=False)
+    # outputs/ may be a junction to another drive folder (e.g. C:\AvenoxData).
+    # Gradio checks the resolved path, so allow the app's own output folders explicitly.
+    allowed_output_dirs = [
+        str(path.resolve())
+        for path in (OUTPUT_DIR, PREPROCESSED_REFERENCE_DIR, REPORTS_DIR)
+    ]
+    app.launch(server_name="127.0.0.1", share=False, allowed_paths=allowed_output_dirs)
