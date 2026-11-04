@@ -79,6 +79,41 @@ def wav_seconds(path: Path) -> float:
         return handle.getnframes() / float(handle.getframerate())
 
 
+def wav_format(path: Path) -> str:
+    with wave.open(str(path), "rb") as handle:
+        return f"pcm{handle.getsampwidth() * 8}/{handle.getframerate()}Hz/{handle.getnchannels()}ch"
+
+
+def save_pcm16(path: Path, audio: Any, sample_rate: int) -> None:
+    """Write mono 16-bit PCM WAV (same format as XTTS/Mock outputs), atomically.
+
+    Some engines return float audio and their own savers write IEEE float WAV (format 3),
+    which Python's wave (used for validation, durations and blind copies) cannot read.
+    """
+    import numpy as np
+
+    if hasattr(audio, "detach"):  # torch.Tensor
+        audio = audio.detach().cpu().float().numpy()
+    data = np.squeeze(np.asarray(audio))
+    if np.issubdtype(data.dtype, np.integer):
+        data = data.astype(np.float32) / float(np.iinfo(data.dtype).max)
+    data = data.astype(np.float32)
+    if data.ndim == 2:  # kanal ekseni kısa olandır: (C, N) veya (N, C)
+        data = data.mean(axis=0 if data.shape[0] <= data.shape[1] else 1)
+    if data.ndim != 1 or data.size == 0:
+        raise ValueError(f"Beklenmeyen ses şekli: {np.shape(audio)}")
+    if not np.all(np.isfinite(data)):
+        raise ValueError("Ses NaN/sonsuz değer içeriyor.")
+    pcm = (np.clip(data, -1.0, 1.0) * 32767.0).round().astype("<i2")
+    temporary = path.with_name(path.name + ".partial")
+    with wave.open(str(temporary), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(int(sample_rate))
+        handle.writeframes(pcm.tobytes())
+    os.replace(temporary, path)
+
+
 class Torch:
     """Lazy torch helpers so the Mock path needs nothing but the standard library."""
 
@@ -145,7 +180,6 @@ def load_chatterbox(ctx: dict[str, Any]):
     if problem:
         raise RuntimeError(problem)  # PyPI 0.1.7 de ayni surumu gosterir ama V3 icermez
 
-    import torchaudio
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
     load_kwargs, dropped = supported_kwargs(
@@ -165,7 +199,7 @@ def load_chatterbox(ctx: dict[str, Any]):
 
     def synth(text: str, out_path: Path, seed: int) -> None:
         wav = model.generate(text, **generate_kwargs)
-        torchaudio.save(str(out_path), wav.detach().cpu(), model.sr)
+        save_pcm16(out_path, wav, model.sr)  # torchaudio.save float WAV (format 3) yazıyordu
 
     return synth, {
         "model": "ResembleAI/chatterbox t3_model=v3",
@@ -177,7 +211,6 @@ def load_chatterbox(ctx: dict[str, Any]):
 
 
 def load_voxcpm(ctx: dict[str, Any], ultimate: bool):
-    import soundfile as sf
     from voxcpm import VoxCPM
 
     load_kwargs, _ = supported_kwargs(VoxCPM.from_pretrained, {"load_denoiser": False})
@@ -198,7 +231,7 @@ def load_voxcpm(ctx: dict[str, Any], ultimate: bool):
         if "seed" in inspect.signature(model.generate).parameters:
             kwargs["seed"] = seed
         wav = model.generate(text=text, **kwargs)
-        sf.write(str(out_path), wav, sample_rate)
+        save_pcm16(out_path, wav, sample_rate)
 
     return synth, {
         "model": "openbmb/VoxCPM2",
@@ -327,6 +360,7 @@ def run(run_dir: Path, engine: str, overwrite: bool, only: set[str] | None) -> i
             torch_helper.sync()
             entry["seconds"] = round(time.perf_counter() - began, 3)
             entry["audio_seconds"] = round(wav_seconds(out_path), 3)
+            entry["format"] = wav_format(out_path)
             entry["rtf"] = round(entry["seconds"] / entry["audio_seconds"], 3) if entry["audio_seconds"] else None
             entry["ok"] = entry["audio_seconds"] > 0
             if not entry["ok"]:
