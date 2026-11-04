@@ -80,6 +80,7 @@ from scripts.audio_concat_utils import concatenate_wavs
 from scripts.audio_quality_utils import analyze_audio_file, format_value
 from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
 from scripts.tts_engine_factory import create_tts_engine, selected_tts_engine_name
+from voxforge.runs import SCHEMA_VERSION, wav_part_status, write_json_atomic
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -1271,6 +1272,8 @@ def write_gradio_quality_report(
     report_path = GRADIO_QUALITY_REPORT_DIR / f"quality_report_{timestamp}.json"
     generation_report = generation_report or {}
     payload = {
+        "schema_version": SCHEMA_VERSION,
+        "generation_id": timestamp,
         "created_at": timestamp,
         "status": status,
         "engine": selected_tts_engine_name(),
@@ -1283,6 +1286,7 @@ def write_gradio_quality_report(
         "chunking_used": generation_report.get("chunking_used"),
         "chunk_count": generation_report.get("chunk_count"),
         "chunks": generation_report.get("chunks"),
+        "parts": generation_report.get("parts"),
         "primary_output_path": generation_report.get("primary_output_path"),
         "comparison_output_path": generation_report.get("comparison_output_path"),
         "source_type": source_info.get("source_type") if source_info else None,
@@ -1306,10 +1310,7 @@ def write_gradio_quality_report(
             preprocessing_result.get("candidate_reports") if preprocessing_result else None
         ),
     }
-    report_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(report_path, payload)
     return report_path
 
 
@@ -1435,6 +1436,7 @@ def synthesize_gradio_output(
     raw_output_path = OUTPUT_DIR / f"{output_stem}_raw.wav"
     warnings: list[str] = []
     chunk_paths: list[Path] = []
+    parts: list[dict[str, Any]] = []
 
     if chunk_summary["chunking_used"]:
         chunk_dir = OUTPUT_DIR / "chunks" / output_stem
@@ -1451,7 +1453,9 @@ def synthesize_gradio_output(
             if warning:
                 warnings.append(warning)
             chunk_paths.append(chunk_path)
+            parts.append({"index": index, **wav_part_status(chunk_path)})
 
+        raise_on_failed_parts(parts)
         concat_ok, concat_message = concatenate_wavs(chunk_paths, raw_output_path)
         if not concat_ok:
             raise RuntimeError(f"WAV parçaları birleştirilemedi: {concat_message}")
@@ -1465,6 +1469,8 @@ def synthesize_gradio_output(
         )
         if warning:
             warnings.append(warning)
+        parts.append({"index": 1, **wav_part_status(raw_output_path)})
+        raise_on_failed_parts(parts)
 
     final_output_path = raw_output_path
     post_processing_applied = False
@@ -1489,8 +1495,17 @@ def synthesize_gradio_output(
         "chunking_used": chunk_summary["chunking_used"],
         "chunk_count": chunk_summary["chunk_count"],
         "chunks": chunk_summary["chunks"],
+        "parts": parts,
         "warnings": warnings,
     }
+
+
+def raise_on_failed_parts(parts: list[dict[str, Any]]) -> None:
+    """Eksik/bos/okunamayan parca varken basari raporlanmaz."""
+    failed = [part for part in parts if not part["ok"]]
+    if failed:
+        details = "; ".join(f"parca {part['index']}: {part['error']}" for part in failed)
+        raise RuntimeError(f"Uretilen ses parcalari gecersiz: {details}")
 
 
 def build_generation_report(
@@ -1504,6 +1519,7 @@ def build_generation_report(
     chunking_used = primary_result.get("chunking_used") if primary_result else False
     chunk_count = primary_result.get("chunk_count") if primary_result else 0
     chunks = primary_result.get("chunks") if primary_result else []
+    parts = primary_result.get("parts") if primary_result else []
     primary_output_path = (
         str(primary_result.get("final_output_path")) if primary_result else None
     )
@@ -1518,6 +1534,7 @@ def build_generation_report(
         "chunking_used": chunking_used,
         "chunk_count": chunk_count,
         "chunks": chunks,
+        "parts": parts,
         "primary_output_path": primary_output_path,
         "comparison_output_path": comparison_output_path,
     }

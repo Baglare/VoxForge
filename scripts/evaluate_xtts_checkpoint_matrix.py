@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +21,7 @@ from evaluate_xtts_finetuned_checkpoint import (
     resolve_speaker_wav,
     run_xtts_generation,
 )
+from voxforge.runs import RunRecordError, numbered, training_checkpoint_candidates  # noqa: E402
 
 try:
     from text_chunking_utils import split_text_for_tts, summarize_chunks
@@ -60,6 +60,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Opsiyonel referans ses yolu.",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Belirli egitim kosusu. Bos ise en son basarili kosu; manifest yoksa legacy tarama.",
+    )
     return parser.parse_args(argv)
 
 
@@ -73,34 +78,19 @@ def latest_file(paths: list[Path]) -> Path | None:
     return sorted(paths, key=lambda item: item.stat().st_mtime, reverse=True)[0]
 
 
-def find_best_model(training_output: Path) -> Path | None:
-    return latest_file([path for path in training_output.rglob("best_model.pth") if path.is_file()])
-
-
-def find_named_checkpoint(training_output: Path, filename: str) -> Path | None:
-    return latest_file([path for path in training_output.rglob(filename) if path.is_file()])
-
-
-def find_highest_numbered_checkpoint(training_output: Path) -> tuple[str, Path] | None:
-    candidates: list[tuple[int, Path]] = []
-    for path in training_output.rglob("checkpoint_*.pth"):
-        if not path.is_file():
-            continue
-        match = re.fullmatch(r"checkpoint_(\d+)\.pth", path.name)
-        if match:
-            candidates.append((int(match.group(1)), path))
-
+def highest_numbered(paths: list[Path], prefix: str) -> tuple[str, Path] | None:
+    candidates = [(numbered(path, prefix), path) for path in paths if numbered(path, prefix) is not None]
     if not candidates:
         return None
-
-    number, path = sorted(candidates, key=lambda item: item[0], reverse=True)[0]
-    return f"checkpoint_{number}", path
+    number, path = max(candidates, key=lambda item: item[0])
+    return f"{prefix}_{number}", path
 
 
 def discover_variants(
     experiment_path: Path,
     base_checkpoint: Path,
     errors: list[dict[str, str]],
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     training_output = experiment_path / TRAINING_OUTPUT_DIR_NAME
     variants: list[dict[str, Any]] = [
@@ -112,7 +102,7 @@ def discover_variants(
     ]
     selected_paths = {base_checkpoint.resolve()}
 
-    if not training_output.is_dir():
+    if not run_id and not training_output.is_dir():
         errors.append(
             {
                 "variant": "training_output",
@@ -122,21 +112,20 @@ def discover_variants(
         )
         return variants
 
-    requested: list[tuple[str, Path | None]] = [
-        ("best_model", find_best_model(training_output)),
-        ("best_model_72", find_named_checkpoint(training_output, "best_model_72.pth")),
-    ]
+    try:
+        candidates, provenance = training_checkpoint_candidates(experiment_path, training_output, run_id)
+    except RunRecordError as exc:
+        raise EvaluationError(str(exc)) from exc
+    if provenance["warning"]:
+        print(f"UYARI: {provenance['warning']}")
+    pth_files = [path for path in candidates if path.suffix.lower() == ".pth"]
 
-    highest_checkpoint = find_highest_numbered_checkpoint(training_output)
-    if highest_checkpoint is None:
-        requested.append(
-            (
-                "checkpoint_*.pth",
-                None,
-            )
-        )
-    else:
-        requested.append(highest_checkpoint)
+    requested: list[tuple[str, Path | None]] = [
+        ("best_model", latest_file([path for path in pth_files if path.name == "best_model.pth"])),
+    ]
+    for prefix in ("best_model", "checkpoint"):
+        highest = highest_numbered(pth_files, prefix)
+        requested.append(highest if highest else (f"{prefix}_*.pth", None))
 
     for variant_name, checkpoint_path in requested:
         if checkpoint_path is None:
@@ -166,6 +155,7 @@ def discover_variants(
                 "name": variant_name,
                 "checkpoint_path": resolved_path,
                 "kind": "fine_tuned",
+                "checkpoint_source": provenance,
             }
         )
 
@@ -188,6 +178,7 @@ def build_report(
                 "name": variant["name"],
                 "checkpoint_path": str(variant["checkpoint_path"]),
                 "kind": variant["kind"],
+                "checkpoint_source": variant.get("checkpoint_source"),
                 "output_dir": str(output_root / variant["name"]),
             }
         )
@@ -317,6 +308,7 @@ def main(argv: list[str]) -> int:
             experiment_path=experiment_path,
             base_checkpoint=base_files["model.pth"],
             errors=errors,
+            run_id=args.run_id,
         )
         print("Test edilecek varyantlar:")
         for variant in variants:

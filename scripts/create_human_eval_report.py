@@ -5,17 +5,23 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sys
 from pathlib import Path
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REPORT_DIR = PROJECT_ROOT / "outputs" / "reports"
-SCORECARD_CSV_PATH = REPORT_DIR / "human_eval_scorecard.csv"
-SUMMARY_JSON_PATH = REPORT_DIR / "human_eval_summary.json"
-SUMMARY_MD_PATH = REPORT_DIR / "human_eval_summary.md"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from voxforge.runs import SCHEMA_VERSION, utc_now_iso, write_json_atomic  # noqa: E402
+
+# Eski surumler tek global dosya yaziyordu; yeni raporlar matrix kosusunun icinde tutulur.
+LEGACY_SCORECARD_CSV_PATH = PROJECT_ROOT / "outputs" / "reports" / "human_eval_scorecard.csv"
+HUMAN_EVAL_DIR_NAME = "human_eval"
+SCORE_SOURCE_EXAMPLE = "example"
+SCORE_SOURCE_MANUAL = "manual"
+SCORE_SOURCE_EMPTY = "empty"
 
 EXPECTED_VARIANTS = ["base", "best_model", "best_model_72", "checkpoint_71"]
 METRIC_COLUMNS = [
@@ -71,7 +77,8 @@ DEFAULT_SCORES: list[dict[str, Any]] = [
     },
 ]
 
-GENERAL_CONCLUSION = (
+# Yalniz --use-default-scores ile basilan, ilk deneyden kalma ORNEK sonuc metni.
+EXAMPLE_CONCLUSION = (
     "Fine-tuning pipeline teknik olarak başarılı. Kalite artışı sınırlı. "
     "best_model base'e göre küçük iyileşme gösteriyor. "
     "checkpoint_71 daha yüksek puan alsa da erken kesilme sorunu nedeniyle güvenilir değil. "
@@ -98,6 +105,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Ilk manuel puanlari kullanarak CSV, JSON ve Markdown raporu olustur.",
     )
     return parser.parse_args(argv)
+
+
+def human_eval_paths(matrix_root: Path) -> dict[str, Path]:
+    directory = matrix_root / HUMAN_EVAL_DIR_NAME
+    return {
+        "dir": directory,
+        "scorecard": directory / "human_eval_scorecard.csv",
+        "json": directory / "human_eval_summary.json",
+        "md": directory / "human_eval_summary.md",
+    }
 
 
 def resolve_project_path(value: str) -> Path:
@@ -130,15 +147,15 @@ def blank_rows_for_variants(variants: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
-def read_existing_scorecard() -> list[dict[str, Any]]:
-    if not SCORECARD_CSV_PATH.is_file():
+def read_existing_scorecard(scorecard_path: Path) -> list[dict[str, Any]]:
+    if not scorecard_path.is_file():
         return []
 
-    with SCORECARD_CSV_PATH.open("r", encoding="utf-8-sig", newline="") as csv_file:
+    with scorecard_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
         reader = csv.DictReader(csv_file, delimiter=";")
         if reader.fieldnames != CSV_COLUMNS:
             raise HumanEvalError(
-                f"Mevcut scorecard basligi beklenen formatta degil: {SCORECARD_CSV_PATH}"
+                f"Mevcut scorecard basligi beklenen formatta degil: {scorecard_path}"
             )
         return [dict(row) for row in reader]
 
@@ -185,9 +202,9 @@ def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized_rows
 
 
-def write_scorecard_csv(rows: list[dict[str, Any]]) -> None:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    with SCORECARD_CSV_PATH.open("w", encoding="utf-8-sig", newline="") as csv_file:
+def write_scorecard_csv(rows: list[dict[str, Any]], scorecard_path: Path) -> None:
+    scorecard_path.parent.mkdir(parents=True, exist_ok=True)
+    with scorecard_path.open("w", encoding="utf-8-sig", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS, delimiter=";")
         writer.writeheader()
         writer.writerows(rows)
@@ -209,7 +226,8 @@ def build_base_comparison(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     base_total = base["total_score"]
     comparisons: list[dict[str, Any]] = []
-    for variant in EXPECTED_VARIANTS:
+    for row in rows:
+        variant = row["variant"]
         if variant == "base" or variant not in scored:
             continue
         total = scored[variant]["total_score"]
@@ -236,28 +254,62 @@ def pick_total_extremes(rows: list[dict[str, Any]]) -> tuple[dict[str, Any] | No
     )
 
 
-def checkpoint_71_warning(rows: list[dict[str, Any]]) -> str:
+def checkpoint_71_warning(rows: list[dict[str, Any]]) -> str | None:
     for row in rows:
         if row["variant"] == "checkpoint_71":
             note = str(row.get("notes", "")).strip()
             if note:
                 return note
             return "checkpoint_71 için erken kesilme notu yok; dinleme sırasında özellikle kontrol edin."
-    return "checkpoint_71 varyantı scorecard içinde bulunmuyor."
+    return None
 
 
-def build_summary(matrix_root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def detect_score_source(rows: list[dict[str, Any]], use_default_scores: bool) -> str:
+    if use_default_scores:
+        return SCORE_SOURCE_EXAMPLE
+    return SCORE_SOURCE_MANUAL if scored_rows(rows) else SCORE_SOURCE_EMPTY
+
+
+def overall_result(rows: list[dict[str, Any]], score_source: str) -> str:
+    """Sonuc metni yalniz bu scorecard'daki puanlardan uretilir."""
+    if score_source == SCORE_SOURCE_EXAMPLE:
+        return "ÖRNEK PUAN (gerçek değerlendirme değil): " + EXAMPLE_CONCLUSION
+    scored = scored_rows(rows)
+    if not scored:
+        return "Değerlendirilmedi: scorecard'da tamamlanmış puan yok."
+    highest, lowest = pick_total_extremes(rows)
+    parts = [
+        f"{len(scored)}/{len(rows)} varyant tam puanlandı.",
+        f"En yüksek toplam: {highest['variant']} ({highest['total_score']}).",
+        f"En düşük toplam: {lowest['variant']} ({lowest['total_score']}).",
+    ]
+    for item in build_base_comparison(rows):
+        diff = item["difference_from_base"]
+        parts.append(f"{item['variant']} base farkı {'+' if diff > 0 else ''}{diff}.")
+    return " ".join(parts)
+
+
+def build_summary(
+    matrix_root: Path,
+    rows: list[dict[str, Any]],
+    score_source: str,
+    scorecard_path: Path,
+) -> dict[str, Any]:
     variants = [row["variant"] for row in rows]
     highest, lowest = pick_total_extremes(rows)
 
     return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
         "matrix_root": str(matrix_root),
-        "scorecard_csv": str(SCORECARD_CSV_PATH),
+        "matrix_run": matrix_root.name,
+        "score_source": score_source,
+        "scorecard_csv": str(scorecard_path),
         "highest_total_score": highest,
         "lowest_total_score": lowest,
         "base_comparison": build_base_comparison(rows),
         "checkpoint_71_warning": checkpoint_71_warning(rows),
-        "overall_result": GENERAL_CONCLUSION,
+        "overall_result": overall_result(rows, score_source),
         "rows": rows,
         "missing_variant_dirs": variant_dirs_missing(matrix_root, variants),
         "notes": [
@@ -269,12 +321,8 @@ def build_summary(matrix_root: Path, rows: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def write_json_summary(summary: dict[str, Any]) -> None:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    SUMMARY_JSON_PATH.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def write_json_summary(summary: dict[str, Any], json_path: Path) -> None:
+    write_json_atomic(json_path, summary)
 
 
 def markdown_value(value: Any) -> str:
@@ -289,21 +337,29 @@ def markdown_extreme(value: dict[str, Any] | None) -> str:
     return f"`{value['variant']}` ({value['total_score']})"
 
 
-def write_markdown_summary(summary: dict[str, Any]) -> None:
+def write_markdown_summary(summary: dict[str, Any], md_path: Path) -> None:
     highest = summary["highest_total_score"]
     lowest = summary["lowest_total_score"]
 
+    title = "# Human evaluation scorecard"
+    if summary["score_source"] == SCORE_SOURCE_EXAMPLE:
+        title += " — ÖRNEK PUAN (gerçek değerlendirme değil)"
     lines = [
-        "# Human evaluation scorecard",
+        title,
         "",
         f"- Matrix root: `{summary['matrix_root']}`",
+        f"- Puan kaynağı: `{summary['score_source']}`",
         f"- Scorecard CSV: `{summary['scorecard_csv']}`",
         "",
         "## Özet",
         "",
         f"- En yüksek toplam puan: {markdown_extreme(highest)}",
         f"- En düşük toplam puan: {markdown_extreme(lowest)}",
-        f"- checkpoint_71 uyarısı: {summary['checkpoint_71_warning']}",
+        *(
+            [f"- checkpoint_71 uyarısı: {summary['checkpoint_71_warning']}"]
+            if summary["checkpoint_71_warning"]
+            else []
+        ),
         "",
         "## Base farkları",
         "",
@@ -361,14 +417,15 @@ def write_markdown_summary(summary: dict[str, Any]) -> None:
         for variant in summary["missing_variant_dirs"]:
             lines.append(f"- `{variant}`")
 
-    SUMMARY_MD_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def load_rows(matrix_root: Path, use_default_scores: bool) -> list[dict[str, Any]]:
     if use_default_scores:
         return normalize_rows(DEFAULT_SCORES)
 
-    existing_rows = read_existing_scorecard()
+    existing_rows = read_existing_scorecard(human_eval_paths(matrix_root)["scorecard"])
     if existing_rows:
         return normalize_rows(existing_rows)
 
@@ -381,18 +438,26 @@ def main(argv: list[str]) -> int:
     try:
         matrix_root = resolve_project_path(args.matrix_root)
         validate_matrix_root(matrix_root)
+        paths = human_eval_paths(matrix_root)
         rows = load_rows(matrix_root, args.use_default_scores)
-        summary = build_summary(matrix_root, rows)
+        score_source = detect_score_source(rows, args.use_default_scores)
+        summary = build_summary(matrix_root, rows, score_source, paths["scorecard"])
 
-        write_scorecard_csv(rows)
-        write_json_summary(summary)
-        write_markdown_summary(summary)
+        write_scorecard_csv(rows, paths["scorecard"])
+        write_json_summary(summary, paths["json"])
+        write_markdown_summary(summary, paths["md"])
 
+        if LEGACY_SCORECARD_CSV_PATH.is_file():
+            print(
+                f"Not: Eski global scorecard kullanilmadi ({LEGACY_SCORECARD_CSV_PATH}); "
+                "puanlar artik matrix kosusuna ozel."
+            )
         print(f"Matrix root: {matrix_root}")
-        print(f"Scorecard CSV yazildi: {SCORECARD_CSV_PATH}")
-        print(f"JSON ozet yazildi: {SUMMARY_JSON_PATH}")
-        print(f"Markdown ozet yazildi: {SUMMARY_MD_PATH}")
-        print(f"Genel sonuc: {GENERAL_CONCLUSION}")
+        print(f"Puan kaynagi: {score_source}")
+        print(f"Scorecard CSV yazildi: {paths['scorecard']}")
+        print(f"JSON ozet yazildi: {paths['json']}")
+        print(f"Markdown ozet yazildi: {paths['md']}")
+        print(f"Genel sonuc: {summary['overall_result']}")
     except HumanEvalError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

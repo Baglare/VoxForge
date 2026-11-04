@@ -7,7 +7,6 @@ import argparse
 import importlib
 import inspect
 import json
-import re
 import sys
 import wave
 from pathlib import Path
@@ -22,6 +21,11 @@ except ImportError:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from voxforge.runs import RunRecordError, numbered, training_checkpoint_candidates  # noqa: E402
+
 CHECKPOINT_DIR_NAME = "checkpoints"
 TRAINING_OUTPUT_DIR_NAME = "training_output"
 METADATA_TRAIN_FILE = "metadata_train.csv"
@@ -90,46 +94,47 @@ def import_xtts_api() -> tuple[Any, Any]:
     return config_class, model_class
 
 
-def find_selected_checkpoint(experiment_path: Path) -> Path:
+def select_checkpoint(experiment_path: Path, run_id: str | None = None) -> tuple[Path, dict[str, Any]]:
+    """Run manifestindeki checkpointlerden secer; manifest yoksa legacy taramayi isaretler."""
     training_output = experiment_path / TRAINING_OUTPUT_DIR_NAME
-    if not training_output.is_dir():
+    if not run_id and not training_output.is_dir():
         raise EvaluationError(f"training_output klasoru bulunamadi: {training_output}")
+    try:
+        candidates, provenance = training_checkpoint_candidates(experiment_path, training_output, run_id)
+    except RunRecordError as exc:
+        raise EvaluationError(str(exc)) from exc
+    if provenance["warning"]:
+        print(f"UYARI: {provenance['warning']}")
+    elif provenance["run_id"]:
+        print(f"Checkpoint kaynagi: run {provenance['run_id']}")
 
-    best_models = sorted(
-        (path for path in training_output.rglob("best_model.pth") if path.is_file()),
-        key=lambda item: item.stat().st_mtime,
-        reverse=True,
-    )
+    pth_files = [path for path in candidates if path.suffix.lower() == ".pth"]
+    newest_first = lambda paths: sorted(paths, key=lambda item: item.stat().st_mtime, reverse=True)  # noqa: E731
+
+    best_models = [path for path in pth_files if path.name == "best_model.pth"]
     if best_models:
-        return best_models[0]
+        return newest_first(best_models)[0], provenance
 
-    numbered_best_models = [
-        path
-        for path in training_output.rglob("best_model_*.pth")
-        if path.is_file()
-    ]
+    numbered_best_models = [path for path in pth_files if numbered(path, "best_model") is not None]
     if numbered_best_models:
-        return sorted(
-            numbered_best_models,
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )[0]
+        return newest_first(numbered_best_models)[0], provenance
 
-    numbered_checkpoints: list[tuple[int, Path]] = []
-    for path in training_output.rglob("checkpoint_*.pth"):
-        if not path.is_file():
-            continue
-        match = re.fullmatch(r"checkpoint_(\d+)\.pth", path.name)
-        if match:
-            numbered_checkpoints.append((int(match.group(1)), path))
-
+    numbered_checkpoints = [
+        (numbered(path, "checkpoint"), path)
+        for path in pth_files
+        if numbered(path, "checkpoint") is not None
+    ]
     if numbered_checkpoints:
-        return sorted(numbered_checkpoints, key=lambda item: item[0], reverse=True)[0][1]
+        return max(numbered_checkpoints, key=lambda item: item[0])[1], provenance
 
     raise EvaluationError(
         "Fine-tuned checkpoint bulunamadi. Beklenen adaylar: "
         "best_model.pth, best_model_*.pth veya checkpoint_*.pth"
     )
+
+
+def find_selected_checkpoint(experiment_path: Path, run_id: str | None = None) -> Path:
+    return select_checkpoint(experiment_path, run_id)[0]
 
 
 def resolve_base_files(experiment_path: Path) -> dict[str, Path]:
@@ -657,6 +662,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Opsiyonel referans ses yolu.",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Belirli egitim kosusu (experiments/<slug>/run_manifests/<run_id>.json). Bos ise en son basarili kosu.",
+    )
     return parser.parse_args(argv)
 
 
@@ -672,8 +682,10 @@ def main(argv: list[str]) -> int:
         print("VoxForge fine-tuned XTTS inference testi")
         print(f"Experiment: {experiment_path}")
         print(f"Text: {text}")
-        selected_checkpoint = find_selected_checkpoint(experiment_path).resolve()
+        selected_checkpoint, provenance = select_checkpoint(experiment_path, args.run_id)
+        selected_checkpoint = selected_checkpoint.resolve()
         report["selected_checkpoint"] = str(selected_checkpoint)
+        report["checkpoint_provenance"] = provenance
         print(f"Secilen fine-tuned checkpoint: {selected_checkpoint}")
 
         base_files = resolve_base_files(experiment_path)

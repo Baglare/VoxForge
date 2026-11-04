@@ -18,6 +18,11 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from voxforge.runs import finish_training_run, start_training_run  # noqa: E402
+
 MANIFEST_FILE = "experiment_manifest.json"
 CHECKPOINT_DIR_NAME = "checkpoints"
 TRAINING_OUTPUT_DIR_NAME = "training_output"
@@ -30,8 +35,6 @@ REQUIRED_XTTS_FILES = (
     "dvae.pth",
     "mel_stats.pth",
 )
-CHECKPOINT_ARTIFACT_SUFFIXES = {".pth", ".pt", ".ckpt", ".safetensors"}
-CHECKPOINT_ARTIFACT_MARKERS = ("checkpoint",)
 
 # Coqui XTTS-v2 ana dosyalari. Script bunlari kullanici training komutunu
 # calistirdiginda experiments/<run_slug>/checkpoints altina indirmeyi dener.
@@ -546,48 +549,24 @@ def report_training_start_flow(
     print("")
 
 
-def is_checkpoint_artifact(path: Path) -> bool:
-    """Trainer ciktilari icinde checkpoint/model artifact adaylarini secer."""
-    suffix = path.suffix.lower()
-    lower_name = path.name.lower()
-    if suffix in CHECKPOINT_ARTIFACT_SUFFIXES:
-        return True
-    return any(marker in lower_name for marker in CHECKPOINT_ARTIFACT_MARKERS)
-
-
-def find_checkpoint_artifacts(output_path: Path) -> list[Path]:
-    """Training output klasorunu recursive tarayip checkpoint artifact bulur."""
-    if not output_path.is_dir():
-        return []
-
-    artifacts = [
-        path
-        for path in output_path.rglob("*")
-        if path.is_file() and is_checkpoint_artifact(path)
-    ]
-    return sorted(artifacts, key=lambda item: str(item).lower())
-
-
-def verify_checkpoint_artifacts(output_path: Path) -> None:
-    """Training sonunda checkpoint bulunmazsa basari saymaz."""
-    artifacts = find_checkpoint_artifacts(output_path)
-
-    if artifacts:
-        print("Checkpoint artifacts:")
-        for artifact_path in artifacts:
-            print(f"- {artifact_path}")
-        print("Training completed and checkpoint artifacts were found.")
+def verify_run_checkpoints(run_manifest: dict[str, Any]) -> None:
+    """Yalniz bu kosunun urettigi checkpointleri basari sayar."""
+    if run_manifest["status"] == "succeeded":
+        print(f"Run {run_manifest['run_id']} checkpoint artifacts:")
+        for item in run_manifest["checkpoints"]:
+            print(f"- {item['path']}")
+        print("Training completed and checkpoint artifacts from this run were found.")
         return
 
-    print("UYARI: Training output icinde checkpoint artifact bulunamadi.")
-    print("Training finished but no checkpoint artifact was found.")
+    for warning in run_manifest.get("warnings", []):
+        print(f"UYARI: {warning}")
+    print("Training finished but this run produced no new checkpoint artifact.")
     print("Oneri: Trainer eval-only gibi davrandiysa start_with_eval=False kullanin.")
     print("Oneri: epochs fallback degerini kontrol edin.")
     print("Oneri: save_step degerini 1 tutun.")
     raise TrainingError(
-        "Training finished but no checkpoint artifact was found. "
-        "Trainer sadece eval calistirmis olabilir; start_with_eval=False kullanin, "
-        "epochs fallback degerini kontrol edin ve save_step degerini 1 tutun."
+        f"Run {run_manifest['run_id']} yeni checkpoint uretmedi; onceki kosulardan kalan "
+        "dosyalar basari sayilmaz. start_with_eval=False, epochs fallback ve save_step=1 kontrol edin."
     )
 
 
@@ -1138,8 +1117,27 @@ def run_training(
         train_samples=train_samples,
         eval_samples=eval_samples,
     )
-    trainer.fit()
-    verify_checkpoint_artifacts(output_path)
+    run_manifest = start_training_run(
+        experiment_path,
+        Path(output_path),
+        settings={
+            "max_steps": max_steps,
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "grad_accum": grad_accum,
+            "save_step": save_step,
+            "start_with_eval": start_with_eval,
+            "run_slug": manifest.get("run_slug"),
+        },
+    )
+    print(f"Run id: {run_manifest['run_id']}")
+    try:
+        trainer.fit()
+    except BaseException as exc:
+        finish_training_run(experiment_path, run_manifest, error=f"{type(exc).__name__}: {exc}")
+        raise
+    run_manifest = finish_training_run(experiment_path, run_manifest)
+    verify_run_checkpoints(run_manifest)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
