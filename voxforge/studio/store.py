@@ -7,7 +7,7 @@ existing database is copied to ``project.sqlite.bak-v<old>`` before migrating.
 
 from __future__ import annotations
 
-import shutil
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -59,6 +59,12 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX job_status ON job(status, id);
     """,
+    # v2: worker lease. A running job is recovered only when its heartbeat is stale,
+    # so reopening a project while a worker is active does not start the job twice.
+    2: """
+    ALTER TABLE job ADD COLUMN worker_id TEXT;
+    ALTER TABLE job ADD COLUMN heartbeat_at REAL;
+    """,
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 
@@ -101,6 +107,23 @@ class ProjectStore:
         with self.connect() as connection:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
+    def backup_to(self, target: Path) -> Path:
+        """Consistent copy via the SQLite backup API.
+
+        In WAL mode recent commits may live only in ``project.sqlite-wal``; a plain
+        file copy of the main database would silently miss them.
+        """
+        temporary = target.with_name(target.name + ".partial")
+        temporary.unlink(missing_ok=True)
+        with self.connect() as source:
+            destination = sqlite3.connect(temporary)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+        os.replace(temporary, target)
+        return target
+
     def _migrate(self) -> None:
         existed = self.db_path.is_file()
         with self.connect() as connection:
@@ -113,7 +136,7 @@ class ProjectStore:
         if current == SCHEMA_VERSION:
             return
         if existed and current > 0:
-            shutil.copy2(self.db_path, self.db_path.with_name(f"{DB_FILENAME}.bak-v{current}"))
+            self.backup_to(self.db_path.with_name(f"{DB_FILENAME}.bak-v{current}"))
         for version in range(current + 1, SCHEMA_VERSION + 1):
             with self.connect() as connection:
                 connection.executescript(

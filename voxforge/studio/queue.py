@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from voxforge.engines.base import TTSEngine
 from voxforge.generation import synthesize_text
-from voxforge.studio.project import StudioProject, file_sha256
+from voxforge.studio.project import HEARTBEAT_SECONDS, StudioProject, file_sha256
 
 TEMP_DIRNAME = ".tmp"
 
@@ -37,38 +37,65 @@ def _check_engine(project: StudioProject, engine: TTSEngine) -> None:
         )
 
 
+class _Heartbeat:
+    """Keeps the job lease alive while a long synthesis call blocks."""
+
+    def __init__(self, project: StudioProject, job: dict[str, Any]) -> None:
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(project, job), daemon=True)
+
+    def _run(self, project: StudioProject, job: dict[str, Any]) -> None:
+        while not self._stop.wait(HEARTBEAT_SECONDS):
+            if not project.heartbeat(job):
+                return
+
+    def __enter__(self) -> "_Heartbeat":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
+CHANGED_MESSAGE = "Segment veya referans ses kuyruga alindiktan sonra degisti."
+
+
 def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) -> str:
-    """Run one claimed job. Returns the final job status."""
+    """Run one claimed job. Returns ``done``, ``failed``, ``cancelled`` or ``lost`` (lease taken over)."""
     if project.current_key_for(job["segment_id"]) != job["cache_key"]:
-        project.finish_job(job, "cancelled", "Segment kuyruga alindiktan sonra degisti.")
-        return "cancelled"
+        return "cancelled" if project.finish_job(job, "cancelled", CHANGED_MESSAGE) else "lost"
 
     reusable = project.find_artifact_by_key(job["cache_key"])
     if reusable:
-        project.complete_job(job, Path(reusable["path"]), reusable["sha256"], reusable["duration_s"])
-        return "done"
+        owned = project.complete_job(job, Path(reusable["path"]), reusable["sha256"], reusable["duration_s"])
+        return "done" if owned else "lost"
 
     settings = project.settings
     audio_dir = project.store.audio_dir
     temp_dir = audio_dir / TEMP_DIRNAME / f"job{job['id']}"
     final_path = audio_dir / f"seg{job['segment_id']:05d}_{job['cache_key'][:16]}.wav"
     try:
-        result = synthesize_text(
-            engine,
-            job["spoken_text"],
-            output_dir=temp_dir,
-            output_stem="segment",
-            reference_path=Path(settings.reference_path) if settings.reference_path else None,
-            preset=settings.preset,
-            language=settings.language,
-            max_chars=settings.max_chars,
-        )
+        with _Heartbeat(project, job):
+            result = synthesize_text(
+                engine,
+                job["spoken_text"],
+                output_dir=temp_dir,
+                output_stem="segment",
+                reference_path=Path(settings.reference_path) if settings.reference_path else None,
+                preset=settings.preset,
+                language=settings.language,
+                max_chars=settings.max_chars,
+            )
+        # Referans ses veya metin uretim sirasinda degistiyse bu ses eski anahtara yazilmaz.
+        if project.current_key_for(job["segment_id"]) != job["cache_key"]:
+            return "cancelled" if project.finish_job(job, "cancelled", CHANGED_MESSAGE) else "lost"
         os.replace(result["final_output_path"], final_path)
-        project.complete_job(job, final_path, file_sha256(final_path), wav_duration(final_path))
-        return "done"
+        owned = project.complete_job(job, final_path, file_sha256(final_path), wav_duration(final_path))
+        return "done" if owned else "lost"
     except Exception as exc:  # noqa: BLE001 - every engine error must become a failed job
-        project.finish_job(job, "failed", f"{type(exc).__name__}: {exc}")
-        return "failed"
+        failed = project.finish_job(job, "failed", f"{type(exc).__name__}: {exc}")
+        return "failed" if failed else "lost"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -83,7 +110,7 @@ def run_pending(
 ) -> dict[str, int]:
     """Process queued jobs until the queue is empty, ``stop_event`` is set or ``max_jobs`` is reached."""
     _check_engine(project, engine)
-    counts = {"done": 0, "failed": 0, "cancelled": 0}
+    counts = {"done": 0, "failed": 0, "cancelled": 0, "lost": 0}
     processed = 0
     while not (stop_event and stop_event.is_set()):
         if max_jobs is not None and processed >= max_jobs:

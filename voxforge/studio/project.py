@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import socket
+import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +23,9 @@ from voxforge.studio.store import ProjectStore
 from voxforge.text import NORMALIZER_VERSION, LexiconEntry, normalize_text, prepare_segments
 
 ADAPTER_VERSION = "1"
+# A running job whose heartbeat is older than this is considered abandoned (crash/kill).
+LEASE_SECONDS = 60.0
+HEARTBEAT_SECONDS = 15.0
 
 
 @dataclass
@@ -43,6 +50,15 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _recover_stale_jobs(db) -> int:
+    """Requeue running jobs without a live lease (no heartbeat, or older than LEASE_SECONDS)."""
+    return db.execute(
+        "UPDATE job SET status = 'queued', started_at = NULL, worker_id = NULL, heartbeat_at = NULL"
+        " WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)",
+        (time.time() - LEASE_SECONDS,),
+    ).rowcount
+
+
 def _transformations_json(result) -> str:
     return json.dumps([asdict(item) for item in result.transformations], ensure_ascii=False)
 
@@ -50,7 +66,8 @@ def _transformations_json(result) -> str:
 class StudioProject:
     def __init__(self, store: ProjectStore) -> None:
         self.store = store
-        self._reference_hash: str | None = None
+        self.worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        self._reference_cache: tuple[tuple[str, int, int], str] | None = None
 
     # ---- lifecycle -------------------------------------------------
     @classmethod
@@ -90,12 +107,16 @@ class StudioProject:
 
     @classmethod
     def open(cls, folder: Path) -> "StudioProject":
-        """Open and recover: jobs left ``running`` by a crash go back to ``queued``."""
+        """Open and recover abandoned jobs.
+
+        Only ``running`` jobs whose heartbeat is stale go back to ``queued``; a job
+        held by a live worker (same or another process) is left alone.
+        """
         store = ProjectStore(folder)
         with store.transaction() as db:
             if not db.execute("SELECT 1 FROM project").fetchone():
                 raise FileNotFoundError(f"Studio projesi bulunamadi: {folder}")
-            db.execute("UPDATE job SET status = 'queued', started_at = NULL WHERE status = 'running'")
+            _recover_stale_jobs(db)
         return cls(store)
 
     # ---- settings & keys -------------------------------------------
@@ -106,13 +127,20 @@ class StudioProject:
         return ProjectSettings(**json.loads(row["settings_json"]))
 
     def reference_hash(self) -> str | None:
+        """Content hash of the reference WAV, re-read whenever its size or mtime changes."""
         reference = self.settings.reference_path
         if reference is None:
             return None
-        if self._reference_hash is None:
-            path = Path(reference)
-            self._reference_hash = file_sha256(path) if path.is_file() else f"missing:{reference}"
-        return self._reference_hash
+        path = Path(reference)
+        try:
+            stat = path.stat()
+        except OSError:
+            self._reference_cache = None
+            return f"missing:{reference}"
+        signature = (str(path), stat.st_size, stat.st_mtime_ns)
+        if self._reference_cache is None or self._reference_cache[0] != signature:
+            self._reference_cache = (signature, file_sha256(path))
+        return self._reference_cache[1]
 
     def cache_key(self, spoken_text: str, settings: ProjectSettings | None = None) -> str:
         settings = settings or self.settings
@@ -220,8 +248,9 @@ class StudioProject:
             ).rowcount
 
     def claim_next_job(self) -> dict[str, Any] | None:
-        """Atomically move the oldest queued job to ``running`` and return it with its segment."""
+        """Atomically move the oldest queued job to ``running`` under this worker's lease."""
         with self.store.transaction() as db:
+            _recover_stale_jobs(db)
             row = db.execute(
                 "SELECT job.id, job.segment_id, job.cache_key, job.attempts, segment.spoken_text"
                 " FROM job JOIN segment ON segment.id = job.segment_id"
@@ -230,10 +259,21 @@ class StudioProject:
             if row is None:
                 return None
             db.execute(
-                "UPDATE job SET status = 'running', attempts = attempts + 1, started_at = ? WHERE id = ?",
-                (utc_now_iso(), row["id"]),
+                "UPDATE job SET status = 'running', attempts = attempts + 1, started_at = ?,"
+                " worker_id = ?, heartbeat_at = ? WHERE id = ?",
+                (utc_now_iso(), self.worker_id, time.time(), row["id"]),
             )
-            return dict(row)
+            return {**dict(row), "worker_id": self.worker_id}
+
+    def heartbeat(self, job: dict[str, Any]) -> bool:
+        """Extend the lease; False means the job was taken away (recovered by someone else)."""
+        with self.store.transaction() as db:
+            return bool(
+                db.execute(
+                    "UPDATE job SET heartbeat_at = ? WHERE id = ? AND status = 'running' AND worker_id = ?",
+                    (time.time(), job["id"], job["worker_id"]),
+                ).rowcount
+            )
 
     def find_artifact_by_key(self, cache_key: str) -> dict[str, Any] | None:
         with self.store.connect() as db:
@@ -244,23 +284,32 @@ class StudioProject:
                     return dict(row)
         return None
 
-    def complete_job(self, job: dict[str, Any], path: Path, sha256: str, duration_s: float) -> None:
+    def complete_job(self, job: dict[str, Any], path: Path, sha256: str, duration_s: float) -> bool:
+        """Record the artifact only if this worker still owns the running job."""
         now = utc_now_iso()
         with self.store.transaction() as db:
+            owned = db.execute(
+                "UPDATE job SET status = 'done', error = NULL, finished_at = ?"
+                " WHERE id = ? AND status = 'running' AND worker_id = ?",
+                (now, job["id"], job["worker_id"]),
+            ).rowcount
+            if not owned:
+                return False
             db.execute(
                 "INSERT OR REPLACE INTO artifact (segment_id, cache_key, path, sha256, duration_s, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (job["segment_id"], job["cache_key"], str(path), sha256, duration_s, now),
             )
-            db.execute(
-                "UPDATE job SET status = 'done', error = NULL, finished_at = ? WHERE id = ?", (now, job["id"])
-            )
+            return True
 
-    def finish_job(self, job: dict[str, Any], status: str, error: str | None) -> None:
+    def finish_job(self, job: dict[str, Any], status: str, error: str | None) -> bool:
         with self.store.transaction() as db:
-            db.execute(
-                "UPDATE job SET status = ?, error = ?, finished_at = ? WHERE id = ?",
-                (status, error, utc_now_iso(), job["id"]),
+            return bool(
+                db.execute(
+                    "UPDATE job SET status = ?, error = ?, finished_at = ?"
+                    " WHERE id = ? AND status = 'running' AND worker_id = ?",
+                    (status, error, utc_now_iso(), job["id"], job["worker_id"]),
+                ).rowcount
             )
 
     def current_key_for(self, segment_id: int) -> str | None:
