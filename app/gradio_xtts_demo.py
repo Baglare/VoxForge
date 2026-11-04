@@ -15,8 +15,6 @@ import unicodedata
 from typing import Any, Optional
 
 import gradio as gr
-import torch
-from TTS.api import TTS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +79,7 @@ from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_ref
 from scripts.audio_concat_utils import concatenate_wavs
 from scripts.audio_quality_utils import analyze_audio_file, format_value
 from scripts.text_chunking_utils import split_text_for_tts, summarize_chunks
+from scripts.tts_engine_factory import create_tts_engine, selected_tts_engine_name
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -92,7 +91,7 @@ from scripts.voice_profile_utils import (
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 LANGUAGE = "tr"
 
-_tts_model: Optional[TTS] = None
+_tts_model: Optional[Any] = None
 _tts_device: Optional[str] = None
 _model_lock = Lock()
 
@@ -101,19 +100,16 @@ class ProfileSelectionError(Exception):
     """Profil secimi arayuze sade hata mesaji dondursun diye kullanilir."""
 
 
-def get_tts_model() -> TTS:
-    """XTTS modelini bir kez yukler, sonraki isteklerde ayni modeli kullanir."""
+def get_tts_model() -> Any:
+    """Cache the selected engine; the default remains the real XTTS model."""
     global _tts_model, _tts_device
 
     with _model_lock:
         if _tts_model is None:
-            _tts_device = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"Model yukleniyor: {MODEL_NAME}")
+            engine_name = selected_tts_engine_name()
+            print(f"Motor yukleniyor: {engine_name}")
+            _tts_model, _tts_device = create_tts_engine(engine_name)
             print(f"Kullanilacak cihaz: {_tts_device}")
-
-            _tts_model = TTS(model_name=MODEL_NAME)
-            _tts_model.to(_tts_device)
-
         return _tts_model
 
 
@@ -1277,8 +1273,9 @@ def write_gradio_quality_report(
     payload = {
         "created_at": timestamp,
         "status": status,
-        "reference_audio": str(reference_audio),
-        "preprocessed_audio": str(preprocessed_audio) if preprocessed_audio else None,
+        "engine": selected_tts_engine_name(),
+        "reference_audio": str(reference_audio) if selected_tts_engine_name() != "mock" else None,
+        "preprocessed_audio": str(preprocessed_audio) if preprocessed_audio and selected_tts_engine_name() != "mock" else None,
         "output_audio": str(output_audio) if output_audio else None,
         "inference_preset": generation_report.get("inference_preset"),
         "ab_test_enabled": generation_report.get("ab_test_enabled"),
@@ -1350,7 +1347,7 @@ def normalize_inference_preset(preset_label: str | None) -> str:
 
 
 def run_tts_to_file_with_preset(
-    tts: TTS,
+    tts: Any,
     text: str,
     speaker_wav: Path,
     output_path: Path,
@@ -1421,7 +1418,7 @@ def normalize_output_wav(input_path: Path, output_path: Path) -> tuple[bool, str
 
 
 def synthesize_gradio_output(
-    tts: TTS,
+    tts: Any,
     text: str,
     speaker_wav: Path,
     output_stem: str,
@@ -1592,7 +1589,8 @@ def generate_voice(
     has_permission: bool,
 ):
     """Gradio butonuna basilinca Turkce ses uretimi yapar."""
-    if not has_permission:
+    mock_mode = selected_tts_engine_name() == "mock"
+    if not has_permission and not mock_mode:
         return (
             None,
             None,
@@ -1618,13 +1616,35 @@ def generate_voice(
     )
     profile_info = None
 
-    try:
-        profile_info = load_selected_profile(selected_profile_slug)
-    except ProfileSelectionError as exc:
-        print(f"Profil secimi hatasi: {exc}")
-        return None, None, f"HATA: {exc}", ""
+    if not mock_mode:
+        try:
+            profile_info = load_selected_profile(selected_profile_slug)
+        except ProfileSelectionError as exc:
+            print(f"Profil secimi hatasi: {exc}")
+            return None, None, f"HATA: {exc}", ""
 
-    if profile_info:
+    if mock_mode:
+        source_info = {
+            "source_type": "mock",
+            "source_label": "Kaynak: Mock TTS (sentetik test sesi)",
+        }
+        # A compatibility placeholder only; this file is never read or created.
+        reference_audio = DEFAULT_REFERENCE_AUDIO
+        preprocessed_audio = DEFAULT_REFERENCE_AUDIO
+        raw_report = {
+            "quality": "MOCK",
+            "exists": False,
+            "warnings": ["Mock modunda referans ses kullanilmadi."],
+            "recommendations": [],
+        }
+        preprocessed_report = None
+        preprocessing_result = None
+        quality_report_text = (
+            "### Model-free Mock modu\n"
+            "Bu WAV yapay bir test tonudur, insan sesi degildir. "
+            "Referans ses analizi ve model inference calistirilmadi."
+        )
+    elif profile_info:
         source_info = {
             "source_type": "local_profile",
             "source_label": "Kaynak: yerel profil",
@@ -1817,10 +1837,12 @@ def generate_voice(
         generation_report=generation_report,
     )
     status_lines = [
-        "Ses uretildi.",
+        "Sentetik test WAV uretildi." if mock_mode else "Ses uretildi.",
         source_info["source_label"],
-        f"Kullanilan referans ses yolu: {reference_audio.resolve()}",
-        f"Kullanilan speaker_wav yolu: {preprocessed_audio.resolve()}",
+        *([] if mock_mode else [
+            f"Kullanilan referans ses yolu: {reference_audio.resolve()}",
+            f"Kullanilan speaker_wav yolu: {preprocessed_audio.resolve()}",
+        ]),
         *build_generation_status_lines(
             primary_result,
             comparison_result,
@@ -1851,7 +1873,9 @@ def build_demo() -> gr.Blocks:
     initial_dataset_scan = scan_finetune_datasets()
 
     with gr.Blocks(title="VoxForge XTTS Demo") as demo:
-        gr.Markdown("# VoxForge XTTS Türkçe Demo")
+        gr.Markdown("# VoxForge Türkçe TTS Demo")
+        gr.Markdown("Varsayılan: XTTS-v2. Ortam değişkeni `VOXFORGE_TTS_ENGINE=mock` "
+                    "ile kayıt ve model gerektirmeyen sentetik test modu açılır.")
 
         profile_dropdown = gr.Dropdown(
             label="Yerel ses profili",
@@ -2109,7 +2133,7 @@ if __name__ == "__main__":
     print(f"Gradio cikti klasoru: {OUTPUT_DIR}")
     print(f"On islenmis referans klasoru: {PREPROCESSED_REFERENCE_DIR}")
     print(f"Gradio kalite raporu klasoru: {GRADIO_QUALITY_REPORT_DIR}")
-    print(f"Model: {MODEL_NAME}")
+    print(f"Model: {MODEL_NAME if selected_tts_engine_name() == 'xtts' else 'Mock synthetic WAV'}")
 
     app = build_demo()
     app.launch(server_name="127.0.0.1", share=False)
