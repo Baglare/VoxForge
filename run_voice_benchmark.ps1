@@ -3,8 +3,9 @@
 #
 #   .\run_voice_benchmark.ps1 -Step prepare  -ProfileSlug <profil_slug> [-ReferenceText "referansin birebir metni"]
 #   .\run_voice_benchmark.ps1 -Step generate -Run <kosu_klasoru> -Engine xtts|chatterbox-v3|voxcpm2|voxcpm2-ultimate|mock [-Only t01,t03]
+#        (-Only ile pilot; ayni komut -Only olmadan tekrar calisinca eksik maddeler eklenir, pilot ciktilar korunur)
 #   .\run_voice_benchmark.ps1 -Step evaluate -Run <kosu_klasoru>
-#   .\run_voice_benchmark.ps1 -Step blind    -Run <kosu_klasoru>
+#   .\run_voice_benchmark.ps1 -Step blind    -Run <kosu_klasoru> [-Pilot]
 #   .\run_voice_benchmark.ps1 -Step report   -Run <kosu_klasoru>
 param(
     [Parameter(Mandatory = $true)][ValidateSet("prepare", "generate", "evaluate", "blind", "report")][string]$Step,
@@ -14,7 +15,8 @@ param(
     [string]$Reference = "",
     [string]$ReferenceText = "",
     [string]$Only = "",
-    [switch]$Overwrite
+    [switch]$Overwrite,
+    [switch]$Pilot
 )
 $ErrorActionPreference = "Stop"
 
@@ -62,7 +64,11 @@ switch ($Step) {
         & $Py @CliArgs
     }
     "evaluate" { Require-Run; & (Get-BenchPython "eval") (Join-Path $BenchDir "evaluate.py") --run $Run }
-    "blind" { Require-Run; & $MainPy (Join-Path $BenchDir "bench.py") blind --run $Run }
+    "blind" {
+        Require-Run
+        if ($Pilot) { & $MainPy (Join-Path $BenchDir "bench.py") blind --run $Run --pilot }
+        else { & $MainPy (Join-Path $BenchDir "bench.py") blind --run $Run }
+    }
     "report" { Require-Run; & $MainPy (Join-Path $BenchDir "bench.py") report --run $Run }
 }
 exit $LASTEXITCODE

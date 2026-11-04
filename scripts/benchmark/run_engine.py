@@ -7,8 +7,9 @@ Usage (see docs/VOICE_QUALITY_BENCHMARK.md or run_voice_benchmark.ps1):
 Only the selected engine's libraries are imported. Output goes to <run_dir>/<engine>/;
 the reference used is the copy inside the run folder, never the original profile.
 Each item is timed separately (model load is reported apart), peak VRAM is recorded,
-and one failing item never stops the rest. An existing results.json is not overwritten
-unless --overwrite is given.
+and one failing item never stops the rest. Re-running continues where it stopped:
+items already generated are kept (a 2-item pilot grows into the full run without
+re-rolling the pilot outputs); --overwrite regenerates explicitly.
 """
 
 from __future__ import annotations
@@ -195,13 +196,47 @@ LOADERS = {
 }
 
 
+def coverage(manifest: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
+    """How much of the fixed test set this engine has; only a complete set allows a final verdict."""
+    expected = [item["item_id"] for item in manifest["items"]]
+    attempted = {entry["item_id"] for entry in items}
+    ok = {entry["item_id"] for entry in items if entry.get("ok")}
+    return {
+        "expected": len(expected),
+        "attempted": len(attempted),
+        "ok": len(ok),
+        "missing": [item_id for item_id in expected if item_id not in attempted],
+        "mode": "complete" if attempted >= set(expected) else "pilot",
+    }
+
+
 def run(run_dir: Path, engine: str, overwrite: bool, only: set[str] | None) -> int:
+    """Generate missing items; earlier results are kept (pilot -> full run continues, never re-rolls).
+
+    - Without --overwrite: items already OK are kept, failed/missing selected items are generated.
+    - --overwrite with --only: regenerate just those items.
+    - --overwrite alone: discard previous results and start a fresh full run.
+    Mixing outputs from different library versions or settings is refused.
+    """
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    order = [item["item_id"] for item in manifest["items"]]
     out_dir = run_dir / engine
     results_path = out_dir / "results.json"
-    if results_path.exists() and not overwrite:
-        print(f"Zaten var: {results_path} (yeniden üretmek için --overwrite)", file=sys.stderr)
-        return 2
+    previous = None
+    if results_path.exists() and not (overwrite and not only):
+        previous = json.loads(results_path.read_text(encoding="utf-8"))
+        if previous.get("status") == "failed" and not previous.get("items"):
+            previous = None  # model hiç yüklenememişti; korunacak çıktı yok
+    selected = [item for item in manifest["items"] if not only or item["item_id"] in only]
+    kept = {entry["item_id"]: entry for entry in (previous or {}).get("items", [])}
+    targets = [
+        item for item in selected
+        if overwrite or not kept.get(item["item_id"], {}).get("ok")
+    ]
+    if not targets:
+        print(f"Seçilen maddelerin hepsi zaten üretilmiş: {results_path}. Yeniden üretmek için --overwrite.")
+        return 0
+
     out_dir.mkdir(exist_ok=True)
     torch_helper = Torch()
     ctx = {
@@ -209,39 +244,58 @@ def run(run_dir: Path, engine: str, overwrite: bool, only: set[str] | None) -> i
         "reference": run_dir / "reference.wav",
         "reference_transcript": manifest["reference"].get("transcript"),
     }
-    results: dict[str, Any] = {
+    versions = package_versions()
+    if previous and previous.get("versions") and previous["versions"] != versions:
+        print(
+            "HATA: Önceki çıktılar farklı paket sürümleriyle üretilmiş; karışık sonuç yazılmadı.\n"
+            f"  önceki: {previous['versions']}\n  şimdiki: {versions}\n"
+            "Tam koşuyu baştan üretmek için --overwrite kullanın (önceki çıktılar yeniden üretilir).",
+            file=sys.stderr,
+        )
+        return 3
+    results: dict[str, Any] = previous or {
         "engine": engine,
         "run_id": manifest["run_id"],
         "testset_version": manifest["testset_version"],
-        "status": "running",
-        "started_at": utc_now_iso(),
-        "finished_at": None,
         "device": ctx["device"],
-        "versions": package_versions(),
+        "versions": versions,
         "settings": None,
-        "load_seconds": None,
-        "vram_peak_mb": None,
         "items": [],
-        "error": None,
+        "sessions": [],
     }
-    print(f"Motor: {engine} · cihaz: {ctx['device']} · çıktı: {out_dir}")
+    session: dict[str, Any] = {"started_at": utc_now_iso(), "finished_at": None, "items": [], "load_seconds": None}
+    results.setdefault("sessions", []).append(session)
+    results.update(status="running", error=None)
+    print(f"Motor: {engine} · cihaz: {ctx['device']} · üretilecek: {len(targets)} madde · çıktı: {out_dir}")
+
+    def save() -> None:
+        merged = [kept[item_id] for item_id in order if item_id in kept]
+        results["items"] = merged
+        results["coverage"] = coverage(manifest, merged)
+        peaks = [s.get("vram_peak_mb") for s in results["sessions"] if s.get("vram_peak_mb") is not None]
+        results["vram_peak_mb"] = max(peaks) if peaks else None
+        loads = [s.get("load_seconds") for s in results["sessions"] if s.get("load_seconds") is not None]
+        results["load_seconds"] = loads[-1] if loads else None
+        write_json_atomic(results_path, results)
+
     try:
         torch_helper.reset_peak()
         started = time.perf_counter()
         synth, settings = LOADERS[engine](ctx)
         torch_helper.sync()
-        results["load_seconds"] = round(time.perf_counter() - started, 2)
-        results["settings"] = settings
-    except Exception as exc:  # noqa: BLE001 - recorded, run marked failed
-        results.update(status="failed", error=f"{type(exc).__name__}: {exc}", finished_at=utc_now_iso())
-        results["traceback"] = traceback.format_exc(limit=5)
-        write_json_atomic(results_path, results)
+        session["load_seconds"] = round(time.perf_counter() - started, 2)
+    except Exception as exc:  # noqa: BLE001 - recorded, previous outputs stay untouched
+        session.update(finished_at=utc_now_iso(), error=f"{type(exc).__name__}: {exc}")
+        results.update(status="failed", error=session["error"], traceback=traceback.format_exc(limit=5))
+        save()
         print(f"HATA (model yüklenemedi): {results['error']}", file=sys.stderr)
         return 1
+    if results.get("settings") not in (None, settings):
+        print(f"HATA: Motor ayarları önceki çıktılarla aynı değil: {results['settings']} != {settings}", file=sys.stderr)
+        return 3  # results.json'a dokunulmadı
+    results["settings"] = settings
 
-    for item in manifest["items"]:
-        if only and item["item_id"] not in only:
-            continue
+    for item in targets:
         out_path = out_dir / f"{item['item_id']}.wav"
         entry: dict[str, Any] = {"item_id": item["item_id"], "path": str(out_path), "ok": False, "error": None}
         try:
@@ -259,15 +313,21 @@ def run(run_dir: Path, engine: str, overwrite: bool, only: set[str] | None) -> i
             entry["error"] = f"{type(exc).__name__}: {exc}"
             if torch_helper.torch is not None and torch_helper.torch.cuda.is_available():
                 torch_helper.torch.cuda.empty_cache()
-        results["items"].append(entry)
+        kept[item["item_id"]] = entry
+        session["items"].append(item["item_id"])
+        session["vram_peak_mb"] = torch_helper.peak_mb()
         state = "ok" if entry["ok"] else f"HATA {entry['error']}"
         print(f"  {item['item_id']}: {state} {entry.get('seconds', '')}s")
-        write_json_atomic(results_path, {**results, "vram_peak_mb": torch_helper.peak_mb()})
+        save()
 
-    results.update(status="completed", finished_at=utc_now_iso(), vram_peak_mb=torch_helper.peak_mb())
-    write_json_atomic(results_path, results)
-    failed = sum(not entry["ok"] for entry in results["items"])
-    print(f"Bitti: {len(results['items']) - failed} başarılı, {failed} hatalı. VRAM tepe: {results['vram_peak_mb']} MB")
+    session["finished_at"] = utc_now_iso()
+    results.update(status="completed", finished_at=session["finished_at"])
+    save()
+    cov = results["coverage"]
+    label = "TAM" if cov["mode"] == "complete" else f"PİLOT (eksik: {', '.join(cov['missing'])})"
+    print(f"Bitti: {cov['ok']}/{cov['expected']} başarılı · {label} · VRAM tepe: {results['vram_peak_mb']} MB")
+    if cov["mode"] == "pilot":
+        print("Tam koşu için aynı komutu --only olmadan çalıştırın; mevcut çıktılar korunur.")
     return 0
 
 

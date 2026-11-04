@@ -2,7 +2,7 @@
 """Benchmark steps that need no GPU and no extra packages (VF-Q1).
 
     python scripts/benchmark/bench.py prepare (--profile <slug> | --reference <wav>) [--reference-text "..."]
-    python scripts/benchmark/bench.py blind  --run <run_dir>
+    python scripts/benchmark/bench.py blind  --run <run_dir> [--pilot]
     python scripts/benchmark/bench.py report --run <run_dir>
 """
 
@@ -49,8 +49,10 @@ def main(argv: list[str]) -> int:
     prepare.add_argument("--reference-text", default="", help="Referans sesin birebir metni (VoxCPM2 ultimate için)")
     prepare.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     prepare.add_argument("--seed", type=int, default=1234)
-    for name in ("blind", "report"):
-        sub.add_parser(name).add_argument("--run", required=True, type=Path)
+    blind = sub.add_parser("blind", help="Kör dinleme seti (tam koşu); --pilot ile ayrı deneme seti")
+    blind.add_argument("--run", required=True, type=Path)
+    blind.add_argument("--pilot", action="store_true", help="listening_pilot/ altına; karara katılmaz")
+    sub.add_parser("report").add_argument("--run", required=True, type=Path)
     args = parser.parse_args(argv)
 
     try:
@@ -59,12 +61,12 @@ def main(argv: list[str]) -> int:
             run_dir = prepare_run(args.root, reference, args.reference_text, args.seed)
             print(f"Koşu klasörü: {run_dir}")
         elif args.command == "blind":
-            print(f"Dinleme formu: {create_blind_set(args.run)}")
+            print(f"Dinleme formu: {create_blind_set(args.run, pilot=args.pilot)}")
         else:
             report = build_report(args.run)
             print(f"Rapor: {Path(args.run) / 'report.md'}")
             for name, result in report["verdicts"].items():
-                print(f"  {name}: {result['decision']}")
+                print(f"  {name}: kalite={result['quality']['decision']} · performans={result['performance']['label']}")
     except BenchmarkError as exc:
         print(f"HATA: {exc}", file=sys.stderr)
         return 1

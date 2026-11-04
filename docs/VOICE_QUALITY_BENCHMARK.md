@@ -18,7 +18,7 @@ Bu aşama **araştırma altyapısıdır**:
 | Klonlama | referans ses | referans ses (`audio_prompt_path`) | yalnız referans ("controllable") veya referans + transkript ("ultimate") |
 | Çıkış | 24 kHz | `model.sr` | 48 kHz |
 | VRAM | 8 GB'a sığıyor (mevcut) | belirtilmemiş; 0.5B olduğu için sığması beklenir | **~8 GB** (README). 8 GB laptop GPU'da sınırda; OOM olasılığı var |
-| Hız notu | — | H100'de optimize edilmemiş PyTorch ile RTF ≈ 5 (blog) | RTX 4090'da RTF ≈ 0.30 (README) |
+| Kaynaktaki hız rakamı | — | Blog: H100'de optimize edilmemiş PyTorch ile "RTF ≈ 5". Tanımı verilmemiş; bu çalışmadaki RTF'nin tersi (kaç kat gerçek zamandan hızlı) anlamında olabilir. | README: RTX 4090'da standart PyTorch ile "RTF ≈ 0.30". |
 | Python | mevcut ortam 3.12 | 3.11 ile geliştirilmiş/test edilmiş | ≥3.10, <3.13 |
 | Lisans | Coqui Public Model License | MIT | Apache-2.0 |
 | Not | — | Her çıktıya **PerTh filigranı** gömülü (kapatma yolu belgelenmemiş). Resemble'a göre Chatterbox ticari olarak emekliye ayrıldı (Ağustos 2026); açık kaynak araştırma olarak duruyor, destek ve güncelleme yok. | Referans transkripti verilirse benzerlik artar ("ultimate"). |
@@ -26,6 +26,8 @@ Bu aşama **araştırma altyapısıdır**:
 Kaynaklar:
 - Chatterbox: [GitHub README](https://github.com/resemble-ai/chatterbox), [HF model kartı](https://huggingface.co/ResembleAI/chatterbox), [V3 duyurusu](https://www.resemble.ai/resources/chatterbox-multilingual-v3-tts-with-embedded-watermarking-for-25-languages).
 - VoxCPM2: [GitHub README](https://github.com/OpenBMB/VoxCPM), [HF model kartı](https://huggingface.co/openbmb/VoxCPM2).
+
+Kaynaklardaki hız rakamları farklı donanımda ve farklı ya da belirtilmemiş tanımlarla verilmiştir. Bu yüzden bu çalışmanın RTF ölçümüyle **karşılaştırılmaz** (tanım için bölüm 2'ye bakın).
 
 Kaynaklar arasında çelişkiler:
 - Chatterbox'ın dil sayısı kaynağa göre 21, 23 veya 25 olarak geçiyor. Türkçe hepsinde var.
@@ -62,7 +64,13 @@ API sürüm farklarına karşı çalıştırıcı, kurulu kütüphanenin kabul e
 | Metin dışı ses | CER içindeki **ekleme oranı** (fazladan kelime, mırıldanma, tekrar). Oran %15'i aşarsa "şüpheli". Ayrıca karakter başına süre aralık dışıysa (kırpılma veya kaçak üretim) işaretlenir. Kör dinlemede ayrı bir "metin dışı ses" kutusu var. | metrics + dinleme |
 | Ses benzerliği | Referans ile çıktı arasında ECAPA-TDNN konuşmacı gömmesi kosinüs benzerliği + kör dinleme puanı (1–5) | SpeechBrain `spkrec-ecapa-voxceleb` |
 | Doğallık | Kör dinleme puanı (1–5). Otomatik MOS tahmincisi bilerek eklenmedi: Türkçe için güvenilirliği belirsiz, ek bağımlılık. | `listening/blind_sheet.csv` |
-| Üretim süresi | Model yükleme süresi ayrı; madde başına süre ve **RTF** (üretim süresi / ses süresi); tepe VRAM | `run_engine.py` |
+| Üretim süresi | Model yükleme süresi ayrı; madde başına süre, **RTF** ve tepe VRAM | `run_engine.py` |
+
+**RTF tanımı (bu çalışma):**
+- RTF = madde başına üretim süresi / üretilen sesin süresi.
+- Üretim süresi duvar saatiyle ölçülür, model yükleme hariçtir ve CUDA senkronludur.
+- **Küçük değer hızlıdır.** 1'in altı gerçek zamandan hızlı demektir.
+- Tümü aynı makinede (RTX 4060 Laptop) ölçülür.
 
 **Kör dinleme.**
 - Her madde için başarılı tüm çıktılar karıştırılıp A/B/C… etiketleriyle `listening/` klasörüne kopyalanır.
@@ -73,14 +81,31 @@ API sürüm farklarına karşı çalıştırıcı, kurulu kütüphanenin kabul e
   - `notes`.
 - Dolu form hiçbir zaman üzerine yazılmaz.
 
-**Karar ölçütleri (sonuçlardan önce sabitlendi; `experiment.py` içinde aynı değerler).** Bir aday, XTTS'e göre şu koşulların hepsini sağlarsa **VF-009 entegrasyonu için aday** sayılır:
-1. Kör dinlemede doğallık **ve** benzerlik ortalaması en az **+0.3**.
-2. Ortalama CER en fazla **+0.02** kötü.
-3. RTX 4060 Laptop'ta ortalama **RTF ≤ 1.0**.
-4. Dinleyicinin metin dışı ses işaretlediği çıktı oranı **≤ %10**.
-5. Başarısız çıktı yok (OOM dahil).
+**Karar ölçütleri (sonuçlardan önce sabitlendi; `experiment.py` içinde aynı değerler).** Ses kalitesi ve üretim performansı **ayrı** değerlendirilir.
 
-Eksik kanıt "eksik" olarak raporlanır, varsayılmaz.
+**1. Kapsam şartı.**
+- Nihai karar için hem adayın hem XTTS'in 12 maddenin tamamını denemiş olması gerekir.
+- Eksik koşu (ör. `-Only` ile pilot) **"pilot (nihai karar yok)"** olarak gösterilir ve eksik maddeler listelenir.
+
+**2. Kalite kararı.** Aday, XTTS'e göre şunların hepsini sağlarsa **"kalite adayı (VF-009 için)"** olur:
+- Başarısız çıktı yok (OOM dahil).
+- Kör dinlemede doğallık **ve** benzerlik ortalaması en az **+0.3**.
+- Ortalama CER en fazla **+0.02** kötü.
+- Dinleyicinin metin dışı ses işaretlediği çıktı oranı **≤ %10**.
+
+**3. Eksik kanıt.**
+- Başarılı her çıktı için aday ve XTTS tarafında şunlar gerekir:
+  - ASR transkripti,
+  - ECAPA benzerliği,
+  - doğallık, benzerlik ve telaffuz puanı,
+  - metin dışı ses işareti (0 veya 1).
+- Biri eksikse sonuç **"eksik kanıt"** olur ve neyin kaç tane eksik olduğu yazılır (ör. "aday insan puanı: doğallık 9/12").
+- Eksik kanıt hiçbir zaman başarı sayılmaz. Eksik insan puanıyla kazanç da hesaplanmaz.
+
+**4. Performans (ayrı satır).**
+- RTF, tepe VRAM ve yükleme süresi raporlanır. RTF < 1 "gerçek zamandan hızlı", RTF ≥ 1 "gerçek zamandan yavaş" olarak etiketlenir.
+- **RTF kaliteyi elemez.** Studio kuyruğu toplu çalıştığı için daha yavaş ama daha kaliteli bir model toplu üretimde kabul edilebilir. Bu, VF-009'da kullanım senaryosuna göre tartılır.
+- Bellek yetersizliği ise çıktı üretilemediği için kalite tarafında "başarısız çıktı" sayılır.
 
 **Sınırlar.**
 - Tek referans ve tek dinleyici küçük bir örneklemdir; sonuç yön göstericidir, kesin değildir. Fark küçükse ikinci bir referansla tekrar önerilir (yeni `prepare` koşusu).
@@ -106,7 +131,11 @@ Model indirmeleri ve GPU işleri yalnız bu adımlarda olur. Varsayılan konumla
    ```powershell
    .\run_voice_benchmark.ps1 -Step prepare -ProfileSlug <profil_slug>
    ```
-3. **Üret.** Her motor ayrı süreçte çalışır, böylece GPU belleği boşalır. Önce `-Only t01,t03` ile kısa bir deneme önerilir.
+3. **Üret.** Her motor ayrı süreçte çalışır, böylece GPU belleği boşalır.
+   - **Pilottan tam koşuya:** Önce `-Only t01,t03` ile iki maddelik bir pilot önerilir. Aynı komutu `-Only` **olmadan** tekrar çalıştırınca yalnız eksik (ve hatalı) maddeler üretilir. Pilot çıktıları yeniden üretilmez, korunur.
+   - Paket sürümleri pilottan sonra değiştiyse karışık sonuç yazılmaz, betik durur. O durumda `-Overwrite` ile tam koşu baştan üretilir.
+   - `-Overwrite -Only t03` yalnız o maddeyi yeniden üretir.
+   - `results.json` içindeki `coverage.mode` alanı `pilot` ya da `complete` değerini alır.
    ```powershell
    .\run_voice_benchmark.ps1 -Step generate -Run <koşu> -Engine xtts
    .\run_voice_benchmark.ps1 -Step generate -Run <koşu> -Engine chatterbox-v3
@@ -120,10 +149,18 @@ Model indirmeleri ve GPU işleri yalnız bu adımlarda olur. Varsayılan konumla
    .\run_voice_benchmark.ps1 -Step evaluate -Run <koşu>
    ```
 5. **Kör dinleme formunu oluştur.** `listening/` klasörünü dinleyip `blind_sheet.csv` dosyasını doldurun. `blind_key.json` dosyasını puanlama bitmeden açmayın.
+   - Karar setini oluşturmak için tüm motorların tam koşusu gerekir.
+   - Pilot çıktıları dinlemek isterseniz `-Pilot` ekleyin. Bu set `listening_pilot/` klasörüne yazılır, karara katılmaz ve tam setin oluşturulmasını engellemez.
    ```powershell
    .\run_voice_benchmark.ps1 -Step blind -Run <koşu>
    ```
-6. **Rapor.** `report.md` dosyasında karşılaştırma tablosu ve önceden sabitlenmiş ölçütlere göre karar yer alır.
+6. **Rapor.** `report.md` dosyası şunları içerir:
+   - kapsam ve kanıt tablosu (hangi ölçümden kaç tane var),
+   - ses kalitesi tablosu,
+   - ayrı üretim performansı tablosu,
+   - motor başına "kalite: … · performans: …" kararı ve eksiklerin listesi.
+
+   Rapor her adımdan sonra yeniden üretilebilir; ara durumda "pilot" veya "eksik kanıt" gösterir.
    ```powershell
    .\run_voice_benchmark.ps1 -Step report -Run <koşu>
    ```
