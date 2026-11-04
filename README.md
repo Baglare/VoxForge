@@ -129,6 +129,17 @@ Gradio arayüzünde reference-based üretim için şu kontroller bulunur:
 
 Bu kontroller otomatik kalite ölçümü değildir. Ama farklı üretim ayarlarını kontrollü şekilde karşılaştırmayı ve uzun metinlerde sessiz kırpılma riskini azaltmayı sağlar.
 
+### Studio sekmesi
+
+`run_gradio_demo.ps1` iki sekme açar: mevcut **XTTS Demo** ve **Studio**. Studio'da:
+
+- **Yeni proje:** metin cümle/paragraf segmentlerine bölünür, sayı/tarih/saat/yüzde/TL için okunacak metin ayrıca üretilir (orijinal değişmez). İsteğe bağlı telaffuz sözlüğü: her satıra `kelime = okunuş`. Referans önceliği demo ile aynıdır (profil → yüklenen ses → varsayılan); seçilen referans proje klasörüne kopyalanır.
+- **Segment tablosu:** satıra tıklayınca orijinal metin, okunacak metin, dönüşümler ve segment sesi görünür. Orijinali kaydetmek okunuşu yeniden hesaplar; okunuş elle de düzeltilebilir. Yalnız düzenlenen segment yeniden üretilir.
+- **Eksikleri üret / Durdur:** yalnız sesi eksik veya değişmiş segmentler üretilir. Durdur, o anki segmenti bitirip kuyruğu boşaltır; tekrar başlatınca kaldığı yerden devam eder. Hatalı segmentler tabloda görünür ve yeniden denenebilir.
+- **Tümünü birleştir (önizleme):** tüm segmentler hazırsa sırasıyla tek WAV'a birleştirir (`exports/` altına).
+
+Projeler `studio_projects/` altında tutulur (Git dışı; `VOXFORGE_STUDIO_ROOT` ile değiştirilebilir). Proje, oluşturulduğu motorla üretilir: Mock ile oluşturulan proje XTTS modunda üretilmez (ve tersi).
+
 ## 9. Fine-tuning hazırlığı
 
 Fine-tuning hazırlığı, yerel datasetin teknik olarak kullanılabilir olup olmadığını kontrol eder. Bu aşama tek başına training başlatmaz.

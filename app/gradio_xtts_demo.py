@@ -72,6 +72,8 @@ NO_PROFILE_INFO_TEXT = (
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_reference_audio
 from scripts.audio_quality_utils import analyze_audio_file, format_value
@@ -79,6 +81,9 @@ from scripts.tts_engine_factory import selected_tts_engine_name
 from voxforge.engines import create_engine
 from voxforge.generation import synthesize_text
 from voxforge.runs import SCHEMA_VERSION, write_json_atomic
+from voxforge.studio import studio_root
+from voxforge.studio.service import StudioError, StudioService
+from studio_ui import build_studio
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -2005,6 +2010,34 @@ def build_demo() -> gr.Blocks:
     return demo
 
 
+def resolve_studio_reference(profile_slug: str | None, uploaded_audio) -> Path | None:
+    """Studio icin demo ile ayni referans onceligi: profil, yuklenen ses, varsayilan referans."""
+    try:
+        profile = load_selected_profile(profile_slug)
+    except ProfileSelectionError as exc:
+        raise StudioError(str(exc)) from exc
+    if profile:
+        return Path(profile["preprocessed_reference"])
+    uploaded = resolve_uploaded_audio_path(uploaded_audio)
+    if uploaded is not None:
+        return uploaded
+    return DEFAULT_REFERENCE_AUDIO if DEFAULT_REFERENCE_AUDIO.is_file() else None
+
+
+def build_app() -> gr.Blocks:
+    """Mevcut XTTS demo sekmesi aynen korunur; Studio ayri sekmede, ayni motor onbellegini kullanir."""
+    studio = build_studio(
+        StudioService(studio_root(), get_tts_model),
+        engine_label=selected_tts_engine_name(),
+        profile_choices=build_profile_dropdown_choices,
+        resolve_reference=resolve_studio_reference,
+        preset_choices=INFERENCE_PRESET_CHOICES,
+        preset_kwargs=INFERENCE_PRESET_KWARGS,
+        default_preset=INFERENCE_PRESET_DEFAULT,
+    )
+    return gr.TabbedInterface([build_demo(), studio], ["XTTS Demo", "Studio"], title="VoxForge")
+
+
 if __name__ == "__main__":
     print(f"Proje kok dizini: {PROJECT_ROOT}")
     print(f"Varsayilan referans ses: {DEFAULT_REFERENCE_AUDIO}")
@@ -2013,11 +2046,14 @@ if __name__ == "__main__":
     print(f"Gradio kalite raporu klasoru: {GRADIO_QUALITY_REPORT_DIR}")
     print(f"Model: {MODEL_NAME if selected_tts_engine_name() == 'xtts' else 'Mock synthetic WAV'}")
 
-    app = build_demo()
+    print(f"Studio proje klasoru: {studio_root()}")
+
+    app = build_app()
     # outputs/ may be a junction to another drive folder (e.g. C:\AvenoxData).
     # Gradio checks the resolved path, so allow the app's own output folders explicitly.
+    studio_root().mkdir(parents=True, exist_ok=True)
     allowed_output_dirs = [
         str(path.resolve())
-        for path in (OUTPUT_DIR, PREPROCESSED_REFERENCE_DIR, REPORTS_DIR)
+        for path in (OUTPUT_DIR, PREPROCESSED_REFERENCE_DIR, REPORTS_DIR, studio_root())
     ]
     app.launch(server_name="127.0.0.1", share=False, allowed_paths=allowed_output_dirs)
