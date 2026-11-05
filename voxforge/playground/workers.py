@@ -69,6 +69,20 @@ def _shared_ffmpeg_dir() -> Path | None:
     return None
 
 
+def prepend_path(path_value: str, directory: Path) -> str:
+    """Put ``directory`` FIRST in PATH, removing later copies.
+
+    Being somewhere in PATH is not enough: on this machine TorchCodec only loads when the
+    FFmpeg shared bin precedes C:\\Windows\\system32 (run_voice_benchmark.ps1 always prepends).
+    """
+    target = os.path.normcase(os.path.normpath(str(directory)))
+    rest = [
+        part for part in path_value.split(os.pathsep)
+        if part and os.path.normcase(os.path.normpath(part)) != target
+    ]
+    return os.pathsep.join([str(directory), *rest])
+
+
 def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """Same model caches and FFmpeg setup as run_voice_benchmark.ps1 / run_gradio_demo.ps1."""
     env = dict(os.environ if base is None else base)
@@ -78,8 +92,8 @@ def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
     if "TTS_HOME" not in env and (coqui / "tts").is_dir():
         env["TTS_HOME"] = str(coqui)
     ffmpeg = _shared_ffmpeg_dir()
-    if ffmpeg is not None and str(ffmpeg) not in env.get("PATH", ""):
-        env["PATH"] = f"{ffmpeg}{os.pathsep}{env.get('PATH', '')}"
+    if ffmpeg is not None:
+        env["PATH"] = prepend_path(env.get("PATH", ""), ffmpeg)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     return env
