@@ -26,7 +26,7 @@ $ChatterboxSpec = "$($Pins.chatterbox.package) @ git+$($Pins.chatterbox.repo)@$(
 $Packages = @{
     chatterbox = @($ChatterboxSpec)
     voxcpm     = @("voxcpm", "soundfile")
-    eval       = @("faster-whisper", "speechbrain", "soundfile")
+    eval       = @("faster-whisper", "av<17", "speechbrain", "soundfile")
 }
 
 Write-Host "Ortam: $EnvDir (Python $PythonVersion)"
