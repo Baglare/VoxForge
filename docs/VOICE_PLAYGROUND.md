@@ -49,8 +49,11 @@ toplam kullanımı. Karşılaştırmada aynı tohum kullanılır; `-1` rastgele 
 ## Sınırlar
 - Playground kendi GPU kullanımını sınırlar; aynı anda açık Studio veya benchmark süreçlerini göremez.
   8 GB kartta VoxCPM2 yüklenirken başka bir uygulamanın GPU'yu kullanmaması gerekir.
-- Uzun metinler motor başına ~220-250 karakterlik parçalara bölünüp 0,2 sn araya sessizlikle birleştirilir;
-  loudnorm uygulanmaz.
+- Normalizasyon cümle bazında yapılır ama cümleler motor sınırına (~220-250 karakter) kadar aynı parçada
+  üretilir; yalnız daha uzun metinler bölünüp 0,2 sn sessizlikle birleştirilir. Her cümleyi ayrı üretmek
+  cümle aralarına ~0,9 sn boşluk ve tonlama kopukluğu ekliyordu. loudnorm uygulanmaz.
+- XTTS TorchCodec için FFmpeg shared bin PATH'te zaten olsa bile en başa alınır (system32'den sonra
+  kalınca `Could not load libtorchcodec` hatası veriyordu).
 - Çıktılar Chatterbox'ta PerTh filigranı içerir.
 
 ## Test

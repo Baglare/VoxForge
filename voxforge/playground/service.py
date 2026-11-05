@@ -64,18 +64,23 @@ class PlaygroundError(ValueError):
 
 
 def split_for_engine(text: str, max_chars: int, normalize: bool) -> tuple[str, list[str]]:
-    """Spoken text + synthesis chunks. Normalisation is VF-004 (same as Studio/benchmark)."""
+    """Spoken text + synthesis chunks.
+
+    Normalisation is VF-004 (per sentence, same as Studio/benchmark), but chunks are
+    packed up to ``max_chars`` like the XTTS demo: a sentence is NOT its own chunk.
+    Synthesising every sentence separately added ~0.9 s gaps and a prosody reset
+    between sentences (measured on Chatterbox); the benchmark synthesises each item whole.
+    """
+    from scripts.text_chunking_utils import split_text_for_tts
+
     if normalize:
         from voxforge.text import prepare_segments
 
-        prepared = prepare_segments(text, max_chars=max_chars)
-        chunks = [chunk for segment in prepared for chunk in segment.spoken_chunks if chunk.strip()]
-        spoken = " ".join(segment.spoken for segment in prepared)
-        return spoken, chunks
-    from scripts.text_chunking_utils import split_text_for_tts
-
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    return cleaned, [chunk for chunk in split_text_for_tts(cleaned, max_chars=max_chars) if chunk.strip()]
+        spoken = " ".join(segment.spoken for segment in prepare_segments(text, max_chars=max_chars))
+    else:
+        spoken = text
+    spoken = re.sub(r"\s+", " ", spoken).strip()
+    return spoken, [chunk for chunk in split_text_for_tts(spoken, max_chars=max_chars) if chunk.strip()]
 
 
 def list_profiles() -> list[dict[str, Any]]:

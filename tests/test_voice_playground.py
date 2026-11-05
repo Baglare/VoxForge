@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from voxforge.playground.service import VARIANTS, PlaygroundError, PlaygroundService  # noqa: E402
-from voxforge.playground.workers import EngineManager, WorkerError  # noqa: E402
+from voxforge.playground.workers import EngineManager, WorkerError, prepend_path  # noqa: E402
 
 # Every engine name is served by the Mock synthesizer; settings are echoed back so the
 # test can see exactly what reached the "library". The protocol/concat code is the real one.
@@ -127,6 +127,25 @@ class VoicePlaygroundTest(unittest.TestCase):
         service = PlaygroundService(self.tmp / "pg", manager)
         with self.assertRaises(PlaygroundError):
             service.generate("   ", "mock", None)
+
+    def test_sentences_share_a_chunk_up_to_limit(self) -> None:
+        # Benchmark her maddeyi tek parça üretir; kısa çok cümleli metin cümle cümle bölünmemeli.
+        from voxforge.playground.service import split_for_engine
+
+        spoken, chunks = split_for_engine("Merhaba! Saat 14:30'da 5 kişi geldi. Evet.", 250, normalize=True)
+        self.assertEqual(chunks, [spoken])
+        self.assertIn("beş", spoken)
+        long_text = "Bu cümle parçalama sınırını aşmak için yazıldı. " * 12
+        _, long_chunks = split_for_engine(long_text, 250, normalize=True)
+        self.assertGreater(len(long_chunks), 1)
+        self.assertTrue(all(len(c) <= 250 for c in long_chunks))
+
+    def test_ffmpeg_dir_moves_to_front_of_path(self) -> None:
+        # Klasör PATH'te zaten olsa bile başa alınmalı (TorchCodec system32'den önce ister).
+        shared = Path(r"C:\ff\bin")
+        path = r"C:\Windows\system32;C:\x;c:\FF\bin;C:\y"
+        self.assertEqual(prepend_path(path, shared), r"C:\ff\bin;C:\Windows\system32;C:\x;C:\y")
+        self.assertEqual(prepend_path("", shared), r"C:\ff\bin")
 
     def test_variants_keep_engine_defaults(self) -> None:
         self.assertEqual(VARIANTS["chatterbox-default"].settings, {})
