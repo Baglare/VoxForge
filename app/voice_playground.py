@@ -21,6 +21,7 @@ import gradio as gr  # noqa: E402
 
 from voxforge.playground.service import (  # noqa: E402
     DEFAULT_SEED,
+    DEVICE_LABELS,
     ENGINE_LABELS,
     MAX_TEXT_CHARS,
     VARIANTS,
@@ -32,13 +33,21 @@ from voxforge.playground.service import (  # noqa: E402
 SLOTS = 4
 ENGINE_CHOICES = [(label, engine) for engine, label in ENGINE_LABELS.items()]
 CHATTERBOX_CHOICES = [("Varsayılan", "chatterbox-default"), ("min_p = 0.02", "chatterbox-minp")]
+VOXCPM_CHOICES = [
+    ("Varsayılan (cfg 2.0 · 10 adım)", "voxcpm2"),
+    ("Hızlı (6 adım, deneme)", "voxcpm2-fast"),
+    ("Ultimate Cloning (referans + transkript)", "voxcpm2-ultimate"),
+]
+DEVICE_CHOICES = [(label, key) for key, label in DEVICE_LABELS.items()]
 COMPARE_CHOICES = [(v.label, v.key) for v in VARIANTS.values()]
 SAMPLE_TEXT = "Merhaba! Bugün 5 Kasım 2026; hava 18 derece. Evet, tamam, birazdan başlıyoruz."
 
 
-def variant_for(engine: str, chatterbox_setting: str) -> str:
+def variant_for(engine: str, chatterbox_setting: str, voxcpm_setting: str = "voxcpm2") -> str:
     if engine == "chatterbox-v3":
         return chatterbox_setting or "chatterbox-default"
+    if engine == "voxcpm2":
+        return voxcpm_setting or "voxcpm2"
     return next(v.key for v in VARIANTS.values() if v.engine == engine)
 
 
@@ -55,15 +64,34 @@ def history_choices(service: PlaygroundService) -> list[tuple[str, str]]:
     return choices
 
 
+def _mb(value: Any) -> str:
+    return f"{value:,.0f} MB".replace(",", ".") if isinstance(value, (int, float)) else "—"
+
+
 def status_line(service: PlaygroundService) -> str:
     status = service.manager.status()
     if not status.get("engine"):
-        return "GPU'da yüklü motor yok."
-    return (
-        f"Yüklü motor: **{ENGINE_LABELS.get(status['engine'], status['engine'])}** "
-        f"(cihaz {status.get('device')}, yükleme {status.get('load_seconds')} sn, PID {status.get('pid')}). "
-        "Başka motor seçilince bu süreç kapatılır."
-    )
+        return "Yüklü motor yok (GPU boş)."
+    runtime = status.get("runtime") or {}
+    vram = status.get("vram") or {}
+    device = status.get("device")
+    lines = [
+        f"Yüklü motor: **{ENGINE_LABELS.get(status['engine'], status['engine'])}** · cihaz **{DEVICE_LABELS.get(device, device)}**"
+        f" · yükleme {status.get('load_seconds')} sn · PID {status.get('pid')}",
+    ]
+    if runtime.get("gpu"):
+        lines.append(
+            f"GPU: {runtime['gpu']} · torch {runtime.get('torch')} · VRAM (yüklemeden sonra) {_mb(vram.get('device_used_mb'))}"
+            f"/{_mb(vram.get('device_total_mb'))}"
+        )
+    elif status["engine"] != "mock":
+        lines.append(f"CPU: torch {runtime.get('torch')} · {runtime.get('cpu_threads')} iş parçacığı (GPU kullanılmıyor)")
+    extras = [f"dtype {status['dtype']}" if status.get("dtype") else "", status.get("compile") and f"torch.compile {status['compile']}"]
+    extras = [item for item in extras if item]
+    if extras:
+        lines.append(" · ".join(extras))
+    lines.append("Başka motor veya cihaz seçilince bu süreç kapatılır.")
+    return "  \n".join(lines)
 
 
 def slot_updates(service: PlaygroundService, ids: list[str]) -> list[Any]:
@@ -86,7 +114,9 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
         gr.Markdown(
             "# VoxForge Voice Playground\n"
             "Türkçe metni seçtiğin motor ve kayıtlı ses profiliyle üret, dinle, indir ve karşılaştır. "
-            "GPU'da aynı anda tek motor çalışır; motor değişince önceki kapatılır (ilk üretimde model yüklemesi sürer)."
+            "GPU'da aynı anda tek motor çalışır; motor değişince önceki kapatılır (ilk üretimde model yüklemesi sürer). "
+            "8 GB VRAM'de VoxCPM2 için GPU kullanan diğer uygulamaları (canlı duvar kağıdı, tarayıcı, oyun istemcisi) kapatmak "
+            "hızı belirgin artırır; her üretimin altında cihaz, süre, RTF, VRAM ve darboğaz notu görünür."
         )
         with gr.Row():
             with gr.Column(scale=3):
@@ -94,6 +124,19 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
                 with gr.Row():
                     engine = gr.Radio(ENGINE_CHOICES, value="xtts", label="Motor")
                     chatterbox_setting = gr.Radio(CHATTERBOX_CHOICES, value="chatterbox-default", label="Chatterbox ayarı", visible=False)
+                    voxcpm_setting = gr.Radio(VOXCPM_CHOICES, value="voxcpm2", label="VoxCPM2 ayarı", visible=False)
+                device = gr.Radio(
+                    DEVICE_CHOICES,
+                    value="cuda",
+                    label="Cihaz (GPU varsayılan; CUDA yoksa üretim durur, CPU'ya kendiliğinden geçmez)",
+                )
+                reference_text = gr.Textbox(
+                    label="Referansın birebir transkripti (yalnız VoxCPM2 Ultimate Cloning; profil başına hatırlanır)",
+                    lines=3,
+                    max_lines=8,
+                    visible=False,
+                    placeholder="Referans kayıtta ne söyleniyorsa aynen yazın; yanlış transkript benzerliği düşürür.",
+                )
                 with gr.Row():
                     profile = gr.Dropdown(profile_choices(), label="Ses profili", value=None, allow_custom_value=False)
                     refresh_profiles = gr.Button("Profilleri yenile", size="sm")
@@ -134,8 +177,11 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
         message = gr.Markdown()
 
         # -- handlers ------------------------------------------------------------------------
-        def on_engine(value: str) -> Any:
-            return gr.update(visible=value == "chatterbox-v3")
+        def on_engine(value: str) -> list[Any]:
+            return [gr.update(visible=value == "chatterbox-v3"), gr.update(visible=value == "voxcpm2"), gr.update(visible=value == "voxcpm2")]
+
+        def on_profile(slug: str | None) -> Any:
+            return gr.update(value=service.get_transcript(slug) if slug else "")
 
         def after_records(records: list[dict[str, Any]], current: list[str] | None, errors: list[str]) -> list[Any]:
             new_ids = [r["id"] for r in records]
@@ -152,15 +198,23 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
                 *slot_updates(service, ids),
             ]
 
-        def on_generate(text_value, engine_value, chatter_value, profile_value, seed_value, normalize_value, current):
-            key = variant_for(engine_value, chatter_value)
-            records, errors = service.generate_many(text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value)
+        def on_generate(
+            text_value, engine_value, chatter_value, voxcpm_value, device_value, transcript, profile_value, seed_value, normalize_value, current
+        ):
+            key = variant_for(engine_value, chatter_value, voxcpm_value)
+            records, errors = service.generate_many(
+                text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value,
+                device=device_value or "cuda", reference_text=transcript,
+            )
             return after_records(records, current, errors)
 
-        def on_generate_many(text_value, keys, profile_value, seed_value, normalize_value, current):
+        def on_generate_many(text_value, keys, device_value, transcript, profile_value, seed_value, normalize_value, current):
             if not keys:
                 return after_records([], current, ["En az bir varyant seçin."])
-            records, errors = service.generate_many(text_value, list(keys), profile_value, seed=_seed(seed_value), normalize=normalize_value)
+            records, errors = service.generate_many(
+                text_value, list(keys), profile_value, seed=_seed(seed_value), normalize=normalize_value,
+                device=device_value or "cuda", reference_text=transcript,
+            )
             return after_records(records, current, errors)
 
         def on_unload():
@@ -169,10 +223,17 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
             return status_line(service), note
 
         outputs = [result_audio, result_file, result_info, status, selected, message, *slot_components]
-        engine.change(on_engine, engine, chatterbox_setting)
+        engine.change(on_engine, engine, [chatterbox_setting, voxcpm_setting, reference_text])
+        profile.change(on_profile, profile, reference_text)
         refresh_profiles.click(lambda: gr.update(choices=profile_choices()), None, profile)
-        generate.click(on_generate, [text, engine, chatterbox_setting, profile, seed, normalize, selected], outputs)
-        generate_many.click(on_generate_many, [text, compare_variants, profile, seed, normalize, selected], outputs)
+        generate.click(
+            on_generate,
+            [text, engine, chatterbox_setting, voxcpm_setting, device, reference_text, profile, seed, normalize, selected],
+            outputs,
+        )
+        generate_many.click(
+            on_generate_many, [text, compare_variants, device, reference_text, profile, seed, normalize, selected], outputs
+        )
         selected.change(lambda ids: slot_updates(service, list(ids or [])), selected, slot_components)
         unload.click(on_unload, None, [status, message])
         app.load(lambda ids: slot_updates(service, list(ids or [])), selected, slot_components)
