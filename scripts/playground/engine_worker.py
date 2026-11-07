@@ -9,7 +9,8 @@ Protocol: JSON lines. Requests on stdin, replies on the ORIGINAL stdout prefixed
 ``@@VF ``; everything libraries print (Python or C level) is redirected to stderr.
 
     -> {"cmd": "synth", "id": "...", "chunks": ["..."], "reference": "x.wav",
-        "reference_text": null, "settings": {"min_p": 0.02}, "seed": 1234, "out": "y.wav"}
+        "reference_text": null, "settings": {"min_p": 0.02}, "seed": 1234, "out": "y.wav",
+        "style": null, "pauses": null, "trim": false}
     <- {"event": "result", "id": "...", "ok": true, "seconds": ..., ...}
     -> {"cmd": "shutdown"}
 
@@ -20,6 +21,13 @@ Device (VF-015): ``--device cuda`` (default) REQUIRES a working CUDA torch and t
 must report CUDA after loading; there is no silent CPU fallback. ``--device cpu`` exists
 only for explicit CPU/GPU comparisons (the manager also hides the GPU from that process).
 The ready event carries the runtime (torch build, GPU, dtype, torch.compile state).
+
+VF-016: ``style`` is a VoxCPM2 natural-language control instruction kept apart from the
+spoken text; the worker renders it as the model's documented ``(instruction)text`` prefix
+on every chunk. It is rejected together with Ultimate Cloning (prompt continuation), like
+the library's own CLI does. ``pauses`` (one value per gap) and ``trim`` control how the
+chunks are joined (voxforge/playground/audio_join.py); without them the join is the
+original 0.2 s one, byte for byte.
 """
 
 from __future__ import annotations
@@ -32,7 +40,6 @@ import os
 import sys
 import time
 import traceback
-import wave
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,6 +52,8 @@ for _path in (str(REPO_ROOT), str(BENCH_DIR)):
 from run_engine import Torch, package_versions, save_pcm16, supported_kwargs  # noqa: E402
 from sources import chatterbox_pin_problem, load_pins, source_revision  # noqa: E402
 
+from voxforge.playground.audio_join import join_wavs  # noqa: E402
+
 PROTOCOL_PREFIX = "@@VF "
 ENGINES = ("mock", "xtts", "chatterbox-v3", "voxcpm2")
 DEVICES = ("cuda", "cpu")
@@ -54,6 +63,17 @@ CHUNK_PAUSE_SECONDS = 0.2
 Synth = Callable[..., dict[str, Any]]
 VOXCPM_BASE = {"cfg_value": 2.0, "inference_timesteps": 10}  # VF-Q1 benchmark ayarı (varsayılan)
 VOXCPM_ALLOWED = ("cfg_value", "inference_timesteps", "retry_badcase", "retry_badcase_max_times")
+STYLE_MAX_CHARS = 160
+
+
+def clean_style(style: str | None) -> str | None:
+    """A control instruction must not contain parentheses (it would end the prefix early)."""
+    if style is None:
+        return None
+    cleaned = " ".join(str(style).replace("(", " ").replace(")", " ").split())
+    if len(cleaned) > STYLE_MAX_CHARS:
+        raise ValueError(f"Stil yönergesi en fazla {STYLE_MAX_CHARS} karakter olabilir.")
+    return cleaned or None
 
 
 class Channel:
@@ -234,9 +254,16 @@ def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
         settings: dict[str, Any],
         seed: int,
         reference_text: str | None = None,
+        style: str | None = None,
     ) -> dict[str, Any]:
         if reference is None:
             raise ValueError("VoxCPM2 referans ses ister.")
+        style = clean_style(style)
+        if style and reference_text is not None:
+            raise ValueError(
+                "Stil yönergesi Ultimate Cloning ile birlikte kullanılamaz (model prompt devamı yapar; "
+                "voxcpm CLI de --control ile --prompt-text'i reddeder)."
+            )
         unknown = sorted(set(settings) - set(VOXCPM_ALLOWED))
         if unknown:
             raise ValueError(f"VoxCPM2 Playground bu ayarları desteklemiyor: {unknown}")
@@ -252,15 +279,19 @@ def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
         if dropped:
             raise ValueError(f"Kurulu voxcpm bu argümanları kabul etmiyor: {dropped}")
         before = dict(stats)
+        model_text = f"({style}){text}" if style else text
         try:
-            save_pcm16(out_path, model.generate(text=text, **kwargs), sample_rate)
+            save_pcm16(out_path, model.generate(text=model_text, **kwargs), sample_rate)
         finally:
             if device == "cuda" and torch is not None:
                 # Geçici blokları sürücüye geri ver: 8 GB'ta masaüstü uygulamalarıyla paylaşılan
                 # VRAM dolarsa Windows belleği sistem RAM'ine taşır ve üretim 10x+ yavaşlar.
                 torch.cuda.empty_cache()
+        applied = {**VOXCPM_BASE, **settings, "mode": mode}
+        if style:
+            applied["style"] = style
         return {
-            "applied": {**VOXCPM_BASE, **settings, "mode": mode},
+            "applied": applied,
             "timings": {name: stats[name] - before[name] for name in stats},
         }
 
@@ -288,32 +319,11 @@ LOADERS: dict[str, Callable[[str], tuple[Synth, dict[str, Any]]]] = {
 
 
 # ---- helpers -----------------------------------------------------------------------------
-def concat_pcm16(parts: list[Path], out_path: Path, pause_seconds: float = CHUNK_PAUSE_SECONDS) -> float:
-    """Join same-format PCM WAV parts with a short pause; returns the duration in seconds."""
-    params = None
-    frames: list[bytes] = []
-    for index, part in enumerate(parts):
-        with wave.open(str(part), "rb") as handle:
-            current = (handle.getnchannels(), handle.getsampwidth(), handle.getframerate())
-            if params is None:
-                params = current
-            elif current != params:
-                raise ValueError(f"Parça biçimleri uyuşmuyor: {params} != {current}")
-            if index:
-                frames.append(b"\x00" * int(params[2] * pause_seconds) * params[0] * params[1])
-            frames.append(handle.readframes(handle.getnframes()))
-    if params is None:
-        raise ValueError("Birleştirilecek parça yok.")
-    temporary = out_path.with_name(out_path.name + ".partial")
-    with wave.open(str(temporary), "wb") as handle:
-        handle.setnchannels(params[0])
-        handle.setsampwidth(params[1])
-        handle.setframerate(params[2])
-        for block in frames:
-            handle.writeframes(block)
-    os.replace(temporary, out_path)
-    with wave.open(str(out_path), "rb") as handle:
-        return handle.getnframes() / float(handle.getframerate())
+def concat_pcm16(
+    parts: list[Path], out_path: Path, pause_seconds: float | list[float] = CHUNK_PAUSE_SECONDS, trim: bool = False
+) -> float:
+    """Join same-format PCM WAV parts; returns the duration in seconds (see audio_join)."""
+    return float(join_wavs(parts, out_path, pauses=pause_seconds, trim=trim)["duration"])
 
 
 def vram_snapshot(torch_helper: Torch) -> dict[str, Any]:
@@ -378,6 +388,14 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
     extra: dict[str, Any] = {}
     if request.get("reference_text") is not None:
         extra["reference_text"] = str(request["reference_text"])
+    if request.get("style"):
+        extra["style"] = str(request["style"])
+    pauses = request.get("pauses")
+    if pauses is not None:
+        pauses = [float(value) for value in pauses]
+        if len(pauses) != len(chunks) - 1:
+            raise ValueError(f"{len(chunks)} parça için {len(chunks) - 1} duraklama gerekir.")
+    trim = bool(request.get("trim"))
     parts: list[Path] = []
     applied: dict[str, Any] = {}
     warnings: list[str] = []
@@ -400,7 +418,7 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
             parts.append(part)
         torch_helper.sync()
         seconds = time.perf_counter() - started
-        audio_seconds = concat_pcm16(parts, out_path)
+        audio_seconds = concat_pcm16(parts, out_path, CHUNK_PAUSE_SECONDS if pauses is None else pauses, trim)
     finally:
         for part in parts:
             part.unlink(missing_ok=True)
@@ -413,6 +431,7 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
         "chunks": len(chunks),
         "chunk_seconds": chunk_seconds,
         "stage_seconds": stage_seconds,
+        "join": {"pauses": pauses, "trim": trim},
         "seed": seed,
         "applied_settings": applied,
         "warnings": warnings,
