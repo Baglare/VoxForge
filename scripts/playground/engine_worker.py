@@ -9,17 +9,23 @@ Protocol: JSON lines. Requests on stdin, replies on the ORIGINAL stdout prefixed
 ``@@VF ``; everything libraries print (Python or C level) is redirected to stderr.
 
     -> {"cmd": "synth", "id": "...", "chunks": ["..."], "reference": "x.wav",
-        "settings": {"min_p": 0.02}, "seed": 1234, "out": "y.wav"}
+        "reference_text": null, "settings": {"min_p": 0.02}, "seed": 1234, "out": "y.wav"}
     <- {"event": "result", "id": "...", "ok": true, "seconds": ..., ...}
     -> {"cmd": "shutdown"}
 
 Engine defaults are the ones used by the VF-Q1 benchmark (scripts/benchmark/run_engine.py);
 a request may only add settings the installed library accepts (never dropped silently).
+
+Device (VF-015): ``--device cuda`` (default) REQUIRES a working CUDA torch and the model
+must report CUDA after loading; there is no silent CPU fallback. ``--device cpu`` exists
+only for explicit CPU/GPU comparisons (the manager also hides the GPU from that process).
+The ready event carries the runtime (torch build, GPU, dtype, torch.compile state).
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import inspect
 import json
 import os
@@ -41,8 +47,13 @@ from sources import chatterbox_pin_problem, load_pins, source_revision  # noqa: 
 
 PROTOCOL_PREFIX = "@@VF "
 ENGINES = ("mock", "xtts", "chatterbox-v3", "voxcpm2")
+DEVICES = ("cuda", "cpu")
 CHUNK_PAUSE_SECONDS = 0.2
-Synth = Callable[[str, Path, Path | None, dict[str, Any], int], dict[str, Any]]
+# synth(text, out_path, reference, settings, seed, **extra) -> {"applied", "warnings", "timings"}
+# extra: reference_text (VoxCPM2 Ultimate Cloning), only when the request carries one.
+Synth = Callable[..., dict[str, Any]]
+VOXCPM_BASE = {"cfg_value": 2.0, "inference_timesteps": 10}  # VF-Q1 benchmark ayarı (varsayılan)
+VOXCPM_ALLOWED = ("cfg_value", "inference_timesteps", "retry_badcase", "retry_badcase_max_times")
 
 
 class Channel:
@@ -131,32 +142,140 @@ def load_chatterbox(device: str) -> tuple[Synth, dict[str, Any]]:
     }
 
 
+def voxcpm_compile_choice(device: str) -> tuple[bool, str]:
+    """torch.compile only when explicitly requested, on CUDA, with triton importable.
+
+    VoxCPM's own default is optimize=True: without triton (the Windows default) it prints a
+    warning, disables itself and still runs a warm-up generation, so it is passed explicitly.
+    """
+    if os.environ.get("VOXFORGE_VOXCPM_COMPILE", "").strip() != "1":
+        return False, "kapalı (varsayılan; VOXFORGE_VOXCPM_COMPILE=1 ile denenir)"
+    if device != "cuda":
+        return False, "kapalı (yalnız CUDA'da)"
+    if importlib.util.find_spec("triton") is None:
+        return False, "kapalı (triton kurulu değil)"
+    return True, "açık (torch.compile reduce-overhead)"
+
+
+PROMPT_CACHE_SIZE = 4
+
+
+def _file_key(path: Any) -> Any:
+    if not path:
+        return None
+    resolved = Path(str(path))
+    stat = resolved.stat()
+    return (str(resolved.resolve()), stat.st_size, stat.st_mtime_ns)
+
+
+def memoized_prompt_builder(
+    build: Callable[..., Any], stats: dict[str, float], enabled: bool, torch: Any, device: str
+) -> Callable[..., Any]:
+    """Wrap VoxCPM2 ``build_prompt_cache``: time it and reuse results for the same inputs.
+
+    Encoding a ~30 s reference with the AudioVAE costs ~1.2 GB extra VRAM and up to a few
+    seconds. The encoder is deterministic (noise exists only in the decoder) and the result
+    lives on the CPU and is only read, so reusing it gives the same audio. Key: prompt text
+    plus path, size and mtime of each audio file (an edited file is encoded again).
+    """
+    cache: dict[Any, Any] = {}
+
+    def wrapped(prompt_text: Any = None, prompt_wav_path: Any = None, reference_wav_path: Any = None, **kwargs: Any) -> Any:
+        key = (prompt_text, _file_key(prompt_wav_path), _file_key(reference_wav_path), tuple(sorted(kwargs.items())))
+        if enabled and key in cache:
+            stats["prompt_cache_hits"] += 1
+            return cache[key]
+        started = time.perf_counter()
+        try:
+            result = build(
+                prompt_text=prompt_text, prompt_wav_path=prompt_wav_path, reference_wav_path=reference_wav_path, **kwargs
+            )
+        finally:
+            stats["prompt_seconds"] += time.perf_counter() - started
+        if device == "cuda" and torch is not None:
+            torch.cuda.empty_cache()  # kodlamanın ~1.2 GB geçici belleği LM döngüsünden önce bırakılır
+        if enabled:
+            while len(cache) >= PROMPT_CACHE_SIZE:
+                cache.pop(next(iter(cache)))
+            cache[key] = result
+        return result
+
+    return wrapped
+
+
 def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
     from voxcpm import VoxCPM
 
-    load_kwargs, _ = supported_kwargs(VoxCPM.from_pretrained, {"load_denoiser": False})
+    compile_on, compile_note = voxcpm_compile_choice(device)
+    load_kwargs, dropped = supported_kwargs(
+        VoxCPM.from_pretrained, {"load_denoiser": False, "device": device, "optimize": compile_on}
+    )
+    if "device" in dropped:
+        raise RuntimeError("Kurulu voxcpm cihaz seçimini desteklemiyor; sessiz CPU'ya geçiş riski nedeniyle durduruldu.")
     model = VoxCPM.from_pretrained("openbmb/VoxCPM2", **load_kwargs)
-    base = {"cfg_value": 2.0, "inference_timesteps": 10}  # VF-Q1 benchmark ayarı
-    sample_rate = model.tts_model.sample_rate
-    accepts_seed = "seed" in inspect.signature(model.generate).parameters
+    tts = model.tts_model
+    actual = str(getattr(tts, "device", device))
+    if actual.split(":")[0] != device:
+        raise RuntimeError(f"VoxCPM2 {device} istendi ama {actual} üzerinde yüklendi.")
+    sample_rate = tts.sample_rate
+    # generate(*args, **kwargs) her şeyi kabul eder; gerçek imza _generate'te.
+    signature_target = getattr(model, "_generate", model.generate)
+    stats = {"prompt_seconds": 0.0, "prompt_cache_hits": 0.0}
+    build = getattr(tts, "build_prompt_cache", None)
+    use_prompt_cache = os.environ.get("VOXFORGE_VOXCPM_PROMPT_CACHE", "1").strip() != "0"
+    torch = Torch().torch
+    if build is not None:
+        tts.build_prompt_cache = memoized_prompt_builder(build, stats, use_prompt_cache, torch, device)
 
-    def synth(text: str, out_path: Path, reference: Path | None, settings: dict[str, Any], seed: int) -> dict[str, Any]:
+    def synth(
+        text: str,
+        out_path: Path,
+        reference: Path | None,
+        settings: dict[str, Any],
+        seed: int,
+        reference_text: str | None = None,
+    ) -> dict[str, Any]:
         if reference is None:
             raise ValueError("VoxCPM2 referans ses ister.")
-        wanted = {**base, **settings, "reference_wav_path": str(reference)}
-        kwargs, dropped = supported_kwargs(model.generate, wanted)
+        unknown = sorted(set(settings) - set(VOXCPM_ALLOWED))
+        if unknown:
+            raise ValueError(f"VoxCPM2 Playground bu ayarları desteklemiyor: {unknown}")
+        wanted = {**VOXCPM_BASE, **settings, "reference_wav_path": str(reference)}
+        mode = "controllable (yalnız referans)"
+        if reference_text is not None:
+            if not reference_text.strip():
+                raise ValueError("Ultimate Cloning için referansın birebir transkripti gerekli.")
+            # Model kartı: en yüksek benzerlik için aynı klip hem referans hem prompt olarak verilir.
+            wanted.update(prompt_wav_path=str(reference), prompt_text=reference_text.strip())
+            mode = "ultimate (referans + transkript)"
+        kwargs, dropped = supported_kwargs(signature_target, wanted)
         if dropped:
             raise ValueError(f"Kurulu voxcpm bu argümanları kabul etmiyor: {dropped}")
-        if accepts_seed:
-            kwargs["seed"] = seed
-        save_pcm16(out_path, model.generate(text=text, **kwargs), sample_rate)
-        return {"applied": {**base, **settings}}
+        before = dict(stats)
+        try:
+            save_pcm16(out_path, model.generate(text=text, **kwargs), sample_rate)
+        finally:
+            if device == "cuda" and torch is not None:
+                # Geçici blokları sürücüye geri ver: 8 GB'ta masaüstü uygulamalarıyla paylaşılan
+                # VRAM dolarsa Windows belleği sistem RAM'ine taşır ve üretim 10x+ yavaşlar.
+                torch.cuda.empty_cache()
+        return {
+            "applied": {**VOXCPM_BASE, **settings, "mode": mode},
+            "timings": {name: stats[name] - before[name] for name in stats},
+        }
 
     return synth, {
         "model": "openbmb/VoxCPM2",
-        "mode": "controllable (yalnız referans)",
+        "mode": "controllable; ultimate isteğe bağlı",
         "sample_rate": sample_rate,
-        "defaults": base,
+        "defaults": dict(VOXCPM_BASE),
+        "dtype": str(getattr(getattr(tts, "config", None), "dtype", "?")),
+        "compile": compile_note,
+        "vram_policy": (
+            "referans kodlaması önbellekte (aynı sonuç) + üretim sonrası empty_cache"
+            if use_prompt_cache
+            else "önbelleksiz (VOXFORGE_VOXCPM_PROMPT_CACHE=0) + üretim sonrası empty_cache"
+        ),
     }
 
 
@@ -212,6 +331,41 @@ def vram_snapshot(torch_helper: Torch) -> dict[str, Any]:
     }
 
 
+def runtime_info(torch_helper: Torch) -> dict[str, Any]:
+    """What really runs: torch build, CUDA runtime, GPU and its capabilities."""
+    torch = torch_helper.torch
+    if torch is None:
+        return {"torch": None, "cuda_available": False}
+    info: dict[str, Any] = {
+        "torch": torch.__version__,
+        "torch_cuda_build": getattr(torch.version, "cuda", None),
+        "cuda_available": bool(torch.cuda.is_available()),
+        "cpu_threads": torch.get_num_threads(),
+    }
+    if info["cuda_available"]:
+        major, minor = torch.cuda.get_device_capability(0)
+        info.update(
+            gpu=torch.cuda.get_device_name(0),
+            compute_capability=f"{major}.{minor}",
+            bf16_supported=bool(torch.cuda.is_bf16_supported()),
+        )
+    return info
+
+
+def check_device(engine: str, device: str, torch_helper: Torch) -> None:
+    """Refuse to start instead of quietly running a GPU engine on the CPU."""
+    if device != "cuda":
+        return
+    torch = torch_helper.torch
+    if torch is None or not torch.cuda.is_available():
+        build = torch.__version__ if torch is not None else "yok"
+        raise RuntimeError(
+            f"CUDA kullanılamıyor (torch {build}); {engine} CPU'ya geçirilmedi. "
+            "Onarım: scripts/benchmark/setup_env.ps1 -Engine <ortam> -TorchOnly. "
+            "Bilerek CPU karşılaştırması için cihaz olarak CPU seçin."
+        )
+
+
 def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> dict[str, Any]:
     out_path = Path(request["out"])
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,18 +375,28 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
     reference = Path(request["reference"]) if request.get("reference") else None
     settings = dict(request.get("settings") or {})
     seed = int(request.get("seed", 1234))
+    extra: dict[str, Any] = {}
+    if request.get("reference_text") is not None:
+        extra["reference_text"] = str(request["reference_text"])
     parts: list[Path] = []
     applied: dict[str, Any] = {}
     warnings: list[str] = []
+    chunk_seconds: list[float] = []
+    stage_seconds: dict[str, float] = {}
     torch_helper.reset_peak()
     started = time.perf_counter()
     try:
         for index, chunk in enumerate(chunks):
             part = out_path.with_name(f"{out_path.stem}.part{index:03d}.wav")
             torch_helper.seed(seed)
-            info = synth(chunk, part, reference, settings, seed)
+            chunk_started = time.perf_counter()
+            info = synth(chunk, part, reference, settings, seed, **extra)
+            torch_helper.sync()
+            chunk_seconds.append(round(time.perf_counter() - chunk_started, 3))
             applied = info.get("applied", applied)
             warnings.extend(info.get("warnings", []))
+            for name, value in (info.get("timings") or {}).items():
+                stage_seconds[name] = round(stage_seconds.get(name, 0.0) + float(value), 3)
             parts.append(part)
         torch_helper.sync()
         seconds = time.perf_counter() - started
@@ -247,6 +411,8 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
         "audio_seconds": round(audio_seconds, 3),
         "rtf": round(seconds / audio_seconds, 3) if audio_seconds else None,
         "chunks": len(chunks),
+        "chunk_seconds": chunk_seconds,
+        "stage_seconds": stage_seconds,
         "seed": seed,
         "applied_settings": applied,
         "warnings": warnings,
@@ -255,10 +421,12 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
     }
 
 
-def serve(engine: str, channel: Channel) -> int:
+def serve(engine: str, channel: Channel, device: str = "cuda") -> int:
     torch_helper = Torch()
-    device = "cpu" if engine == "mock" else torch_helper.device  # Mock GPU kullanmaz
+    if engine == "mock":
+        device = "cpu"  # Mock GPU kullanmaz
     try:
+        check_device(engine, device, torch_helper)
         torch_helper.reset_peak()
         started = time.perf_counter()
         synth, info = LOADERS[engine](device)
@@ -271,6 +439,7 @@ def serve(engine: str, channel: Channel) -> int:
         "event": "ready",
         "engine": engine,
         "device": device,
+        "runtime": runtime_info(torch_helper),
         "load_seconds": load_seconds,
         "load_vram_peak_mb": torch_helper.peak_mb(),
         "vram": vram_snapshot(torch_helper),
@@ -304,9 +473,10 @@ def serve(engine: str, channel: Channel) -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--engine", required=True, choices=ENGINES)
+    parser.add_argument("--device", default="cuda", choices=DEVICES)
     args = parser.parse_args(argv)
     channel = Channel()
-    return serve(args.engine, channel)
+    return serve(args.engine, channel, args.device)
 
 
 if __name__ == "__main__":

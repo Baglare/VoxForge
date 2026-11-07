@@ -17,7 +17,7 @@ Bu aşama **araştırma altyapısıdır**:
 | Türkçe | var | var (`tr`); Resemble blogu Türkçe CER'ini %1–5 bandında, "üretime hazır" olarak veriyor | var (30 dil listesinde Turkish) |
 | Klonlama | referans ses | referans ses (`audio_prompt_path`) | yalnız referans ("controllable") veya referans + transkript ("ultimate") |
 | Çıkış | 24 kHz | `model.sr` | 48 kHz |
-| VRAM | 8 GB'a sığıyor (mevcut) | belirtilmemiş; 0.5B olduğu için sığması beklenir | **~8 GB** (README). 8 GB laptop GPU'da sınırda; OOM olasılığı var |
+| VRAM | 8 GB'a sığıyor (mevcut) | belirtilmemiş; 0.5B olduğu için sığması beklenir | **~8 GB** (README). VF-015 ölçümü: ağırlıklar ~5,1 GB, sıcak üretim tepe ~5,8 GB; masaüstü GPU'yu paylaşınca taşma riski (docs/VOICE_PLAYGROUND.md) |
 | Kaynaktaki hız rakamı | — | Blog: H100'de optimize edilmemiş PyTorch ile "RTF ≈ 5". Tanımı verilmemiş; bu çalışmadaki RTF'nin tersi (kaç kat gerçek zamandan hızlı) anlamında olabilir. | README: RTX 4090'da standart PyTorch ile "RTF ≈ 0.30". |
 | Python | mevcut ortam 3.12 | 3.11 ile geliştirilmiş/test edilmiş | ≥3.10, <3.13 |
 | Lisans | Coqui Public Model License | MIT | Apache-2.0 |

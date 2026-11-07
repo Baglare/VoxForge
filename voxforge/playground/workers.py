@@ -5,6 +5,10 @@ Each engine runs as a long-lived subprocess in its own environment
 process: asking for another engine first shuts the current one down (its CUDA memory
 is released with the process), then starts the new one. All calls are serialised by
 one lock, so the GPU never holds two models.
+
+A worker is identified by (engine, device). ``device="cuda"`` is the default and the
+worker refuses to start without CUDA (no silent CPU fallback); ``device="cpu"`` is an
+explicit comparison mode whose process cannot see the GPU at all.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ PROTOCOL_PREFIX = "@@VF "
 LOAD_TIMEOUT_SECONDS = 900.0  # ilk açılışta model önbellekten yüklenir; indirme gerekiyorsa uzun sürebilir
 SYNTH_TIMEOUT_SECONDS = 1800.0
 SHUTDOWN_GRACE_SECONDS = 20.0
+DEVICES = ("cuda", "cpu")
 
 
 class WorkerError(RuntimeError):
@@ -83,9 +88,15 @@ def prepend_path(path_value: str, directory: Path) -> str:
     return os.pathsep.join([str(directory), *rest])
 
 
-def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Same model caches and FFmpeg setup as run_voice_benchmark.ps1 / run_gradio_demo.ps1."""
+def worker_env(base: dict[str, str] | None = None, device: str = "cuda") -> dict[str, str]:
+    """Same model caches and FFmpeg setup as run_voice_benchmark.ps1 / run_gradio_demo.ps1.
+
+    A CPU comparison worker gets ``CUDA_VISIBLE_DEVICES=-1`` so no library inside it (XTTS
+    picks its device on its own) can use the GPU behind the user's back.
+    """
     env = dict(os.environ if base is None else base)
+    if device == "cpu":
+        env["CUDA_VISIBLE_DEVICES"] = "-1"  # Windows: boş değer GPU yu gizlemiyor (ölçüldü)
     root = data_root()
     env.setdefault("HF_HOME", str(root / "Models" / "HF"))
     coqui = root / "Models" / "Coqui"
@@ -103,6 +114,7 @@ def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
 class WorkerProcess:
     engine: str
     process: subprocess.Popen
+    device: str
     log_path: Path
     replies: "queue.Queue[dict[str, Any] | None]" = field(default_factory=queue.Queue)
     ready: dict[str, Any] = field(default_factory=dict)
@@ -176,14 +188,22 @@ class EngineManager:
         worker = self._current
         return worker.engine if worker is not None and worker.alive() else None
 
+    @property
+    def current_device(self) -> str | None:
+        worker = self._current
+        return worker.device if worker is not None and worker.alive() else None
+
     def status(self) -> dict[str, Any]:
         worker = self._current
         if worker is None or not worker.alive():
             return {"engine": None}
-        return {"engine": worker.engine, "pid": worker.process.pid, **{k: worker.ready.get(k) for k in ("device", "model", "load_seconds")}}
+        keys = ("device", "model", "load_seconds", "load_vram_peak_mb", "runtime", "dtype", "compile", "vram")
+        return {"engine": worker.engine, "pid": worker.process.pid, **{k: worker.ready.get(k) for k in keys}}
 
     # -- lifecycle --------------------------------------------------------------------------
-    def _start(self, engine: str) -> WorkerProcess:
+    def _start(self, engine: str, device: str = "cuda") -> WorkerProcess:
+        if device not in DEVICES:
+            raise WorkerError(f"Bilinmeyen cihaz: {device}")
         python = self.python_for(engine)
         if not Path(python).is_file():
             raise WorkerError(
@@ -193,12 +213,12 @@ class EngineManager:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.log_dir / f"{engine}.log"
         log_handle = log_path.open("a", encoding="utf-8")
-        log_handle.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {engine} başlatılıyor ({python})\n")
+        log_handle.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {engine} [{device}] başlatılıyor ({python})\n")
         log_handle.flush()
         process = subprocess.Popen(
-            [str(python), "-u", str(self.worker_script), "--engine", engine],
+            [str(python), "-u", str(self.worker_script), "--engine", engine, "--device", device],
             cwd=str(REPO_ROOT),
-            env=worker_env(self.env),
+            env=worker_env(self.env, device),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=log_handle,
@@ -208,7 +228,7 @@ class EngineManager:
             bufsize=1,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        worker = WorkerProcess(engine=engine, process=process, log_path=log_path)
+        worker = WorkerProcess(engine=engine, process=process, device=device, log_path=log_path)
         threading.Thread(target=_pump, args=(worker, log_handle), daemon=True).start()
         self.started_count += 1
         try:
@@ -240,14 +260,14 @@ class EngineManager:
             except OSError:
                 pass
 
-    def _ensure(self, engine: str) -> tuple[WorkerProcess, bool]:
+    def _ensure(self, engine: str, device: str = "cuda") -> tuple[WorkerProcess, bool]:
         worker = self._current
-        if worker is not None and worker.engine == engine and worker.alive():
+        if worker is not None and worker.engine == engine and worker.device == device and worker.alive():
             return worker, False
         if worker is not None:
             self._current = None
             self._terminate(worker)  # önce eski motor kapanır: GPU'da tek model
-        self._current = self._start(engine)
+        self._current = self._start(engine, device)
         return self._current, True
 
     def unload(self) -> str | None:
@@ -262,10 +282,10 @@ class EngineManager:
         self.unload()
 
     # -- requests ---------------------------------------------------------------------------
-    def synthesize(self, engine: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Run one request on ``engine``; returns the worker reply plus load info."""
+    def synthesize(self, engine: str, request: dict[str, Any], device: str = "cuda") -> dict[str, Any]:
+        """Run one request on ``engine`` (on ``device``); returns the worker reply plus load info."""
         with self._lock:
-            worker, loaded_now = self._ensure(engine)
+            worker, loaded_now = self._ensure(engine, device)
             request = {"cmd": "synth", "id": f"{time.time_ns()}", **request}
             try:
                 worker.send(request)

@@ -34,21 +34,56 @@ motor varsayılanlarına yazmaz.
 | XTTS-v2 | ürün adaptörü, preset yok (VF-Q1 ile aynı) |
 | Chatterbox V3 · varsayılan | `t3_model=v3`, `language_id=tr`, kütüphane varsayılanları |
 | Chatterbox V3 · min_p=0.02 | yalnız `min_p=0.02` eklenir (docs/CHATTERBOX_REPEAT_PROBE.md) |
-| VoxCPM2 | controllable mod, `cfg_value=2.0`, `inference_timesteps=10` (VF-Q1) |
+| VoxCPM2 (varsayılan) | controllable mod, `cfg_value=2.0`, `inference_timesteps=10` (VF-Q1) |
+| VoxCPM2 · hızlı (6 adım) | yalnız `inference_timesteps=6` (hız denemesi; VF-015 pilotunda kalite düştü) |
+| VoxCPM2 · Ultimate Cloning | aynı ayarlar + `prompt_wav_path`=referans, `prompt_text`=birebir transkript (model kartının önerisi) |
 | Mock | modelsiz test sesi |
 
 Kurulu kütüphane bir ayarı kabul etmezse üretim hata verir; sessizce düşürülmez. Chatterbox kaynağı
 `engine_pins.json` commit'ine bağlıdır (benchmark ile aynı kontrol).
 
+## Cihaz (VF-015)
+Varsayılan cihaz **GPU (CUDA)**. Worker CUDA'lı torch yoksa başlamaz ve onarım komutunu gösterir;
+model yüklendikten sonra da gerçekten CUDA'da olduğunu doğrular. CPU'ya **sessiz geçiş yoktur**.
+"CPU (yalnız karşılaştırma)" bilerek seçilir; o süreç `CUDA_VISIBLE_DEVICES=-1` ile GPU'yu görmez
+(Windows'ta boş değer GPU'yu gizlemiyor). Cihaz değişince süreç yeniden başlar.
+
+CPU torch'lu bir ortamı onarmak (yalnız torch değişir, önceki paket listesi kaydedilir):
+```
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\setup_env.ps1 -Engine voxcpm -TorchOnly
+```
+`scripts/benchmark/torch_cuda.py`, kurulu torch sürümünü gerçekten yayımlayan ve sürücünün çalıştırabildiği
+en yeni CUDA indeksini seçer (ör. torch 2.15.0 → cu134/cu132; eski sabit cu126'da yok).
+
+## VoxCPM2 ve 8 GB VRAM (VF-015)
+- Ağırlıklar ~5,1 GB (bf16 LM ~4,6 GB, fp32 AudioVAE 0,36 GB, sabit KV önbelleği 0,29 GB).
+- 30 sn'lik referansın AudioVAE ile kodlanması geçici olarak +1,2 GB ister. Worker kodlanmış referansı
+  önbellekte tutar (yol + boyut + değiştirilme zamanı + transkript anahtarı; kodlayıcı deterministik,
+  sonuç CPU'da ve salt okunur) ve kodlamadan/üretimden sonra `torch.cuda.empty_cache()` çağırır.
+  Sıcak üretimde tepe ~5,6–5,8 GB, ayrılmış ~5,8 GB.
+- Laptop GPU'su masaüstüyle paylaşılır (canlı duvar kağıdı, tarayıcı, oyun istemcisi boşta ~0,6–1,3 GB
+  tutabiliyor). Toplam VRAM dolunca Windows belleği sistem RAM'ine taşır ve üretim 10 kattan fazla
+  yavaşlar (ölçüldü: aynı cümle 3,5 sn yerine 40 sn ve üstü). Arayüz bunu "Darboğaz" notunda gösterir.
+- `torch.compile` varsayılan kapalı (Windows'ta triton yok); `VOXFORGE_VOXCPM_COMPILE=1` + triton ile
+  denenebilir, ölçülmedi. Önbelleği kapatmak için `VOXFORGE_VOXCPM_PROMPT_CACHE=0`.
+- Aynı süreçte aynı tohumla art arda üretimler bit düzeyinde aynı değildir (GPU çekirdek seçimi); her
+  sürecin ilk üretimi tekrarlanabilir. CPU üretimi önceki CPU örneğiyle birebir aynı çıktı.
+
+## Ultimate Cloning
+VoxCPM2 ayarı "Ultimate Cloning" seçilince referansın birebir transkripti istenir; profil başına
+`outputs/playground/transcripts/<profil>.txt` dosyasına kaydedilir (profiller salt okunur kalır).
+Yanlış ya da eksik transkript benzerliği düşürür. Mevcut "yalnız referans" modu varsayılandır.
+
 ## Her üretimde gösterilen
 Model, kaynak commit (Chatterbox), uygulanan ayarlar ve kütüphane varsayılanları (JSON'da), tohum,
 profil, parça sayısı, üretim süresi, ses süresi, RTF (üretim / ses süresi), bu istekte model yüklendiyse
 yükleme süresi; VRAM için üretim tepe (`torch.cuda.max_memory_allocated`), ayrılmış bellek ve GPU'nun
-toplam kullanımı. Karşılaştırmada aynı tohum kullanılır; `-1` rastgele tohum seçer ve kaydeder.
+toplam kullanımı; cihaz, torch/GPU, dtype, parça süreleri, referans kodlama süresi ve kısa
+darboğaz notları (CPU, RTF > 1, VRAM dolu, başka süreçlerin GPU belleği, model yükleme). Karşılaştırmada aynı tohum kullanılır; `-1` rastgele tohum seçer ve kaydeder.
 
 ## Sınırlar
 - Playground kendi GPU kullanımını sınırlar; aynı anda açık Studio veya benchmark süreçlerini göremez.
-  8 GB kartta VoxCPM2 yüklenirken başka bir uygulamanın GPU'yu kullanmaması gerekir.
+  8 GB kartta VoxCPM2 için GPU kullanan diğer uygulamaları kapatmak hızı belirgin artırır (yukarıya bakın).
 - Normalizasyon cümle bazında yapılır ama cümleler motor sınırına (~220-250 karakter) kadar aynı parçada
   üretilir; yalnız daha uzun metinler bölünüp 0,2 sn sessizlikle birleştirilir. Her cümleyi ayrı üretmek
   cümle aralarına ~0,9 sn boşluk ve tonlama kopukluğu ekliyordu. loudnorm uygulanmaz.
@@ -58,4 +93,6 @@ toplam kullanımı. Karşılaştırmada aynı tohum kullanılır; `-1` rastgele 
 
 ## Test
 `tests/test_voice_playground.py`: gerçek worker süreçleri ve modelsiz motorla tek-motor kuralı, min_p
-aktarımı, kayıt/WAV, hata yolları. Gerçek motorlarla GPU üretimi bu testlerde yoktur.
+aktarımı, kayıt/WAV, hata yolları; VF-015: cihaz seçimi ve CPU sürecinde GPU gizleme, CUDA yokken
+reddetme, Ultimate transkript zorunluluğu/saklama, prompt önbelleği anahtarı, darboğaz notları, CUDA
+indeks seçimi. Gerçek motorlarla GPU üretimi bu testlerde yoktur (ölçümler PR açıklamasında).

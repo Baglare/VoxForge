@@ -4,9 +4,15 @@
 #   powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\setup_env.ps1 -Engine chatterbox
 #   powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\setup_env.ps1 -Engine voxcpm
 #   powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\setup_env.ps1 -Engine eval
+#
+# Mevcut ortamda yalniz CPU torch'u CUDA'li surumle degistirmek (paketlere dokunmaz):
+#   powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\setup_env.ps1 -Engine voxcpm -TorchOnly
+#   (-CudaIndex cu132 ile indeks zorlanabilir; varsayilan: surucunun destekledigi en yeni uygun indeks)
 param(
     [Parameter(Mandatory = $true)][ValidateSet("chatterbox", "voxcpm", "eval")][string]$Engine,
-    [string]$PythonVersion = ""
+    [string]$PythonVersion = "",
+    [switch]$TorchOnly,
+    [string]$CudaIndex = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -38,9 +44,42 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $EnvDir "Scripts\python.exe"))) {
+    if ($TorchOnly) { throw "-TorchOnly icin mevcut ortam gerekli: $EnvDir" }
     & py "-$PythonVersion" -m venv $EnvDir
 }
 $Py = Join-Path $EnvDir "Scripts\python.exe"
+
+function Install-CudaTorch {
+    # PyPI Windows'ta yalniz CPU torch verir. Ayni torch surumunu, o surumu GERCEKTEN barindiran ve
+    # surucunun destekledigi CUDA indeksinden kurar (torch_cuda.py). Eskiden >=2.6 icin sabit cu126
+    # seciliyordu; torch 2.15.0 orada yok, kurulum basarisiz olup ortam sessizce +cpu kaliyordu.
+    $Probe = & $Py -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+    if ($LASTEXITCODE -ne 0) { throw "torch ice aktarilamadi." }
+    $TorchVersion = $Probe[0].Split("+")[0]
+    if ($Probe[1] -eq "True") { Write-Host "torch $($Probe[0]) CUDA'li; degisiklik yok."; return }
+    $ChooseArgs = @((Join-Path $PSScriptRoot "torch_cuda.py"), "--torch-version", $TorchVersion)
+    if ($CudaIndex) { $ChooseArgs += @("--index", $CudaIndex) }
+    $Choice = (& $Py @ChooseArgs) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $Choice.index) {
+        throw "torch $TorchVersion icin uygun CUDA indeksi yok (surucu CUDA $($Choice.driver_cuda), denenen: $($Choice.checked -join ', ')). Farkli torch surumu veya -CudaIndex deneyin."
+    }
+    $Lock = Join-Path $EnvDir "requirements-lock.before-cuda-torch.txt"
+    & $Py -m pip freeze | Out-File -Encoding utf8 $Lock
+    Write-Host "torch $TorchVersion CUDA'siz; $($Choice.index) indeksinden yeniden kuruluyor (surucu CUDA $($Choice.driver_cuda)). Onceki liste: $Lock"
+    # Yalniz torch: torchaudio/torchcodec bu indekslerde ayni surumle bulunmayabilir; CPU G/C icin yeterli.
+    & $Py -m pip install --force-reinstall --no-deps "torch==$TorchVersion" --index-url $Choice.index_url
+    if ($LASTEXITCODE -ne 0) { throw "CUDA'li torch kurulumu basarisiz ($($Choice.index_url))." }
+    & $Py -c "import torch, sys; ok = torch.cuda.is_available() and (torch.ones(8, device='cuda') * 2).sum().item() == 16; sys.exit(0 if ok else 1)"
+    if ($LASTEXITCODE -ne 0) { throw "torch kuruldu ama CUDA calismiyor (surucu/paket uyumsuzlugu)." }
+}
+
+if ($TorchOnly) {
+    Install-CudaTorch
+    & $Py -c "import torch; print('torch', torch.__version__, '| CUDA', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0))"
+    Write-Host "Hazir (yalniz torch)."
+    exit 0
+}
+
 & $Py -m pip install --upgrade pip
 
 if ($Engine -eq "eval") {
@@ -57,18 +96,7 @@ if ($Engine -eq "chatterbox") {
 & $Py -m pip install @($Packages[$Engine])
 if ($LASTEXITCODE -ne 0) { throw "Paket kurulumu basarisiz." }
 
-# Windows'ta PyPI'dan gelen torch CPU surumu olabilir; ayni surumu CUDA indeksinden yeniden kur.
-$Probe = & $Py -c "import torch; print(torch.__version__.split('+')[0]); print(torch.cuda.is_available())"
-$TorchVersion = $Probe[0]; $CudaOk = $Probe[1]
-if ($CudaOk -ne "True") {
-    $Parts = $TorchVersion.Split("."); $Minor = [int]$Parts[1]; $Major = [int]$Parts[0]
-    $Index = if ($Major -ge 2 -and $Minor -ge 6) { "cu126" } elseif ($Major -ge 2 -and $Minor -ge 4) { "cu124" } else { "cu121" }
-    $AudioProbe = & $Py -c "import importlib.metadata as m; print(m.version('torchaudio').split('+')[0])" 2>$null
-    $Spec = @("torch==$TorchVersion")
-    if ($AudioProbe) { $Spec += "torchaudio==$AudioProbe" }
-    Write-Host "torch $TorchVersion CUDA'siz; $Index indeksinden yeniden kuruluyor..."
-    & $Py -m pip install --force-reinstall --no-deps @Spec --index-url "https://download.pytorch.org/whl/$Index"
-}
+Install-CudaTorch
 
 & $Py -c "import torch, platform; print('Python', platform.python_version(), '| torch', torch.__version__, '| CUDA', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else '-')"
 & $Py -m pip freeze | Out-File -Encoding utf8 (Join-Path $EnvDir "requirements-lock.txt")

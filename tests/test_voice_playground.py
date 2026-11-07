@@ -29,13 +29,15 @@ FAKE_WORKER = textwrap.dedent(
 
     def fake(device):
         engine = MockTTSEngine()
-        def synth(text, out_path, reference, settings, seed):
+        def synth(text, out_path, reference, settings, seed, **extra):
             if settings.get("explode"):
                 raise RuntimeError("bilerek hata")
             engine.tts_to_file(text=text, file_path=str(out_path))
-            return {{"applied": dict(settings)}}
-        return synth, {{"model": "fake-" + str(os.getpid()), "defaults": {{"min_p": 0.05}}}}
+            return {{"applied": {{**settings, **extra}}, "timings": {{"prompt_seconds": 0.0}}}}
+        return synth, {{"model": "fake-" + str(os.getpid()), "defaults": {{"min_p": 0.05}},
+                       "visible_gpu": os.environ.get("CUDA_VISIBLE_DEVICES")}}
 
+    w.check_device = lambda engine, device, helper: None  # testler GPU gerektirmez
     for name in w.ENGINES:
         w.LOADERS[name] = fake
     raise SystemExit(w.main(sys.argv[1:]))
@@ -151,6 +153,129 @@ class VoicePlaygroundTest(unittest.TestCase):
         self.assertEqual(VARIANTS["chatterbox-default"].settings, {})
         self.assertEqual(VARIANTS["chatterbox-minp"].settings, {"min_p": 0.02})
         self.assertEqual(VARIANTS["xtts"].settings, {})
+        self.assertEqual(VARIANTS["voxcpm2"].settings, {})  # VF-Q1 cfg 2.0 / 10 adım worker'da sabit
+        self.assertFalse(VARIANTS["voxcpm2"].ultimate)
+        self.assertTrue(VARIANTS["voxcpm2-ultimate"].ultimate)
+
+    # ---- VF-015 ---------------------------------------------------------------------------
+    def test_device_choice_restarts_worker_and_hides_gpu_for_cpu(self) -> None:
+        manager = self.manager()
+        service = PlaygroundService(self.tmp / "pg", manager)
+        gpu = service.generate("Evet.", "voxcpm2", None, reference=self.reference)
+        self.assertEqual(gpu["device"], "cuda")
+        cpu = service.generate("Evet.", "voxcpm2", None, reference=self.reference, device="cpu")
+        self.assertEqual(cpu["device"], "cpu")
+        self.assertTrue(cpu["id"].endswith("_cpu"))
+        self.assertEqual(manager.started_count, 2)  # cihaz değişince süreç yeniden başlar
+        self.assertEqual(manager._current.ready.get("visible_gpu"), "-1")  # CPU süreci GPU'yu görmez
+        self.assertTrue(any("CPU'da üretildi" in note for note in cpu["diagnosis"]))
+        with self.assertRaises(PlaygroundError):
+            service.generate("Evet.", "voxcpm2", None, reference=self.reference, device="tpu")
+
+    def test_ultimate_requires_and_remembers_transcript(self) -> None:
+        manager = self.manager()
+        service = PlaygroundService(self.tmp / "pg", manager)
+        with self.assertRaisesRegex(PlaygroundError, "transkript"):
+            service.generate("Evet.", "voxcpm2-ultimate", None, reference=self.reference)
+        record = service.generate(
+            "Evet.", "voxcpm2-ultimate", None, reference=self.reference, reference_text="  Merhaba ben.  "
+        )
+        self.assertEqual(record["settings"]["applied"].get("reference_text"), "Merhaba ben.")
+        self.assertTrue(record["settings"]["ultimate"])
+        plain = service.generate("Evet.", "voxcpm2", None, reference=self.reference, reference_text="yok sayılır")
+        self.assertNotIn("reference_text", plain["settings"]["applied"])  # yalnız Ultimate'e gider
+        service.save_transcript("mimo", "Kayıttaki metin.")
+        self.assertEqual(service.get_transcript("mimo"), "Kayıttaki metin.")
+        self.assertEqual(service.get_transcript("baska"), "")
+        with self.assertRaises(PlaygroundError):
+            service.save_transcript("../profiles/x", "kaçış")
+
+    def test_worker_refuses_cuda_without_gpu(self) -> None:
+        engine_worker = _import_script("playground", "engine_worker")
+
+        class NoCuda:
+            class torch:
+                __version__ = "2.15.0+cpu"
+
+                class cuda:
+                    @staticmethod
+                    def is_available() -> bool:
+                        return False
+
+        with self.assertRaisesRegex(RuntimeError, "CPU'ya geçirilmedi"):
+            engine_worker.check_device("voxcpm2", "cuda", NoCuda())
+        engine_worker.check_device("voxcpm2", "cpu", NoCuda())  # açık CPU seçimi serbest
+
+    def test_prompt_cache_reuses_same_reference_only(self) -> None:
+        engine_worker = _import_script("playground", "engine_worker")
+        calls: list[tuple] = []
+
+        def build(prompt_text=None, prompt_wav_path=None, reference_wav_path=None):
+            calls.append((prompt_text, prompt_wav_path, reference_wav_path))
+            return {"n": len(calls)}
+
+        stats = {"prompt_seconds": 0.0, "prompt_cache_hits": 0.0}
+        cached = engine_worker.memoized_prompt_builder(build, stats, True, None, "cpu")
+        ref = str(self.reference)
+        first = cached(reference_wav_path=ref)
+        self.assertIs(cached(reference_wav_path=ref), first)
+        self.assertEqual((len(calls), stats["prompt_cache_hits"]), (1, 1))
+        cached(prompt_text="metin", prompt_wav_path=ref, reference_wav_path=ref)  # Ultimate ayrı anahtar
+        self.assertEqual(len(calls), 2)
+        with wave.open(str(self.reference), "wb") as handle:  # referans değişti: yeniden kodlanır
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(24000)
+            handle.writeframes(bytes([1, 0]) * 4800)
+        cached(reference_wav_path=ref)
+        self.assertEqual(len(calls), 3)
+        off = engine_worker.memoized_prompt_builder(build, stats, False, None, "cpu")
+        off(reference_wav_path=ref)
+        off(reference_wav_path=ref)
+        self.assertEqual(len(calls), 5)
+
+    def test_diagnosis_flags_full_vram(self) -> None:
+        from voxforge.playground.service import diagnose
+
+        record = {
+            "engine": "voxcpm2",
+            "device": "cuda",
+            "timing": {"rtf": 9.6, "generation_seconds": 41.0, "stage_seconds": {"prompt_seconds": 34.0}},
+            "vram": {"device_total_mb": 8188.0, "device_used_mb": 8187.5, "reserved_mb": 7138.0},
+        }
+        notes = " | ".join(diagnose(record))
+        self.assertIn("VRAM tamamen dolu", notes)
+        self.assertIn("RTF 9.6 > 1", notes)
+        self.assertIn("kodlaması sürenin %83", notes)
+
+
+def _import_script(folder: str, name: str):
+    path = str(REPO_ROOT / "scripts" / folder)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    return __import__(name)
+
+
+class TorchCudaIndexTest(unittest.TestCase):
+    def test_index_follows_published_wheels_and_driver(self) -> None:
+        torch_cuda = _import_script("benchmark", "torch_cuda")
+        self.assertEqual(
+            torch_cuda.parse_driver_cuda("| NVIDIA-SMI 617.42   KMD Version: 617.42   CUDA UMD Version: 13.4 |"), (13, 4)
+        )
+        self.assertEqual(torch_cuda.parse_driver_cuda("Driver Version: 560.94   CUDA Version: 12.6"), (12, 6))
+        self.assertIsNone(torch_cuda.parse_driver_cuda("no gpu"))
+
+        def wheel(index: str) -> str:
+            return torch_cuda.wheel_name("torch", "2.15.0", index, "cp312", "win_amd64")
+
+        listings = {"cu134": wheel("cu134"), "cu132": wheel("cu132"), "cu126": "torch-2.14.1+cu126-cp312-cp312-win_amd64.whl"}
+
+        def choose(driver):
+            return torch_cuda.choose_index("2.15.0", driver, listings, "cp312", "win_amd64")
+
+        self.assertEqual(choose((13, 4)), "cu134")
+        self.assertEqual(choose((13, 2)), "cu132")  # sürücü cu134'ü çalıştıramaz
+        self.assertIsNone(choose((12, 6)))  # eski sabit cu126'da 2.15.0 yok: sessiz CPU yerine hata
 
 
 if __name__ == "__main__":
