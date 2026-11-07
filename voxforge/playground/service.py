@@ -13,6 +13,11 @@ record keeps the real runtime (torch build, GPU, dtype), per-chunk timing, VRAM 
 bottleneck diagnosis. VoxCPM2 Ultimate Cloning (reference + its exact transcript) is an
 optional variant; transcripts are kept per profile under ``outputs/playground/transcripts``
 (profiles themselves stay read only).
+
+VF-016: VoxCPM2 variants (default and Ultimate) accept ``VoxControls`` (CFG, diffusion
+steps, a natural-language style instruction kept apart from the spoken text, narration
+pacing with explicit pauses); built-in and user presets live in ``prosody.py``. The
+default controls send exactly the old request, so earlier results stay reproducible.
 """
 
 from __future__ import annotations
@@ -21,10 +26,11 @@ import json
 import random
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from voxforge.playground.prosody import ControlError, PresetStore, VoxControls, plan_chunks
 from voxforge.playground.workers import REPO_ROOT, EngineManager
 from voxforge.runs import utc_now_iso, write_json_atomic
 
@@ -82,6 +88,7 @@ VARIANTS: dict[str, Variant] = {
         Variant("mock", "Mock (modelsiz test)", "mock", needs_reference=False),
     )
 }
+CONTROLLABLE_VARIANTS = ("voxcpm2", "voxcpm2-ultimate")  # VoxControls uygulanır; voxcpm2-fast sabit karşılaştırma
 ENGINE_LABELS = {"xtts": "XTTS-v2", "chatterbox-v3": "Chatterbox V3", "voxcpm2": "VoxCPM2", "mock": "Mock"}
 
 
@@ -133,6 +140,7 @@ class PlaygroundService:
         self.audio_dir = self.root / "audio"
         self.transcript_dir = self.root / "transcripts"
         self.manager = manager or EngineManager(self.root / "logs")
+        self.presets = PresetStore(self.root / "presets.json")
 
     # -- reference transcripts (Ultimate Cloning) ------------------------------------------
     def _transcript_path(self, slug: str) -> Path:
@@ -185,8 +193,16 @@ class PlaygroundService:
         reference: Path | None = None,
         device: str = "cuda",
         reference_text: str | None = None,
+        controls: VoxControls | None = None,
+        preset_key: str | None = None,
+        out_dir: Path | None = None,
     ) -> dict[str, Any]:
-        """Generate one variant; the record is written only for a successful WAV."""
+        """Generate one variant; the record is written only for a successful WAV.
+
+        ``controls`` only applies to VoxCPM2 default/Ultimate variants (other variants
+        reject non-default controls instead of ignoring them). ``out_dir`` lets scene
+        narration keep its audio next to the scene project; records stay in ``audio_dir``.
+        """
         if variant_key not in VARIANTS:
             raise PlaygroundError(f"Bilinmeyen varyant: {variant_key}")
         variant = VARIANTS[variant_key]
@@ -215,26 +231,47 @@ class PlaygroundService:
                 raise PlaygroundError(f"Transkript en fazla {MAX_TRANSCRIPT_CHARS} karakter olabilir.")
             if profile_slug and reference_text and reference_text.strip():
                 self.save_transcript(profile_slug, transcript)  # profil başına hatırlanır
+        try:
+            controls = (controls or VoxControls()).validated()
+        except ControlError as exc:
+            raise PlaygroundError(str(exc)) from exc
+        if variant.key not in CONTROLLABLE_VARIANTS and not controls.is_default():
+            raise PlaygroundError(f"Gelişmiş VoxCPM2 kontrolleri {variant.label} için geçerli değil.")
+        if variant.ultimate and controls.style:
+            raise PlaygroundError(
+                "Stil yönergesi Ultimate Cloning ile birlikte kullanılamaz (prompt devamı); stili boşaltın "
+                "veya varsayılan VoxCPM2'yi seçin."
+            )
         if seed is None or int(seed) < 0:
             seed = random.randint(0, 2**31 - 1)
-        spoken, chunks = split_for_engine(text, variant.max_chars, normalize)
+        plan = plan_chunks(text, controls, variant.max_chars, normalize)
+        spoken, chunks = plan.spoken, plan.chunks
         if not chunks:
             raise PlaygroundError("Metinden okunacak bir parça çıkmadı.")
+        settings = {**variant.settings, **controls.engine_settings()}
+        notes = controls.warnings(variant.ultimate)
+        if variant.engine == "voxcpm2" and not controls.style and any(chunk.lstrip().startswith("(") for chunk in chunks):
+            notes.append("Parantezle başlayan cümle VoxCPM2'de stil yönergesi gibi okunabilir; parantezi cümle içine alın.")
 
         suffix = "" if device == "cuda" or variant.engine == "mock" else f"_{device}"
         record_id = f"{time.strftime('%Y%m%d-%H%M%S')}_{time.time_ns() % 10**6:06d}_{variant.key}{suffix}"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
-        wav_path = self.audio_dir / f"{record_id}.wav"
+        target_dir = Path(out_dir) if out_dir is not None else self.audio_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        wav_path = target_dir / f"{record_id}.wav"
         started = time.perf_counter()
         reply = self.manager.synthesize(
             variant.engine,
             {
                 "chunks": chunks,
                 "reference": str(reference) if reference and variant.needs_reference else None,
-                "settings": dict(variant.settings),
+                "settings": settings,
                 "seed": int(seed),
                 "out": str(wav_path),
                 "reference_text": transcript,
+                "style": controls.style or None,
+                "pauses": plan.pauses,
+                "trim": plan.trim,
             },
             device=device,
         )
@@ -255,8 +292,10 @@ class PlaygroundService:
                 "vram_policy": worker.get("vram_policy"),
             },
             "settings": {
-                "overrides": dict(variant.settings),
-                "label": variant.settings_label,
+                "overrides": settings,
+                "label": variant.settings_label if controls.is_default() else controls.label(),
+                "controls": asdict(controls),
+                "preset": preset_key,
                 "applied": reply.get("applied_settings", {}),
                 "engine_defaults": worker.get("defaults", {}),
                 "seed": reply.get("seed", seed),
@@ -285,7 +324,8 @@ class PlaygroundService:
                 **(reply.get("vram") or {}),
             },
             "versions": worker.get("versions", {}),
-            "warnings": reply.get("warnings", []),
+            "warnings": [*notes, *reply.get("warnings", [])],
+            "join": reply.get("join"),
             "note": worker.get("note"),
             "wav": str(wav_path),
         }
@@ -303,6 +343,8 @@ class PlaygroundService:
         reference: Path | None = None,
         device: str = "cuda",
         reference_text: str | None = None,
+        controls: VoxControls | None = None,
+        preset_key: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Same text, same seed, several variants; ordered by engine so each model loads once."""
         if seed is None or int(seed) < 0:
@@ -326,11 +368,41 @@ class PlaygroundService:
                         reference=reference,
                         device=device,
                         reference_text=reference_text,
+                        controls=controls if key in CONTROLLABLE_VARIANTS else None,
+                        preset_key=preset_key if key in CONTROLLABLE_VARIANTS else None,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - one failing variant does not stop the others
                 label = VARIANTS[key].label if key in VARIANTS else key
                 errors.append(f"{label}: {exc}")
+        return records, errors
+
+
+    def generate_presets(
+        self,
+        text: str,
+        preset_keys: list[str],
+        profile_slug: str | None,
+        seed: int | None = DEFAULT_SEED,
+        normalize: bool = True,
+        device: str = "cuda",
+        reference: Path | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Same text, same seed, same voice, one VoxCPM2 generation per preset (side-by-side listening)."""
+        if seed is None or int(seed) < 0:
+            seed = random.randint(0, 2**31 - 1)
+        records, errors = [], []
+        for key in dict.fromkeys(preset_keys):
+            try:
+                preset = self.presets.get(key)
+                records.append(
+                    self.generate(
+                        text, "voxcpm2", profile_slug, seed=seed, normalize=normalize, device=device,
+                        reference=reference, controls=preset.controls, preset_key=key,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - bir preset diğerlerini durdurmaz
+                errors.append(f"{key}: {exc}")
         return records, errors
 
 
@@ -366,6 +438,12 @@ def diagnose(record: dict[str, Any]) -> list[str]:
         notes.append(f"Referans/prompt kodlaması sürenin %{prompt / seconds * 100:.0f}'i ({prompt} sn).")
     if (timing.get("stage_seconds") or {}).get("prompt_cache_hits"):
         notes.append("Referans kodlaması önbellekten geldi (aynı referans; kodlama atlandı).")
+    join = record.get("join") or {}
+    if record.get("engine") == "voxcpm2" and (record.get("chunks") or 0) > 1 and not join.get("pauses"):
+        notes.append(
+            "Uzun anlatım standart ritimde: cümle araları kısa kalır (VF-016 ölçümü). Acele okunuyorsa "
+            "'Yavaş anlatıcı' preset'i veya 'Anlatım' ritmini deneyin."
+        )
     if timing.get("model_load_seconds") is not None:
         notes.append(f"Bu üretimden önce model yüklendi ({timing['model_load_seconds']} sn; RTF'ye dahil değil).")
     return notes
@@ -402,6 +480,12 @@ def describe(record: dict[str, Any]) -> str:
         lines.append("- Çalışma ortamı: " + " · ".join(parts))
     if settings.get("ultimate"):
         lines.append("- Ultimate Cloning: referans + transkript (prompt devamı)")
+    if settings.get("preset"):
+        lines.append(f"- Preset: `{settings['preset']}`")
+    join = record.get("join") or {}
+    if join.get("pauses"):
+        pauses = join["pauses"]
+        lines.append(f"- Birleştirme: kenar sessizliği kırpıldı · {len(pauses)} duraklama ({min(pauses):g}-{max(pauses):g} sn)")
     if vram.get("cuda"):
         lines.append(
             f"- VRAM: üretim tepe {mb(vram.get('generation_peak_mb'))} · ayrılmış {mb(vram.get('reserved_mb'))}"

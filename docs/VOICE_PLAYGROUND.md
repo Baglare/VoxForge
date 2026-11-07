@@ -74,6 +74,19 @@ VoxCPM2 ayarı "Ultimate Cloning" seçilince referansın birebir transkripti ist
 `outputs/playground/transcripts/<profil>.txt` dosyasına kaydedilir (profiller salt okunur kalır).
 Yanlış ya da eksik transkript benzerliği düşürür. Mevcut "yalnız referans" modu varsayılandır.
 
+## VF-016: gelişmiş kontroller, preset'ler ve sahne anlatımı
+Ayrıntı ve ölçümler: [VF016_PROSODY_FINDINGS.md](VF016_PROSODY_FINDINGS.md).
+- **VoxCPM2 gelişmiş kontroller** (motor VoxCPM2 iken açılır): CFG 1,0-3,0, difüzyon adımı 4-20, tohum,
+  stil yönergesi (metinden ayrı alan; modele `(yönerge)metin` olarak verilir), anlatım ritmi
+  (standart = eski paketleme; anlatım = cümle cümle üretim, kenar kırpma, cümle/paragraf duraklaması).
+  Varsayılan değerler eski isteği birebir gönderir. Ultimate Cloning ile stil yönergesi kullanılamaz.
+- **Preset'ler**: Normal, Sakin, Yavaş anlatıcı (uzun anlatım için önerilen), Dramatik, Gerilim, Aksiyon
+  (yönergesiz), Duygusal, Diyalog; her birinin kanıt notu arayüzde görünür. Kullanıcı preset'leri
+  `outputs/playground/presets.json`. "Preset karşılaştırması" aynı metni aynı ses/tohumla üretir.
+- **Sahne anlatımı** sekmesi: metni sahnelere ayır, tür/preset ata (yerel öneri, düzenlenebilir), sahne
+  başına üret/yeniden üret/dinle, tek WAV'da birleştir (kırpılmış kenar, sabit sahne arası duraklama,
+  ±6 dB seviye eşleme). Projeler `outputs/playground/scenes/<ad>.json` + `<ad>/` altında.
+
 ## Her üretimde gösterilen
 Model, kaynak commit (Chatterbox), uygulanan ayarlar ve kütüphane varsayılanları (JSON'da), tohum,
 profil, parça sayısı, üretim süresi, ses süresi, RTF (üretim / ses süresi), bu istekte model yüklendiyse
@@ -85,8 +98,10 @@ darboğaz notları (CPU, RTF > 1, VRAM dolu, başka süreçlerin GPU belleği, m
 - Playground kendi GPU kullanımını sınırlar; aynı anda açık Studio veya benchmark süreçlerini göremez.
   8 GB kartta VoxCPM2 için GPU kullanan diğer uygulamaları kapatmak hızı belirgin artırır (yukarıya bakın).
 - Normalizasyon cümle bazında yapılır ama cümleler motor sınırına (~220-250 karakter) kadar aynı parçada
-  üretilir; yalnız daha uzun metinler bölünüp 0,2 sn sessizlikle birleştirilir. Her cümleyi ayrı üretmek
-  cümle aralarına ~0,9 sn boşluk ve tonlama kopukluğu ekliyordu. loudnorm uygulanmaz.
+  üretilir; yalnız daha uzun metinler bölünüp 0,2 sn sessizlikle birleştirilir (standart ritim). Chatterbox'ta
+  her cümleyi ayrı üretmek ~0,9 sn boşluk ve tonlama kopukluğu ekliyordu; VoxCPM2'de ise cümle cümle üretim +
+  kenar kırpma ölçümle daha iyi çıktı (VF-016 "Anlatım" ritmi, isteğe bağlı). loudnorm uygulanmaz; yalnız
+  sahne birleştirmede ±6 dB RMS eşlemesi var.
 - XTTS TorchCodec için FFmpeg shared bin PATH'te zaten olsa bile en başa alınır (system32'den sonra
   kalınca `Could not load libtorchcodec` hatası veriyordu).
 - Çıktılar Chatterbox'ta PerTh filigranı içerir.
@@ -95,4 +110,7 @@ darboğaz notları (CPU, RTF > 1, VRAM dolu, başka süreçlerin GPU belleği, m
 `tests/test_voice_playground.py`: gerçek worker süreçleri ve modelsiz motorla tek-motor kuralı, min_p
 aktarımı, kayıt/WAV, hata yolları; VF-015: cihaz seçimi ve CPU sürecinde GPU gizleme, CUDA yokken
 reddetme, Ultimate transkript zorunluluğu/saklama, prompt önbelleği anahtarı, darboğaz notları, CUDA
-indeks seçimi. Gerçek motorlarla GPU üretimi bu testlerde yoktur (ölçümler PR açıklamasında).
+indeks seçimi. `tests/test_vf016_prosody.py`: WAV birleştirme (eski birleştirme bayt eşitliği, kırpma,
+seviye), ritim ölçümü, kontrol aralıkları, preset deposu, parça planı, stilin metinden ayrı taşınması,
+Ultimate uyumsuzluğu, preset karşılaştırması ve sahne üret/birleştir akışı. Gerçek motorlarla GPU üretimi
+bu testlerde yoktur (ölçümler PR açıklamasında ve VF016_PROSODY_FINDINGS.md'de).
