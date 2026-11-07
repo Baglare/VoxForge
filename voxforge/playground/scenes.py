@@ -12,10 +12,21 @@ emotion control the model does not have (see ``prosody.BUILTIN_PRESETS`` evidenc
 
 Storage: ``outputs/playground/scenes/<slug>.json`` and audio under
 ``outputs/playground/scenes/<slug>/`` (git ignored, like all Playground outputs).
+
+Validity: each generated scene stores a *fingerprint* of everything that shaped its audio
+(text, profile + reference file identity, variant and its fixed settings, seed,
+normalisation, the preset's real control values, Ultimate transcript, device). A scene is
+ready only while the fingerprint of the current settings matches; otherwise it is
+regenerated and merging is refused. Old project files (no fingerprint) still load; their
+scenes count as "needs regeneration" because their settings cannot be proven.
+
+New projects never overwrite an existing project file: ``SceneStore.create`` reserves the
+slug atomically and picks ``<slug>-2``, ``-3`` ... when the name is taken.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -39,6 +50,8 @@ MAX_SCENES = 40
 MAX_SCENE_CHARS = 2000
 SCENE_GAP_SECONDS = 0.8
 PROJECT_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+FINGERPRINT_VERSION = 1
+MAX_SLUG_SUFFIX = 999
 SCENE_MARKER = re.compile(r"^\s*(?:#{1,6}\s+(?P<title>.+?)|-{3,}|\*{3,}|\[sahne(?::\s*(?P<title2>[^\]]*))?\])\s*$", re.IGNORECASE)
 
 # Keyword cues for the optional suggestion (lower-case stems; Turkish suffixes follow).
@@ -81,12 +94,10 @@ class Scene:
     record_id: str | None = None
     wav: str | None = None
     audio_seconds: float | None = None
-    generated_text: str | None = None  # metin/preset değişince sahne "eski" sayılır
+    generated_text: str | None = None  # bilgi amaçlı; geçerlilik ``fingerprint`` ile belirlenir
     generated_preset: str | None = None
-
-    @property
-    def stale(self) -> bool:
-        return self.wav is None or self.generated_text != self.text or self.generated_preset != self.preset
+    fingerprint: str | None = None  # üretimi belirleyen ayarların özeti (yoksa eski kayıt: yeniden üretilir)
+    device: str | None = None
 
 
 @dataclass
@@ -166,6 +177,31 @@ class SceneStore:
             raise ControlError(f"Sahne projesi bulunamadı: {slug}")
         return SceneProject.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
+    def create(self, project: SceneProject) -> SceneProject:
+        """Save a NEW project without touching existing ones.
+
+        The slug file is reserved with an exclusive create, so neither an existing project
+        nor a concurrent creation is overwritten; a taken name gets ``-2``, ``-3`` ...
+        (``project.slug`` and ``project.name`` are updated to the name actually used).
+        """
+        base = project.slug
+        self.root.mkdir(parents=True, exist_ok=True)
+        for number in range(1, MAX_SLUG_SUFFIX + 1):
+            suffix = "" if number == 1 else f"-{number}"
+            slug = base[: 48 - len(suffix)].rstrip("-") + suffix
+            if self.audio_dir(slug).exists():
+                continue  # sesleri kalmış eski bir proje klasörünü de sahiplenme
+            try:
+                with self.path(slug).open("x", encoding="utf-8"):
+                    pass
+            except FileExistsError:
+                continue
+            if number > 1:
+                project.name = f"{project.name.strip()}-{number}"
+            project.slug = slug
+            return self.save(project)
+        raise ControlError(f"'{base}' adıyla çok fazla proje var; başka bir ad seçin.")
+
     def save(self, project: SceneProject) -> SceneProject:
         project.updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         path = self.path(project.slug)
@@ -186,6 +222,60 @@ class SceneNarrator:
     def _controls(self, preset_key: str) -> VoxControls:
         return self.service.presets.get(preset_key).controls
 
+    def _reference_identity(self, profile: str | None) -> dict[str, Any]:
+        """Which reference file the profile resolves to now (a re-recorded profile changes it)."""
+        if not profile:
+            return {"path": None}
+        from voxforge.playground.service import resolve_profile_reference
+
+        try:
+            path = Path(resolve_profile_reference(profile))
+            stat = path.stat()
+        except Exception as exc:  # noqa: BLE001 - kayıp profil: parmak izi değişir, sahne eski sayılır
+            return {"path": None, "error": type(exc).__name__}
+        return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    def fingerprint(self, project: SceneProject, scene: Scene, device: str = "cuda") -> str:
+        """Hash of every input that shapes this scene's audio (see module docstring)."""
+        from voxforge.playground.service import VARIANTS
+
+        try:
+            controls: Any = asdict(self._controls(scene.preset))
+        except ControlError:
+            controls = {"missing_preset": scene.preset}
+        variant = VARIANTS.get(project.variant)
+        transcript = None
+        if variant is not None and variant.ultimate:
+            transcript = self.service.get_transcript(project.profile).strip()
+        payload = {
+            "v": FINGERPRINT_VERSION,
+            "text": scene.text,
+            "profile": project.profile,
+            "reference": self._reference_identity(project.profile),
+            "variant": project.variant,
+            "variant_settings": dict(variant.settings) if variant else None,
+            "max_chars": variant.max_chars if variant else None,
+            "seed": int(project.seed),
+            "normalize": bool(project.normalize),
+            "preset": scene.preset,
+            "controls": controls,
+            "transcript": transcript,
+            "device": device,
+        }
+        blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def scene_state(self, project: SceneProject, scene: Scene, device: str = "cuda") -> str:
+        """``missing`` (no audio), ``stale`` (settings changed / legacy record) or ``ready``."""
+        if not scene.wav or not Path(scene.wav).is_file():
+            return "missing"
+        if not scene.fingerprint or scene.fingerprint != self.fingerprint(project, scene, device):
+            return "stale"
+        return "ready"
+
+    def is_stale(self, project: SceneProject, scene: Scene, device: str = "cuda") -> bool:
+        return self.scene_state(project, scene, device) != "ready"
+
     def generate_scene(self, project: SceneProject, scene_id: str, device: str = "cuda") -> Scene:
         scene = next((item for item in project.scenes if item.id == scene_id), None)
         if scene is None:
@@ -194,6 +284,7 @@ class SceneNarrator:
             raise ControlError("Sahne anlatımı için bir ses profili seçin.")
         if scene.kind not in SCENE_KINDS:
             raise ControlError(f"Bilinmeyen sahne türü: {scene.kind}")
+        fingerprint = self.fingerprint(project, scene, device)  # üretimden önce: kullanılan girdiler
         record = self.service.generate(
             scene.text,
             project.variant,
@@ -209,6 +300,7 @@ class SceneNarrator:
         scene.record_id, scene.wav = record["id"], record["wav"]
         scene.audio_seconds = record["timing"]["audio_seconds"]
         scene.generated_text, scene.generated_preset = scene.text, scene.preset
+        scene.fingerprint, scene.device = fingerprint, device
         if old and old != Path(scene.wav) and old.parent == self.store.audio_dir(project.slug):
             old.unlink(missing_ok=True)  # yalnız bu projenin eski sahne sesi (yeniden üretildi)
         project.merged_wav = None
@@ -218,7 +310,7 @@ class SceneNarrator:
     def generate_all(self, project: SceneProject, only_stale: bool = True, device: str = "cuda") -> list[str]:
         errors = []
         for scene in project.scenes:
-            if only_stale and not scene.stale:
+            if only_stale and not self.is_stale(project, scene, device):
                 continue
             try:
                 self.generate_scene(project, scene.id, device=device)
@@ -226,10 +318,13 @@ class SceneNarrator:
                 errors.append(f"{scene.title}: {exc}")
         return errors
 
-    def merge(self, project: SceneProject) -> dict[str, Any]:
-        missing = [scene.title for scene in project.scenes if scene.stale or not scene.wav or not Path(scene.wav).is_file()]
+    def merge(self, project: SceneProject, device: str = "cuda") -> dict[str, Any]:
+        missing = [scene.title for scene in project.scenes if self.is_stale(project, scene, device)]
         if missing:
-            raise ControlError("Önce şu sahneleri üretin (metin/preset değişmiş ya da ses yok): " + ", ".join(missing))
+            raise ControlError(
+                "Önce şu sahneleri üretin (ses yok ya da metin, profil/referans, varyant, tohum, normalizasyon, "
+                "preset değerleri veya cihaz değişmiş): " + ", ".join(missing)
+            )
         out = self.store.audio_dir(project.slug) / f"{project.slug}_tum_sahneler.wav"
         info = join_wavs(
             [Path(scene.wav) for scene in project.scenes],

@@ -99,8 +99,13 @@ Aksiyon sahnesinde (2 tohum) yönergesiz 0,657/0,611; “hızlı, enerjik” 0,4
   dramatik→dramatik.
 - **Ses kimliği**: tüm sahneler aynı profil referansı, aynı VoxCPM2 varyantı ve aynı tohumla üretilir; yalnız
   preset değişir. Ultimate varyantında stil kullanılamaz (preset'in stili varsa sahne hata verir).
-- Sahne başına üret / yeniden üret, dinle; metni veya preset'i değişen sahne “eski” sayılır ve birleştirme engellenir.
-  Yeniden üretimde yalnız o projenin eski sahne sesi silinir.
+- Sahne başına üret / yeniden üret, dinle. Her sahne üretimde bir **parmak izi** saklar: metin, profil + referans
+  dosyasının kimliği (yol, boyut, değiştirilme zamanı), varyant ve sabit ayarları, tohum, normalizasyon, preset'in
+  gerçek kontrol değerleri, Ultimate transkripti ve cihaz. Biri değişince sahne “ayar değişti” olur, birleştirme
+  engellenir ve “Değişen/eksik sahneleri üret” yalnız o sahneleri yeniden üretir. Parmak izi olmayan eski kayıtlar
+  yüklenir ama doğrulanamadığı için yeniden üretilmesi gerekir. Yeniden üretimde yalnız o projenin eski sahne sesi silinir.
+- Yeni proje mevcut bir projenin üzerine yazmaz: ad dosyası özel oluşturmayla ayrılır, ad (veya sesleri kalmış klasörü)
+  kullanılıyorsa otomatik `-2`, `-3` … verilir ve kullanıcıya yazılır.
 - Birleştirme (`audio_join.join_wavs`): kenar sessizliği −45 dB'de kırpılır (40 ms pay, 8 ms geçiş), sahneler arası
   sabit duraklama (varsayılan 0,8 sn), sesli kısımların RMS'i medyana ±6 dB içinde eşlenir, tepe koruması 0,97.
 - Gerçek GPU denemesi (4 sahne): birleşik 18,85 sn, en uzun boşluk 0,96 sn, seviye düzeltmeleri +0,4/0/−2,3/+1,0 dB,
@@ -114,7 +119,7 @@ Tüm GPU denemelerinde üretim tepesi 5,55-6,31 GB (8 GB sınırı içinde); ref
 
 ## Doğrulama
 
-- `tests/test_vf016_prosody.py` 10 test (modelsiz, gerçek worker süreçleri) + `tests/test_voice_playground.py` 13 test PASS; ruff PASS.
+- `tests/test_vf016_prosody.py` 14 test (modelsiz, gerçek worker süreçleri) + `tests/test_voice_playground.py` 13 test PASS; ruff PASS.
 - Gerçek GPU: kısa metin bayt eşitliği, 2 uzun metin × 3 preset, 6 stil, 4 sahne + birleştirme, 7 yönerge × 2 tohum.
 - Tarayıcı: gelişmiş panel, preset seçimi, sahne bölme tablosu (gerçek Gradio).
 - Çalıştırılmayan: XTTS/Chatterbox yeniden denenmedi (kodları değişmedi); kör dinleme kullanıcıda; Studio'ya

@@ -189,7 +189,7 @@ class ServiceAndScenesTest(unittest.TestCase):
         self.assertEqual([s.kind for s in scenes], ["tension", "action", "dialogue"])
         self.assertEqual(suggest_kind("Sıradan bir sabah."), "calm")
         self.assertEqual(slugify("İlk Anlatı!"), "ilk-anlati")
-        narrator = SceneNarrator(self.service)
+        narrator = self.narrator()
         project = SceneProject(name="Deneme", slug="deneme", profile=None, scenes=scenes)
         with self.assertRaisesRegex(ControlError, "profil"):
             narrator.generate_scene(project, "s01")
@@ -205,6 +205,7 @@ class ServiceAndScenesTest(unittest.TestCase):
 
         self.service.generate = generate  # type: ignore[method-assign]
         project.profile = "mimo"
+        narrator.store.create(project)
         self.assertEqual(narrator.generate_all(project), [])
         self.assertEqual({c[:3] for c in captured}, {("voxcpm2", "mimo", 1234)})  # aynı ses kimliği
         self.assertEqual([c[3] for c in captured], ["gerilim", "aksiyon", "diyalog"])
@@ -214,7 +215,7 @@ class ServiceAndScenesTest(unittest.TestCase):
         self.assertTrue(Path(merged["wav"]).is_file())
         self.assertEqual(merged["pauses"], [0.8, 0.8])
         project.scenes[0].preset = "sakin"  # preset değişti: sahne eski sayılır
-        self.assertTrue(project.scenes[0].stale)
+        self.assertTrue(narrator.is_stale(project, project.scenes[0]))
         with self.assertRaises(ControlError):
             narrator.merge(project)
         narrator.generate_scene(project, "s01")
@@ -222,6 +223,113 @@ class ServiceAndScenesTest(unittest.TestCase):
         reloaded = narrator.store.load("deneme")
         self.assertEqual(reloaded.scenes[0].preset, "sakin")
         self.assertIsNone(reloaded.merged_wav)
+
+    # ---- VF-016 inceleme düzeltmeleri ------------------------------------------------------
+    def narrator(self) -> SceneNarrator:
+        narrator = SceneNarrator(self.service)
+        # Profil referansı yerine testin referans dosyası (gerçek profiller CI'da yok).
+        narrator._reference_identity = lambda profile: {  # type: ignore[method-assign]
+            "profile": profile, "size": self.reference.stat().st_size, "mtime_ns": self.reference.stat().st_mtime_ns,
+        }
+        original = self.service.generate
+        self.generated: list[str] = []
+
+        def generate(text, variant, profile, **kwargs):
+            self.generated.append(text)
+            kwargs["reference"] = self.reference
+            return original(text, variant, None, **kwargs)
+
+        self.service.generate = generate  # type: ignore[method-assign]
+        return narrator
+
+    def ready_project(self, narrator: SceneNarrator) -> SceneProject:
+        project = SceneProject(name="Parmak", slug="parmak", profile="mimo", scenes=split_scenes("Bir sahne.\n\nİkinci sahne."))
+        narrator.store.create(project)
+        self.assertEqual(narrator.generate_all(project), [])
+        self.assertTrue(all(narrator.scene_state(project, s) == "ready" for s in project.scenes))
+        self.generated.clear()
+        return project
+
+    def test_fingerprint_invalidates_on_any_generation_setting(self) -> None:
+        narrator = self.narrator()
+        changes = {
+            "profil": lambda p: setattr(p, "profile", "baska"),
+            "varyant": lambda p: setattr(p, "variant", "voxcpm2-ultimate"),
+            "tohum": lambda p: setattr(p, "seed", 99),
+            "normalizasyon": lambda p: setattr(p, "normalize", False),
+        }
+        for name, change in changes.items():
+            with self.subTest(name):
+                project = self.ready_project(narrator)
+                change(project)
+                self.assertTrue(all(narrator.is_stale(project, s) for s in project.scenes), name)
+                with self.assertRaises(ControlError):
+                    narrator.merge(project)
+        # Referans dosyası değişti (profil yeniden kaydedildi): aynı profil adı yetmez.
+        project = self.ready_project(narrator)
+        write_wav(self.reference, [(0.3, 1)], rate=24000)
+        self.assertTrue(narrator.is_stale(project, project.scenes[0]))
+        # Cihaz değişti.
+        project = self.ready_project(narrator)
+        self.assertTrue(narrator.is_stale(project, project.scenes[0], device="cpu"))
+
+    def test_preset_value_change_regenerates_only_affected_scenes(self) -> None:
+        narrator = self.narrator()
+        project = self.ready_project(narrator)
+        project.scenes[1].preset = "diyalog"
+        narrator.generate_scene(project, "s02")
+        self.generated.clear()
+        # Kullanıcı preset'i ayni adla farklı değerlere güncellenir: yalnız onu kullanan sahne eskir.
+        self.service.presets.save("Ozel", VoxControls(pacing="narration", sentence_pause=0.4))
+        key = PresetStore.key_for("Ozel")
+        project.scenes[0].preset = key
+        narrator.generate_scene(project, "s01")
+        self.generated.clear()
+        narrator.merge(project)
+        self.service.presets.save("Ozel", VoxControls(pacing="narration", sentence_pause=0.9))
+        self.assertEqual([narrator.scene_state(project, s) for s in project.scenes], ["stale", "ready"])
+        with self.assertRaisesRegex(ControlError, project.scenes[0].title):
+            narrator.merge(project)
+        self.assertEqual(narrator.generate_all(project), [])
+        self.assertEqual(self.generated, [project.scenes[0].text])  # yalnız gerekli sahne yeniden üretildi
+        self.assertTrue(Path(narrator.merge(project)["wav"]).is_file())
+
+    def test_legacy_scene_without_fingerprint_loads_and_needs_regeneration(self) -> None:
+        narrator = self.narrator()
+        project = self.ready_project(narrator)
+        data = project.to_dict()
+        for scene in data["scenes"]:
+            for key in ("fingerprint", "device"):
+                scene.pop(key)  # VF-016 ilk sürümünün kayıt biçimi
+        path = narrator.store.path(project.slug)
+        path.write_text(__import__("json").dumps(data, ensure_ascii=False), encoding="utf-8")
+        legacy = narrator.store.load(project.slug)
+        self.assertEqual(legacy.scenes[0].text, project.scenes[0].text)
+        self.assertEqual({narrator.scene_state(legacy, s) for s in legacy.scenes}, {"stale"})
+        with self.assertRaises(ControlError):
+            narrator.merge(legacy)
+        self.assertEqual(narrator.generate_all(legacy), [])
+        self.assertTrue(Path(narrator.merge(legacy)["wav"]).is_file())
+
+    def test_new_project_never_overwrites_existing_one(self) -> None:
+        narrator = self.narrator()
+        first = self.ready_project(narrator)  # slug "parmak", sesleri üretilmiş
+        before = narrator.store.path("parmak").read_bytes()
+        second = SceneProject(name="Parmak", slug="parmak", scenes=split_scenes("Başka metin."))
+        narrator.store.create(second)
+        self.assertEqual((second.slug, second.name), ("parmak-2", "Parmak-2"))
+        self.assertEqual(narrator.store.path("parmak").read_bytes(), before)  # eski proje aynen duruyor
+        self.assertEqual(narrator.store.load("parmak").scenes[0].text, first.scenes[0].text)
+        third = SceneProject(name="Parmak", slug="parmak", scenes=split_scenes("Üçüncü."))
+        narrator.store.create(third)
+        self.assertEqual(third.slug, "parmak-3")
+        # JSON'u silinmiş ama sesleri kalmış klasör de sahiplenilmez.
+        orphan = narrator.store.audio_dir("yetim")
+        orphan.mkdir(parents=True)
+        fourth = SceneProject(name="yetim", slug="yetim", scenes=split_scenes("Dört."))
+        narrator.store.create(fourth)
+        self.assertEqual(fourth.slug, "yetim-2")
+        self.assertEqual(sorted(narrator.store.list()), ["parmak", "parmak-2", "parmak-3", "yetim-2"])
 
 
 if __name__ == "__main__":

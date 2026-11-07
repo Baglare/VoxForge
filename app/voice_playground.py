@@ -156,15 +156,16 @@ def controls_from(cfg: Any, steps: Any, style: Any, pacing: Any, sentence_pause:
     ).validated()
 
 
-def scene_rows(project: SceneProject | None) -> list[list[Any]]:
+SCENE_STATE_LABELS = {"missing": "üretilmedi", "stale": "ayar değişti, yeniden üret"}
+
+
+def scene_rows(project: SceneProject | None, narrator: SceneNarrator | None = None, device: str = "cuda") -> list[list[Any]]:
     if project is None:
         return []
     rows = []
     for index, scene in enumerate(project.scenes, start=1):
-        if scene.stale:
-            state = "değişti, yeniden üret" if scene.wav else "üretilmedi"
-        else:
-            state = f"hazır ({scene.audio_seconds} sn)"
+        state_key = narrator.scene_state(project, scene, device) if narrator else ("missing" if not scene.wav else "stale")
+        state = SCENE_STATE_LABELS.get(state_key) or f"hazır ({scene.audio_seconds} sn)"
         rows.append([index, scene.title, scene.kind, scene.preset, scene.text, state])
     return rows
 
@@ -463,7 +464,7 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
             merged = project.merged_wav if project and project.merged_wav and Path(project.merged_wav).is_file() else None
             return [
                 project,
-                scene_rows(project),
+                scene_rows(project, narrator),
                 audio_path,
                 merged,
                 merged,
@@ -476,7 +477,7 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
         def sync_project(project, name, profile_value, variant_value, seed_value, gap_value, rows):
             if project is None:
                 raise ControlError("Önce 'Sahnelere ayır' ya da kayıtlı bir projeyi yükleyin.")
-            if slugify(name) != project.slug:
+            if (name or "").strip() != project.name and slugify(name) != project.slug:
                 raise ControlError("Proje adı değişti; yeni proje için 'Sahnelere ayır'a basın.")
             apply_rows(project, rows, service.presets.all())
             project.profile = profile_value
@@ -495,10 +496,16 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
                     name=name.strip(), slug=slug, profile=profile_value, variant=variant_value or "voxcpm2",
                     seed=_scene_seed(seed_value), scene_gap=float(gap_value), scenes=scenes,
                 )
-                narrator.store.save(project)
+                narrator.store.create(project)  # mevcut projenin üzerine asla yazmaz
             except ControlError as exc:
-                return scene_outputs(None, f"Hata — {exc}")
-            return scene_outputs(project, f"{len(scenes)} sahne oluşturuldu ve `{slug}` olarak kaydedildi. Türleri/preset'leri düzenleyebilirsiniz.")
+                return [gr.update()] + scene_outputs(None, f"Hata — {exc}")
+            if project.slug != slug:
+                where = f" `{slug}` adı kullanıldığı için mevcut proje korundu; yeni proje `{project.slug}` adıyla kaydedildi."
+            else:
+                where = f" `{project.slug}` olarak kaydedildi."
+            return [project.name] + scene_outputs(
+                project, f"{len(scenes)} sahne oluşturuldu.{where} Türleri/preset'leri düzenleyebilirsiniz."
+            )
 
         def on_scene_load(slug):
             if not slug:
@@ -533,10 +540,10 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
             note = "Tüm sahneler hazır." if not errors else "\n\n".join(f"Hata — {e}" for e in errors)
             return scene_outputs(project, note)
 
-        def on_scene_merge(project, name, profile_value, variant_value, seed_value, gap_value, rows):
+        def on_scene_merge(project, name, profile_value, variant_value, seed_value, gap_value, rows, device_value):
             try:
                 project = sync_project(project, name, profile_value, variant_value, seed_value, gap_value, rows)
-                info = narrator.merge(project)
+                info = narrator.merge(project, device=device_value or "cuda")
             except ControlError as exc:
                 return scene_outputs(project, f"Hata — {exc}")
             gains = ", ".join(f"{g:+.1f}" for g in info["gains_db"])
@@ -550,14 +557,18 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
             return (scene.wav if scene and scene.wav and Path(scene.wav).is_file() else None), row + 1
 
         scene_common = [scene_state, scene_project_name, scene_profile, scene_variant, scene_seed, scene_gap, scene_table]
-        scene_split.click(on_scene_split, [scene_project_name, scene_text, scene_suggest, scene_profile, scene_variant, scene_seed, scene_gap], scene_out)
+        scene_split.click(
+            on_scene_split,
+            [scene_project_name, scene_text, scene_suggest, scene_profile, scene_variant, scene_seed, scene_gap],
+            [scene_project_name, *scene_out],
+        )
         scene_load.click(
             on_scene_load, scene_existing,
             [scene_project_name, scene_profile, scene_variant, scene_seed, scene_gap, scene_text, *scene_out],
         )
         scene_generate_one.click(on_scene_generate_one, [*scene_common, scene_index, device], scene_out)
         scene_generate_all.click(on_scene_generate_all, [*scene_common, device], scene_out)
-        scene_merge.click(on_scene_merge, scene_common, scene_out)
+        scene_merge.click(on_scene_merge, [*scene_common, device], scene_out)
         scene_table.select(on_scene_select, scene_state, [scene_audio, scene_index])
 
     app.queue(default_concurrency_limit=1)
