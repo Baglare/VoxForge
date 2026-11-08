@@ -38,12 +38,14 @@ from voxforge.playground.audio_join import join_wavs
 from voxforge.playground.prosody import ControlError, VoxControls
 
 SCENE_KINDS: dict[str, tuple[str, str]] = {  # kind -> (label, default preset key)
-    "calm": ("Sakin anlatım", "sakin"),
-    "tension": ("Gerilim ve gizem", "gerilim"),
+    # VF-017: varsayılanlar stilsiz (stil yönergeleri sahnelerde ses kimliğini düşürdü); stilli
+    # preset'ler tablodan elle seçilebilir ve "deneysel" etiketlidir.
+    "calm": ("Sakin anlatım", "yavas-anlatici"),
+    "tension": ("Gerilim ve gizem", "gerilim-sade"),
     "action": ("Savaş / aksiyon", "aksiyon"),
-    "emotional": ("Duygusal sahne", "duygusal"),
+    "emotional": ("Duygusal sahne", "duygusal-sade"),
     "dialogue": ("Diyalog", "diyalog"),
-    "dramatic": ("Dramatik konuşma", "dramatik"),
+    "dramatic": ("Dramatik konuşma", "gerilim-sade"),
     "normal": ("Normal", "normal"),
 }
 MAX_SCENES = 40
@@ -90,7 +92,7 @@ class Scene:
     title: str
     text: str
     kind: str = "calm"
-    preset: str = "sakin"
+    preset: str = "yavas-anlatici"
     record_id: str | None = None
     wav: str | None = None
     audio_seconds: float | None = None

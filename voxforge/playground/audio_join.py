@@ -113,13 +113,31 @@ def apply_gain(part: Part, gain_db: float) -> Part:
     return Part(data, part.channels, part.rate)
 
 
+def peak_db(part: Part) -> float | None:
+    peak = max((abs(value) for value in part.samples), default=0)
+    return 20 * math.log10(peak / 32767) if peak else None
+
+
 def loudness_gains(parts: Sequence[Part], max_gain_db: float = MAX_GAIN_DB) -> list[float]:
+    """Gains that move every part's voiced RMS toward the median (limited to +/- max_gain_db).
+
+    VF-017: VoxCPM2 parts are peak-normalised near 0 dBFS, so a positive gain used to hit the
+    per-part peak guard in ``apply_gain`` and was silently cancelled (the quiet scene stayed
+    ~3 dB quieter while +2.5 dB was reported). Now every gain is lowered by one *common*
+    amount when needed, so no part reaches the peak limit and the level differences really
+    are corrected; the whole merge just ends up slightly quieter.
+    """
     levels = [voiced_rms_db(part) for part in parts]
     known = sorted(level for level in levels if level is not None)
     if not known:
         return [0.0 for _ in parts]
     target = known[len(known) // 2]
-    return [0.0 if level is None else max(-max_gain_db, min(max_gain_db, target - level)) for level in levels]
+    gains = [0.0 if level is None else max(-max_gain_db, min(max_gain_db, target - level)) for level in levels]
+    limit_db = 20 * math.log10(PEAK_LIMIT)
+    over = max((peak + gain - limit_db for part, gain in zip(parts, gains) if (peak := peak_db(part)) is not None), default=0.0)
+    if over > 0:
+        gains = [gain - over for gain in gains]
+    return gains
 
 
 def join_wavs(
@@ -146,7 +164,11 @@ def join_wavs(
     if trim:
         parts = [fade(trim_silence(part)) for part in parts]
     gains = loudness_gains(parts, max_gain_db) if match_loudness else [0.0] * len(parts)
+    before = [voiced_rms_db(part) for part in parts] if match_loudness else None
     parts = [apply_gain(part, gain) for part, gain in zip(parts, gains)]
+    if before is not None:  # raporlanan kazanç gerçekten uygulanan kazançtır (tepe koruması dahil)
+        after = [voiced_rms_db(part) for part in parts]
+        gains = [gain if a is None or b is None else a - b for gain, a, b in zip(gains, after, before)]
 
     channels, rate = shape
     temporary = out_path.with_name(out_path.name + ".partial")
