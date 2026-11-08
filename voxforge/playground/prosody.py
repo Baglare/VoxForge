@@ -135,6 +135,17 @@ class Preset:
 # acted mainly as "slower + longer pauses"; none produced a measurable speed-up and
 # "fast/energetic" instructions moved speaker similarity a lot between seeds, so the action
 # preset carries no instruction. Emotional effect itself cannot be measured automatically.
+#
+# VF-017 (docs/VF017_NARRATION_FINDINGS.md, controlled A/B/C with the same text, reference,
+# cfg, steps and seed): the tempo gain of "Yavaş anlatıcı" comes mostly from segmentation +
+# pauses (6.93 -> 6.58 syl/s, articulation unchanged); the style instruction adds a small
+# slowdown (-> 6.38) and is what moves the voice away from the normal output (ECAPA to the
+# default output 0.933 without style vs 0.908 with it). In the user's scenes every style
+# instruction lowered similarity (to the reference and to the default output) and some
+# changed the timbre. Users judged the scene emotions unsuccessful. So the presets used by
+# default are style-free; styled presets stay available but are labelled experimental.
+# Pause-only presets produce the very same sentence audio as each other (pauses are applied
+# at the join), so only the rhythm differs between them.
 BUILTIN_PRESETS: dict[str, Preset] = {
     preset.key: preset
     for preset in (
@@ -144,29 +155,57 @@ BUILTIN_PRESETS: dict[str, Preset] = {
             "Uzun anlatımda ~7,0 hece/sn ve cümle arası 0,02-0,4 sn: acele hissinin kaynağı.",
         ),
         Preset(
-            "sakin", "Sakin anlatım",
+            "sakin", "Sakin anlatım + stil (deneysel)",
             VoxControls(style="sakin, yumuşak ve dengeli bir anlatım", pacing="narration", sentence_pause=0.5),
-            "Ölçüldü: kısa metinde 7,5 → 6,1 hece/sn, ses benzerliği normal ile aynı (0,737); CER 0.",
-            tags=("calm",),
+            "DENEYSEL. VF-016 kısa metinde 7,5 → 6,1 hece/sn, benzerlik aynı (0,737). VF-017 kullanıcı sahnesinde ise "
+            "stilsiz anlatıma göre ECAPA→referans 0,784 → 0,724, →normal 0,912 → 0,859 ve tını belirgin değişti. "
+            "Sakin sahne için önerilen: 'Yavaş anlatıcı' (stilsiz).",
+            tags=("calm", "experimental"),
         ),
         Preset(
             "yavas-anlatici", "Yavaş anlatıcı",
-            VoxControls(style="yavaş, sakin bir anlatım", pacing="narration", sentence_pause=0.55, paragraph_pause=0.95),
-            "Ölçüldü (uzun anlatım için önerilen): 6,93/7,05 → 6,38/6,22 hece/sn, cümle arası duraklama toplamı "
-            "~2 → ~3,6 sn, ilk iki cümlenin acelesi kalktı (oran 1,09 → 0,97); benzerlik 0,824/0,852 → 0,832/0,845; CER ≤0,003.",
+            VoxControls(pacing="narration", sentence_pause=0.55, paragraph_pause=0.95),
+            "VF-017 (uzun anlatım için önerilen, stilsiz): cümle cümle üretim + 0,55/0,95 sn duraklama. Hikâyede 6,93 → "
+            "6,58 hece/sn (artikülasyon aynı, duraklama 2,2 → 3,3 sn), ilk-2/kalan oranı 1,09 → 1,02; ses normal üretime "
+            "en yakın seçenek (ECAPA→normal 0,933; →referans 0,824 → 0,837); CER 0,003. VF-016'daki stilli sürüm "
+            "'Yavaş anlatıcı + stil (deneysel)' adıyla duruyor.",
             tags=("calm", "slow"),
         ),
         Preset(
-            "dramatik", "Dramatik",
-            VoxControls(style="dramatik, etkileyici ve vurgulu bir anlatım", pacing="narration", sentence_pause=0.6),
-            "Kısmen ölçüldü: tempo 7,5 → 6,1 hece/sn, benzerlik ~aynı (0,728). Dramatik vurgu otomatik ölçülemez; dinleyerek doğrulayın.",
-            tags=("dramatic",),
+            "yavas-anlatici-stil", "Yavaş anlatıcı + stil (deneysel)",
+            VoxControls(style="yavaş, sakin bir anlatım", pacing="narration", sentence_pause=0.55, paragraph_pause=0.95),
+            "DENEYSEL. VF-016'nın stilli 'Yavaş anlatıcı'sı: stilsiz sürüme göre ek yavaşlama küçük (6,58 → 6,38 hece/sn, "
+            "artikülasyon 8,14 → 7,90) ama sesi normal üretimden uzaklaştırıyor (ECAPA→normal 0,933 → 0,908); kullanıcı "
+            "dinlemesinde ses kimliği normale tam benzemedi.",
+            tags=("calm", "slow", "experimental"),
         ),
         Preset(
-            "gerilim", "Gerilim / gizem",
-            VoxControls(style="gergin, gizemli ve alçak sesle bir anlatım", pacing="narration", sentence_pause=0.6),
-            "Kısmen ölçüldü: tempo 7,5 → 6,1 hece/sn, benzerlik ~aynı (0,728). Gerilim etkisi dinleyerek doğrulanmalı.",
+            "gerilim-sade", "Gerilim (stilsiz, uzun duraklama)",
+            VoxControls(pacing="narration", sentence_pause=0.75, paragraph_pause=1.1),
+            "VF-017: stil yönergesi yok, yalnız uzun duraklama; cümle sesleri stilsiz anlatımla aynı (kimlik korunur). "
+            "Gerilim tonu üretmez, ritimle ağırlaştırır. Stilli 'Gerilim / gizem' benzerliği düşürdü ve tınıyı değiştirdi.",
             tags=("tension",),
+        ),
+        Preset(
+            "duygusal-sade", "Duygusal (stilsiz, uzun duraklama)",
+            VoxControls(pacing="narration", sentence_pause=0.7, paragraph_pause=1.05),
+            "VF-017: stil yönergesi yok, yalnız uzun duraklama; ses kimliği stilsiz anlatımla aynı (sahnede ECAPA→referans "
+            "0,804; stilli 'Duygusal' 0,768). Duygu tonu üretmez.",
+            tags=("emotional",),
+        ),
+        Preset(
+            "dramatik", "Dramatik + stil (deneysel)",
+            VoxControls(style="dramatik, etkileyici ve vurgulu bir anlatım", pacing="narration", sentence_pause=0.6),
+            "DENEYSEL. Tempo 7,5 → 6,1 hece/sn, kısa metinde benzerlik ~aynı (0,728). Dramatik vurgu otomatik ölçülemez; "
+            "VF-017'de denenen tüm stil yönergeleri sahnelerde ses benzerliğini düşürdü. Dinleyerek doğrulayın.",
+            tags=("dramatic", "experimental"),
+        ),
+        Preset(
+            "gerilim", "Gerilim / gizem + stil (deneysel)",
+            VoxControls(style="gergin, gizemli ve alçak sesle bir anlatım", pacing="narration", sentence_pause=0.6),
+            "DENEYSEL. Sahnede tempoyu belirgin düşürdü (7,37 → 6,34 hece/sn) ama ECAPA→normal 0,882 → 0,859 ve tınıyı "
+            "değiştirdi. Kullanıcı dinlemesinde sahne anlatımı başarılı bulunmadı. Önerilen: 'Gerilim (stilsiz)'.",
+            tags=("tension", "experimental"),
         ),
         Preset(
             "aksiyon", "Savaş / aksiyon",
@@ -176,11 +215,12 @@ BUILTIN_PRESETS: dict[str, Preset] = {
             tags=("action",),
         ),
         Preset(
-            "duygusal", "Duygusal",
+            "duygusal", "Duygusal + stil (deneysel)",
             VoxControls(style="yumuşak, duygulu bir anlatım", pacing="narration", sentence_pause=0.55),
-            "Deneysel: benzerlik yönergesizle yakın (0,70/0,68 vs 0,70/0,73), tempo tohuma göre değişti. "
-            "Duygu etkisi dinleyerek doğrulanmalı; bazı üretimlerde kimlik hafif kayabilir (1-3 deneme önerilir).",
-            tags=("emotional",),
+            "DENEYSEL. VF-017 kullanıcı sahnesinde stilsize göre ECAPA→referans 0,804 → 0,768, →normal 0,929 → 0,887; tempo "
+            "aynı (6,7 hece/sn): ölçülebilir tek etkisi kimlik kayması. Duygu aktarımı kullanıcı dinlemesinde yetersizdi. "
+            "Önerilen: 'Duygusal (stilsiz)'.",
+            tags=("emotional", "experimental"),
         ),
         Preset(
             "diyalog", "Diyalog (doğal konuşma)",

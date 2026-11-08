@@ -81,6 +81,30 @@ class AudioJoinTest(unittest.TestCase):
         self.assertTrue(all(abs(g) <= audio_join.MAX_GAIN_DB for g in info["gains_db"]))
         self.assertNotEqual(info["gains_db"], [0.0, 0.0])  # seviye farkı düzeltildi (±6 dB sınırlı)
 
+    def test_loudness_match_survives_peak_normalised_parts(self) -> None:
+        # VF-017: VoxCPM2 parçaları ~0 dBFS'e normalize; eskiden pozitif kazanç tepe korumasında yok oluyordu.
+        quiet = write_wav(self.tmp / "q.wav", [(0.4, 1)], amplitude=0.99)
+        loud = write_wav(self.tmp / "l.wav", [(0.4, 1)], amplitude=0.99)
+        with wave.open(str(quiet), "rb") as handle:  # aynı tepe, 6 dB daha düşük ortalama: yarısı 0.5 genlik
+            frames = array.array("h", handle.readframes(handle.getnframes()))
+        half = len(frames) // 2
+        frames = array.array("h", [int(v * 0.25) if i < half else v for i, v in enumerate(frames)])
+        with wave.open(str(quiet), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(frames.tobytes())
+        parts = [audio_join.read_part(quiet), audio_join.read_part(loud), audio_join.read_part(loud)]
+        before = [audio_join.voiced_rms_db(part) for part in parts]
+        gains = audio_join.loudness_gains(parts)
+        after = [audio_join.voiced_rms_db(audio_join.apply_gain(part, gain)) for part, gain in zip(parts, gains)]
+        self.assertGreater(max(before) - min(before), 2.0)
+        self.assertLess(max(after) - min(after), 0.3)  # fark gerçekten kapandı (eskiden tepe koruması iptal ediyordu)
+        info = audio_join.join_wavs([quiet, loud, loud], self.tmp / "m.wav", pauses=0.2, trim=True, match_loudness=True)
+        self.assertAlmostEqual(info["gains_db"][0] - info["gains_db"][1], before[1] - before[0], delta=0.3)
+        merged = audio_join.read_part(self.tmp / "m.wav")
+        self.assertLessEqual(max(abs(v) for v in merged.samples), int(audio_join.PEAK_LIMIT * 32767) + 1)
+
     def test_rejects_mismatched_formats_and_bad_pauses(self) -> None:
         a = write_wav(self.tmp / "a.wav", [(0.2, 1)], rate=16000)
         b = write_wav(self.tmp / "b.wav", [(0.2, 1)], rate=24000)
@@ -208,7 +232,7 @@ class ServiceAndScenesTest(unittest.TestCase):
         narrator.store.create(project)
         self.assertEqual(narrator.generate_all(project), [])
         self.assertEqual({c[:3] for c in captured}, {("voxcpm2", "mimo", 1234)})  # aynı ses kimliği
-        self.assertEqual([c[3] for c in captured], ["gerilim", "aksiyon", "diyalog"])
+        self.assertEqual([c[3] for c in captured], ["gerilim-sade", "aksiyon", "diyalog"])  # VF-017: türler stilsiz preset seçer
         first_wav = Path(project.scenes[0].wav)
         self.assertEqual(first_wav.parent, narrator.store.audio_dir("deneme"))
         merged = narrator.merge(project)
@@ -334,3 +358,18 @@ class ServiceAndScenesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VF017PresetPolicyTest(unittest.TestCase):
+    def test_default_presets_are_style_free_and_styled_ones_are_experimental(self) -> None:
+        from voxforge.playground.scenes import SCENE_KINDS
+
+        for _label, key in SCENE_KINDS.values():
+            self.assertEqual(BUILTIN_PRESETS[key].controls.style, "", key)  # sahne varsayılanı stil taşımaz
+        self.assertEqual(BUILTIN_PRESETS["yavas-anlatici"].controls.style, "")
+        for preset in BUILTIN_PRESETS.values():
+            if preset.controls.style:
+                self.assertIn("experimental", preset.tags, preset.key)
+                self.assertIn("deneysel", preset.name.lower(), preset.key)
+                self.assertIn("DENEYSEL", preset.evidence, preset.key)
+        self.assertEqual(BUILTIN_PRESETS["normal"].controls, VoxControls())  # kısa metin varsayılanı değişmedi

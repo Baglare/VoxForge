@@ -87,6 +87,16 @@ Ayrıntı ve ölçümler: [VF016_PROSODY_FINDINGS.md](VF016_PROSODY_FINDINGS.md)
   başına üret/yeniden üret/dinle, tek WAV'da birleştir (kırpılmış kenar, sabit sahne arası duraklama,
   ±6 dB seviye eşleme). Projeler `outputs/playground/scenes/<ad>.json` + `<ad>/` altında.
 
+## VF-017: stilsiz varsayılanlar ve seviye eşleme düzeltmesi
+Ayrıntı ve ölçümler: [VF017_NARRATION_FINDINGS.md](VF017_NARRATION_FINDINGS.md).
+- **Yavaş anlatıcı** artık stil yönergesi göndermez (cümle cümle + 0,55/0,95 sn duraklama). Eski stilli sürüm
+  "Yavaş anlatıcı + stil (deneysel)". Sakin/Dramatik/Gerilim/Duygusal stilli preset'ler "deneysel" etiketlidir.
+- Sahne türlerinin varsayılan preset'leri stilsizdir: sakin → Yavaş anlatıcı, gerilim/dramatik → Gerilim (stilsiz,
+  uzun duraklama), duygusal → Duygusal (stilsiz, uzun duraklama), aksiyon/diyalog aynı. Mevcut projeler kayıtlı
+  preset'lerini korur.
+- Sahne birleştirmede seviye eşleme gerçekten uygulanır (önceden ~0 dBFS'e normalize parçalarda tepe koruması
+  pozitif kazancı iptal ediyordu); gösterilen kazanç uygulanan kazançtır.
+
 ## Her üretimde gösterilen
 Model, kaynak commit (Chatterbox), uygulanan ayarlar ve kütüphane varsayılanları (JSON'da), tohum,
 profil, parça sayısı, üretim süresi, ses süresi, RTF (üretim / ses süresi), bu istekte model yüklendiyse
