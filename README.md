@@ -29,6 +29,9 @@ Mevcut sürüm teknik prototip seviyesinde local olarak çalışır:
 - Gradio içinde experimental fine-tuning hazırlık paneli bulunur; gerçek training başlatmaz.
 - Deneysel XTTS GPT fine-tuning pipeline çalıştırılmış, checkpoint üretilmiş ve checkpoint inference denenmiştir.
 - Matrix evaluation, human evaluation scorecard, inference parameter sweep ve blind experiment comparison akışları vardır.
+- Voice Playground (`run_voice_playground.ps1`): XTTS-v2, Chatterbox V3 ve VoxCPM2 karşılaştırması; VF-018 ile üretim sonrası
+  kalite denetimi (Whisper CPU + ses ölçümleri, güven düzeyli karar) ve farklı tohumlu take seçimi/geri dönüşü
+  (`docs/QUALITY_DIRECTOR.md`). Sesli kitap yol haritası: Issue #18 ve `docs/PROJECT_STATUS.md`.
 
 Deneysel fine-tuning sonucu kalite garantisi vermez. Mevcut yaklaşık 7.45 dakika / 80 örneklik dataset ile kalite artışı sınırlıdır; daha güçlü sonuçlar için daha fazla veri, daha tutarlı kayıt, checkpoint seçimi ve inference ayarı denemeleri gerekir.
 

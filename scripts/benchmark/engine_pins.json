@@ -8,5 +8,10 @@
     "unpinned_dependencies": {
       "resemble-perth": "chatterbox pyproject.toml bunu git+https://github.com/resemble-ai/Perth.git@master olarak istiyor; kurulan revizyon sonuclara kaydedilir."
     }
+  },
+  "voxcpm2": {
+    "model": "openbmb/VoxCPM2",
+    "revision": "32279effe8c19989596f05d353d1447f51d9e915",
+    "why": "VF-015..VF-017 olcumleri ve varsayilan kalite bu revizyonla alindi. 2026-11-14'te Hub'da yeni revizyon (7936080b) yayimlandi: config/audiovae/tokenizer ayni, model.safetensors farkli. Sabitlenmemis yukleme her acilista ~4,6 GB indirmeye calisiyor ve sesi sessizce degistirebiliyordu. Model yalniz yerel onbellekten yuklenir; yeni revizyon ayri ve olculerek denenir (VOXFORGE_VOXCPM_REVISION)."
   }
 }

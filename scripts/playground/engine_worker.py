@@ -50,7 +50,7 @@ for _path in (str(REPO_ROOT), str(BENCH_DIR)):
         sys.path.insert(0, _path)
 
 from run_engine import Torch, package_versions, save_pcm16, supported_kwargs  # noqa: E402
-from sources import chatterbox_pin_problem, load_pins, source_revision  # noqa: E402
+from sources import chatterbox_pin_problem, load_pins, source_revision, voxcpm_model_source  # noqa: E402
 
 from voxforge.playground.audio_join import join_wavs  # noqa: E402
 
@@ -232,7 +232,8 @@ def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
     )
     if "device" in dropped:
         raise RuntimeError("Kurulu voxcpm cihaz seçimini desteklemiyor; sessiz CPU'ya geçiş riski nedeniyle durduruldu.")
-    model = VoxCPM.from_pretrained("openbmb/VoxCPM2", **load_kwargs)
+    model_path, model_info = voxcpm_model_source()  # VF-018: sabit revizyon, yalnız yerel önbellek
+    model = VoxCPM.from_pretrained(model_path, **load_kwargs)
     tts = model.tts_model
     actual = str(getattr(tts, "device", device))
     if actual.split(":")[0] != device:
@@ -296,7 +297,8 @@ def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
         }
 
     return synth, {
-        "model": "openbmb/VoxCPM2",
+        "model": f"openbmb/VoxCPM2@{model_info['revision'][:8]}",
+        "source": model_info,
         "mode": "controllable; ultimate isteğe bağlı",
         "sample_rate": sample_rate,
         "defaults": dict(VOXCPM_BASE),

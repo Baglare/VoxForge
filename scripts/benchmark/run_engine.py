@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 from voxforge.runs import utc_now_iso, write_json_atomic  # noqa: E402  (stdlib-only helpers)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sources import chatterbox_pin_problem, load_pins, source_revision  # noqa: E402
+from sources import chatterbox_pin_problem, load_pins, source_revision, voxcpm_model_source  # noqa: E402
 
 ENGINE_CHOICES = ("xtts", "chatterbox-v3", "voxcpm2", "voxcpm2-ultimate", "mock")
 VERSION_PACKAGES = ("torch", "torchaudio", "chatterbox-tts", "voxcpm", "coqui-tts", "TTS", "transformers", "numpy")
@@ -214,7 +214,8 @@ def load_voxcpm(ctx: dict[str, Any], ultimate: bool):
     from voxcpm import VoxCPM
 
     load_kwargs, _ = supported_kwargs(VoxCPM.from_pretrained, {"load_denoiser": False})
-    model = VoxCPM.from_pretrained("openbmb/VoxCPM2", **load_kwargs)
+    model_path, model_info = voxcpm_model_source()  # VF-018: sabit revizyon, yalnız yerel önbellek
+    model = VoxCPM.from_pretrained(model_path, **load_kwargs)
     wanted: dict[str, Any] = {"reference_wav_path": str(ctx["reference"]), "cfg_value": 2.0, "inference_timesteps": 10}
     if ultimate:
         transcript = ctx.get("reference_transcript")
@@ -234,7 +235,8 @@ def load_voxcpm(ctx: dict[str, Any], ultimate: bool):
         save_pcm16(out_path, wav, sample_rate)
 
     return synth, {
-        "model": "openbmb/VoxCPM2",
+        "model": f"openbmb/VoxCPM2@{model_info['revision'][:8]}",
+        "model_source": model_info,
         "mode": "ultimate (referans + transkript)" if ultimate else "controllable (yalnız referans)",
         "sample_rate": sample_rate,
         "generate_kwargs": {k: v for k, v in generate_kwargs.items() if k not in {"prompt_text"}},

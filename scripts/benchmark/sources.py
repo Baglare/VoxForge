@@ -59,6 +59,36 @@ def describe(info: dict[str, Any] | None) -> str:
     return f"{info['source']}: {info.get('url')} (sürüm {info['version']})"
 
 
+def model_snapshot_dir(hf_home: str | Path, repo: str, revision: str) -> Path:
+    """Local Hugging Face cache folder of ``repo`` at ``revision`` (no network)."""
+    return Path(hf_home) / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / revision
+
+
+def voxcpm_model_source(pins: dict[str, Any] | None = None, environ: dict[str, str] | None = None) -> tuple[str, dict[str, Any]]:
+    """Pinned VoxCPM2 weights as a local path (VF-018).
+
+    The Hub's ``main`` moved to a new revision on 2026-11-14; an unpinned
+    ``from_pretrained("openbmb/VoxCPM2")`` tried to download ~4.6 GB on every start and would
+    have changed the voice silently. The pinned snapshot is loaded from the local cache only;
+    ``VOXFORGE_VOXCPM_REVISION`` selects another revision explicitly (it must be cached).
+    """
+    import os
+
+    env = os.environ if environ is None else environ
+    pin = (pins if pins is not None else load_pins())["voxcpm2"]
+    revision = env.get("VOXFORGE_VOXCPM_REVISION", "").strip() or pin["revision"]
+    hf_home = env.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
+    folder = model_snapshot_dir(hf_home, pin["model"], revision)
+    required = ("config.json", "model.safetensors", "audiovae.pth")
+    missing = [name for name in required if not (folder / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            f"VoxCPM2 revizyonu {revision[:8]} yerel önbellekte eksik ({', '.join(missing)}; {folder}). "
+            "Sessiz indirme yapılmaz; revizyonu bilerek indirin veya VOXFORGE_VOXCPM_REVISION'ı önbellekteki bir revizyona ayarlayın."
+        )
+    return str(folder), {"model": pin["model"], "revision": revision, "pinned": revision == pin["revision"], "path": str(folder)}
+
+
 def chatterbox_pin_problem(info: dict[str, Any] | None, pin: dict[str, Any]) -> str | None:
     """None if the installed chatterbox-tts is exactly the pinned GitHub commit."""
     if info is None:
