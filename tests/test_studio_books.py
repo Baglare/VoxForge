@@ -18,7 +18,7 @@ from zipfile import ZipFile
 from test_studio_takes import FakeSynthesisManager, pcm, write_wav
 
 from voxforge.engines import MOCK_MODEL_ID
-from voxforge.studio.book import WORD
+from voxforge.studio.book import WORD, read_book
 from voxforge.studio.project import ProjectSettings, file_sha256
 from voxforge.studio.service import StudioError, StudioService
 from voxforge.studio.store import DB_FILENAME, MIGRATIONS, SCHEMA_VERSION
@@ -30,12 +30,8 @@ EXPECTED = [TITLES[0], "New York’a vardım.", "Işıklar yandı.", "Ada: Hazı
             TITLES[1], PARAGRAPHS[2]]
 
 
-def write_book_fixtures(root: Path) -> list[Path]:
-    txt, docx, epub = (root / f"book.{ext}" for ext in ("txt", "docx", "epub"))
-    txt.write_bytes(("\ufeff" + "\r\n\r\n".join(
-        (TITLES[0], PARAGRAPHS[0], PARAGRAPHS[1].replace("\n", "\r\n"), TITLES[1], PARAGRAPHS[2])
-    )).encode("utf-8"))
-    with ZipFile(docx, "w") as archive:
+def write_docx(path: Path, paragraphs: list[tuple[bool, str]]) -> None:
+    with ZipFile(path, "w") as archive:
         archive.writestr(
             "[Content_Types].xml",
             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -51,14 +47,22 @@ def write_book_fixtures(root: Path) -> list[Path]:
             'officeDocument" Target="word/document.xml"/></Relationships>',
         )
         blocks = []
-        for heading, text in ((True, TITLES[0]), (False, PARAGRAPHS[0]), (False, PARAGRAPHS[1]),
-                              (True, TITLES[1]), (False, PARAGRAPHS[2])):
+        for heading, text in paragraphs:
             style = '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' if heading else ""
             contents = "<w:br/>".join(f"<w:t>{escape(line)}</w:t>" for line in text.splitlines())
             blocks.append(f"<w:p>{style}<w:r>{contents}</w:r></w:p>")
         archive.writestr(
             "word/document.xml", f'<w:document xmlns:w="{WORD[1:-1]}"><w:body>{"".join(blocks)}</w:body></w:document>',
         )
+
+
+def write_book_fixtures(root: Path) -> list[Path]:
+    txt, docx, epub = (root / f"book.{ext}" for ext in ("txt", "docx", "epub"))
+    txt.write_bytes(("\ufeff" + "\r\n\r\n".join(
+        (TITLES[0], PARAGRAPHS[0], PARAGRAPHS[1].replace("\n", "\r\n"), TITLES[1], PARAGRAPHS[2])
+    )).encode("utf-8"))
+    write_docx(docx, [(True, TITLES[0]), (False, PARAGRAPHS[0]), (False, PARAGRAPHS[1]),
+                      (True, TITLES[1]), (False, PARAGRAPHS[2])])
     with ZipFile(epub, "w") as archive:
         archive.writestr("mimetype", "application/epub+zip")
         archive.writestr(
@@ -107,6 +111,24 @@ class FailOnceManager(FakeSynthesisManager):
 
 
 class StudioBookTests(unittest.TestCase):
+    def test_plain_prose_does_not_start_a_chapter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            txt, docx = root / "chapters.txt", root / "chapters.docx"
+            title, second_title = "Bölüm 1: Dönüş", "Sessiz Oda"
+            body = ["Bölüm boyunca adı anılmadı.", "Bölüm 1 boyunca ev sessiz kaldı."]
+            txt.write_text("\n\n".join((title, *body, f"# {second_title}", "Kapı açıldı.")), encoding="utf-8")
+            write_docx(docx, [(False, title), *((False, text) for text in body),
+                              (True, second_title), (False, "Kapı açıldı.")])
+            for path in (txt, docx):
+                with self.subTest(format=path.suffix):
+                    chapters = read_book(path).chapters
+                    self.assertEqual(len(chapters), 2)
+                    first, second = chapters
+                    self.assertEqual((first.title, second.title), (title, second_title))
+                    self.assertEqual(first.text.strip(), "\n\n".join(body))
+                    self.assertEqual(second.text.strip(), "Kapı açıldı.")
+
     def test_three_formats_and_immutable_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -305,7 +327,43 @@ class StudioBookTests(unittest.TestCase):
                         check=True, capture_output=True,
                     ).stdout
                     self.assertEqual(len(decoded), len(expected))
+
+            before_edit = service.segments(slug)
+            edited = before_edit[-1]
+            new_reading = "Güneş yeniden doğdu."
+            save_button = next(
+                block_id for block_id, block in app.blocks.items()
+                if getattr(block, "value", None) == "Okunuşu elle kaydet"
+            )
+            save_dependency = next(
+                dependency for dependency in app.config["dependencies"]
+                if (save_button, "click") in map(tuple, dependency["targets"])
+            )
+            saved = asyncio.run(
+                app.call_function(app.fns[save_dependency["id"]], [slug, edited["id"], new_reading])
+            )["prediction"]
+            self.assertIn("Okunacak metin elle kaydedildi", saved[0])
+            self.assertEqual(service.segment(slug, edited["id"])["state"], "pending")
+            self.assertIn("1 segment", event("on_start", slug, 0)[0])
+            service.wait(slug, 5)
+            self.assertEqual([request["chunks"] for _, request, _ in manager.calls[9:]], [[new_reading]])
+            after = service.segments(slug)
+            self.assertEqual([s["id"] for s in after], [s["id"] for s in before_edit])
+            self.assertEqual([s["audio_path"] for s in after[:-1]], [s["audio_path"] for s in before_edit[:-1]])
+            self.assertEqual(after[2]["selected_take"], alternative["id"])
+            self.assertEqual(after[-1]["source_text"], edited["source_text"])
+            self.assertEqual(after[-1]["spoken_text"], new_reading)
+            updated_pcm = pcm(Path(after[-1]["audio_path"]))
+            self.assertNotEqual(updated_pcm, active[-1])
+
+            _, file = event("on_preview", slug, 1, "WAV")
+            self.assertEqual(pcm(Path(file["value"])), chapter_one)
+            updated_chapter_two = paragraph_gap.join((active[5], updated_pcm))
+            updated_book = paragraph_gap.join((chapter_one, updated_chapter_two))
+            _, file = event("on_preview", slug, 0, "WAV")
+            self.assertEqual(pcm(Path(file["value"])), updated_book)
+
             self.assertIn("Aktif take", take_event("undo", slug, item["id"], token)[0])
             _, file = event("on_preview", slug, 0, "WAV")
-            self.assertEqual(pcm(Path(file["value"])), expected_pcm[0].replace(active[2], base[2], 1))
-            self.assertEqual(len(manager.calls), 9)
+            self.assertEqual(pcm(Path(file["value"])), updated_book.replace(active[2], base[2], 1))
+            self.assertEqual(len(manager.calls), 10)

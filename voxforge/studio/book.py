@@ -16,9 +16,12 @@ from zipfile import BadZipFile, ZipFile
 FORMATS = (".txt", ".docx", ".epub")
 MAX_DOCUMENT_BYTES = 32 * 1024**2
 WORD = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+CHAPTER_LABEL = r"(?:bölüm|chapter|kısım|part)"
+CHAPTER_NUMBER = r"(?:\d+|[ivxlcdm]+)\.?"
+TITLE_SEPARATOR = r"\s*[:—–-]\s*\S.*"
 HEADING = re.compile(
-    r"(?:#{1,2}\s+.+|(?:bölüm|chapter|kısım|part)(?:\s+|\s*[:—–-]\s*).+"
-    r"|(?:\d+\.?|[ivxlcdm]+\.?)\s+(?:bölüm|chapter|kısım|part)\b.*)",
+    rf"(?:#{{1,2}}\s+.+|{CHAPTER_LABEL}(?:\s+{CHAPTER_NUMBER}(?:{TITLE_SEPARATOR})?|{TITLE_SEPARATOR})"
+    rf"|{CHAPTER_NUMBER}\s+{CHAPTER_LABEL}(?:{TITLE_SEPARATOR})?)",
     re.IGNORECASE,
 )
 HTML_ENTITY = re.compile(r"&([A-Za-z][A-Za-z0-9]+;)")
