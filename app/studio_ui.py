@@ -16,7 +16,7 @@ import gradio as gr
 from voxforge.quality.checks import describe_report, summarize
 from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
 
-TABLE_HEADERS = ["#", "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Süre (sn)", "Hata"]
+TABLE_HEADERS = ["#", "Bölüm", "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Süre (sn)", "Hata"]
 REFRESH_SECONDS = 2.0
 NO_SELECTION = "Bir segment seçmek için tablodaki satıra tıklayın."
 
@@ -87,6 +87,7 @@ def build_studio(
             rows.append(
                 [
                     item["ord"] + 1,
+                    item["chapter_title"],
                     STATE_LABELS[item["state"]],
                     item["voice_name"] or NARRATOR_LABEL,
                     _short(item["source_text"]),
@@ -163,7 +164,7 @@ def build_studio(
         gr.Markdown("# VoxForge Studio")
         gr.Markdown(
             "Metni projeye dönüştürün, segmentleri inceleyin ve yalnız eksik ya da değişen parçaları üretin. "
-            "Projeler ve çıktı WAV'ları yerelde tutulur."
+            "Kaynak belgeler, projeler ve WAV/MP3 çıktıları yerelde tutulur."
         )
         if not vox_presets:
             gr.Markdown("VoxCPM2 üretimi için Voice Playground uygulamasında **Studio** sekmesini açın.")
@@ -179,6 +180,10 @@ def build_studio(
         with gr.Accordion("Yeni proje", open=False):
             new_name = gr.Textbox(label="Proje adı")
             new_text = gr.Textbox(label="Metin", lines=10, placeholder="Seslendirilecek Türkçe metni yapıştırın.")
+            new_document = gr.File(
+                label="veya kitap dosyası (TXT, DOCX, EPUB)", type="filepath", file_types=[".txt", ".docx", ".epub"],
+            )
+            gr.Markdown("TXT’de `Bölüm 1: Başlık` veya `# Başlık` kullanın. Paragrafları boş satırla ayırın.")
             new_engine = gr.Dropdown(
                 label="Studio motoru", choices=[("VoxCPM2 (CUDA)", "voxcpm2"), ("XTTS-v2 (CUDA)", "xtts"), ("Mock", "mock")],
                 value="voxcpm2" if vox_presets else None, visible=bool(vox_presets),
@@ -194,7 +199,7 @@ def build_studio(
             new_lexicon = gr.Textbox(
                 label="Telaffuz sözlüğü (isteğe bağlı)",
                 lines=3,
-                placeholder="Her satıra bir giriş: VoxForge = voks forc",
+                placeholder="! New York = Niyu York   (~ ile harf büyüklüğünden bağımsız eşleştir)",
             )
             gr.Markdown(
                 "Referans önceliği demo ile aynıdır: profil, sonra yüklenen ses, sonra varsayılan referans. "
@@ -205,15 +210,23 @@ def build_studio(
 
         progress_md = gr.Markdown("Proje seçilmedi.")
         with gr.Row():
-            start_button = gr.Button("Eksikleri üret", variant="primary")
+            chapter_scope = gr.Dropdown(label="Üretim ve dışa aktarma kapsamı", choices=[], scale=2)
+            start_button = gr.Button("Eksikleri ve hatalıları üret / devam et", variant="primary")
             stop_button = gr.Button("Durdur")
-            preview_button = gr.Button("Bölümü WAV olarak dışa aktar")
+        with gr.Row():
+            export_format = gr.Dropdown(label="Ses biçimi", choices=["WAV", "MP3"], value="WAV")
+            preview_button = gr.Button("Dışa aktar")
         action_status = gr.Markdown()
-        preview_audio = gr.Audio(label="Bölüm WAV", type="filepath", interactive=False, visible=False)
+        preview_audio = gr.Audio(label="Ses çıktısı", type="filepath", interactive=False, visible=False)
+
+        with gr.Accordion("Proje telaffuz sözlüğü", open=False):
+            lexicon_box = gr.Textbox(label="Girişler", lines=5, placeholder="! Özel İsim = okunuş")
+            save_lexicon = gr.Button("Sözlüğü kaydet")
+            lexicon_status = gr.Markdown()
 
         segment_table = gr.Dataframe(
             headers=TABLE_HEADERS,
-            datatype=["number", "str", "str", "str", "str", "number", "str"],
+            datatype=["number", "str", "str", "str", "str", "str", "number", "str"],
             interactive=False,
             wrap=True,
             label="Segmentler",
@@ -271,9 +284,10 @@ def build_studio(
 
         def on_project_change(slug):
             if not slug:
-                return (None, *view(None), None, *segment_view(None, None))
+                return (None, *view(None), None, NO_SELECTION, gr.update(value="", interactive=False), "", "", None)
             try:
-                return (slug, *view(slug), None, *segment_view(slug, None))
+                editable = service.open(slug).source_format is None
+                return (slug, *view(slug), None, NO_SELECTION, gr.update(value="", interactive=editable), "", "", None)
             except StudioError as exc:
                 return (None, f"⚠️ {exc}", [], [], False, None, *segment_view(None, None))
 
@@ -289,11 +303,26 @@ def build_studio(
         refresh_projects.click(lambda: gr.update(choices=project_choices()), outputs=project_dropdown)
         new_engine.change(preset_update, inputs=new_engine, outputs=new_preset)
 
-        def on_create(name, text, profile_slug, upload, preset_label, lexicon_text, engine_id):
+        def on_book_controls(slug):
+            if not slug:
+                return gr.update(choices=[], value=None), "", gr.update(visible=True), ""
+            choices = [("Tüm kitap / proje", 0)] + [
+                (f"{chapter_id} · {title}", chapter_id) for chapter_id, title in service.chapters(slug)
+            ]
+            imported = bool(service.open(slug).source_format)
+            return gr.update(choices=choices, value=0), service.lexicon_text(slug), gr.update(visible=not imported), ""
+
+        project_dropdown.change(
+            on_book_controls, inputs=project_dropdown, outputs=[chapter_scope, lexicon_box, save_source, lexicon_status],
+        )
+        chapter_scope.input(lambda: gr.update(value=None, visible=False), outputs=preview_audio)
+
+        def on_create(name, text, document, profile_slug, upload, preset_label, lexicon_text, engine_id):
             try:
                 reference = resolve_reference(profile_slug or None, upload)
                 slug = service.create(
                     name, text, reference, preset_for(engine_id, preset_label), lexicon_text, engine_id=engine_id,
+                    document=Path(document) if document else None,
                 )
             except StudioError as exc:
                 return f"⚠️ {exc}", gr.update()
@@ -307,15 +336,15 @@ def build_studio(
 
         create_button.click(
             on_create,
-            inputs=[new_name, new_text, new_profile, new_upload, new_preset, new_lexicon, new_engine],
+            inputs=[new_name, new_text, new_document, new_profile, new_upload, new_preset, new_lexicon, new_engine],
             outputs=[create_status, project_dropdown],
         )
 
-        def on_start(slug):
+        def on_start(slug, chapter_id):
             if not slug:
                 return "⚠️ Önce bir proje seçin.", *view(None)
             try:
-                queued = service.start(slug)
+                queued = service.start(slug, chapter_id=chapter_id or None)
             except StudioError as exc:
                 return f"⚠️ {exc}", *view(slug)
             except Exception as exc:  # noqa: BLE001 - e.g. model load failure
@@ -327,7 +356,7 @@ def build_studio(
             )
             return message, *view(slug)
 
-        start_button.click(on_start, inputs=slug_state, outputs=[action_status, *view_outputs])
+        start_button.click(on_start, inputs=[slug_state, chapter_scope], outputs=[action_status, *view_outputs])
 
         def on_stop(slug):
             if not slug:
@@ -337,19 +366,37 @@ def build_studio(
 
         stop_button.click(on_stop, inputs=slug_state, outputs=[action_status, *view_outputs])
 
-        def on_preview(slug):
+        def on_preview(slug, chapter_id, audio_format):
             if not slug:
                 return "⚠️ Önce bir proje seçin.", gr.update(visible=False)
+            audio_format = audio_format or "WAV"
             try:
-                path = service.build_preview(slug)
-            except StudioError as exc:
-                return f"⚠️ {exc}", gr.update(visible=False)
+                path = service.export_audio(slug, chapter_id=chapter_id or None, audio_format=audio_format.lower())
+            except (StudioError, OSError) as exc:
+                return f"⚠️ {exc}", gr.update(value=None, visible=False)
             return (
-                f"Bölüm WAV hazır ({service.preview_seconds(path):.1f} sn) · `{path.name}`",
+                f"{audio_format} hazır · `{path.name}`",
                 gr.update(value=str(path), visible=True),
             )
 
-        preview_button.click(on_preview, inputs=slug_state, outputs=[action_status, preview_audio])
+        preview_button.click(
+            on_preview, inputs=[slug_state, chapter_scope, export_format], outputs=[action_status, preview_audio],
+        )
+
+        def on_save_lexicon(slug, text, segment_id):
+            if not slug:
+                return "⚠️ Önce bir proje seçin.", *view(None), *segment_view(None, None), *take_panel(None, None)
+            try:
+                count = service.update_lexicon(slug, text)
+                message = f"Sözlük kaydedildi. {count} segmentin okunuşu değişti."
+            except StudioError as exc:
+                message = f"⚠️ {exc}"
+            return message, *view(slug), *segment_view(slug, segment_id), *take_panel(slug, segment_id)
+
+        save_lexicon.click(
+            on_save_lexicon, inputs=[slug_state, lexicon_box, selected_state],
+            outputs=[lexicon_status, *view_outputs, *segment_outputs, *take_outputs],
+        )
 
         def on_select(slug, ids, evt: gr.SelectData):
             row = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index

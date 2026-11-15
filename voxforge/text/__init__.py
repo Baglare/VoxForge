@@ -18,6 +18,7 @@ from voxforge.text.normalize import (
     NormalizationResult,
     Transformation,
     apply_transformations,
+    lexicon_spans,
     load_lexicon,
     normalize_text,
     number_to_words,
@@ -55,10 +56,13 @@ def prepare_segments(
     text: str,
     max_chars: int = 220,
     lexicon: Iterable[LexiconEntry] = (),
+    *,
+    protect_names: bool = False,
 ) -> list[PreparedSegment]:
     entries = list(lexicon)
     prepared: list[PreparedSegment] = []
-    for segment in segment_text(text, max_chars=max_chars):
+    protected = lexicon_spans(text, entries) if protect_names else None
+    for segment in segment_text(text, max_chars=max_chars, protected=protected):
         normalization = normalize_text(segment.text, entries)
         spoken = normalization.spoken
         chunks = tuple(split_text_for_tts(spoken, max_chars=max_chars)) if len(spoken) > max_chars else (spoken,)

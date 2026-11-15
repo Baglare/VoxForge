@@ -15,6 +15,7 @@ fall back to the existing punctuation/space splitter.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 
 from scripts.text_chunking_utils import find_split_index
@@ -132,10 +133,20 @@ def _dialogue_line_spans(text: str, start: int, end: int) -> list[tuple[int, int
     return [block for block in blocks if block[1] > block[0]]
 
 
-def _split_long(text: str, start: int, end: int, max_chars: int) -> list[tuple[int, int]]:
+def _split_long(
+    text: str, start: int, end: int, max_chars: int, protected: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     while end - start > max_chars:
         split_at = start + find_split_index(text[start:end], max_chars)
+        previous = bisect_left(protected, (split_at,)) - 1
+        if previous >= 0:
+            left, right = protected[previous]
+            if left < split_at < right and right - left <= max_chars:
+                if left > start:
+                    split_at = left
+                elif left == start and right <= end:
+                    split_at = right
         piece = _strip_span(text, start, split_at)
         if piece[1] > piece[0]:
             spans.append(piece)
@@ -145,7 +156,9 @@ def _split_long(text: str, start: int, end: int, max_chars: int) -> list[tuple[i
     return spans
 
 
-def segment_text(text: str, max_chars: int = 220) -> list[Segment]:
+def segment_text(
+    text: str, max_chars: int = 220, *, protected: list[tuple[int, int]] | None = None,
+) -> list[Segment]:
     """Split text into paragraph-aware sentence segments of at most ``max_chars`` source chars."""
     if max_chars < 20:
         raise ValueError("max_chars en az 20 olmali.")
@@ -157,7 +170,7 @@ def segment_text(text: str, max_chars: int = 220) -> list[Segment]:
             for span in _sentence_spans(text, b_start, b_end)
         ]
         for s_start, s_end in sentence_spans:
-            for start, end in _split_long(text, s_start, s_end, max_chars):
+            for start, end in _split_long(text, s_start, s_end, max_chars, protected or []):
                 segments.append(
                     Segment(
                         index=len(segments),
