@@ -256,6 +256,7 @@ class StudioProject:
             result = []
             for row in rows:
                 key = self.cache_key(row["spoken_text"], settings, row["voice_id"], voices)
+                _, preset = self.synthesis_voice(row["voice_id"], voices, settings)
                 artifact = db.execute(
                     """SELECT a.id, COALESCE(t.path, a.path) AS path,
                               COALESCE(t.duration_s, a.duration_s) AS duration_s,
@@ -292,6 +293,7 @@ class StudioProject:
                         "transformations": json.loads(row["transformations_json"]),
                         "voice_id": row["voice_id"],
                         "voice_name": voices[row["voice_id"]]["name"] if row["voice_id"] in voices else None,
+                        "preset": preset,
                         "cache_key": key,
                         "state": state,
                         "error": error,

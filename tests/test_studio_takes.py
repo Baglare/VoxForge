@@ -34,7 +34,7 @@ def pcm(path: Path) -> bytes:
         return wav.readframes(wav.getnframes())
 
 
-class FakeVoxWorker:
+class FakeSynthesisManager:
     env = {}
 
     def __init__(self) -> None:
@@ -49,21 +49,80 @@ class FakeVoxWorker:
             if not self.resume.wait(timeout=5):
                 raise TimeoutError("Test did not release the first job.")
         write_wav(Path(request["out"]), 1500 + len(self.calls) * 100)
-        model, revision = worker_engine_spec(engine, self.env)["model_id"].split("@")
+        model_id = worker_engine_spec(engine, self.env)["model_id"]
+        model, _, revision = model_id.partition("@")
         return {
-            "worker": {"source": {"model": model, "revision": revision}, "device": device},
+            "worker": {"model": model_id, "source": {"model": model, "revision": revision}, "device": device},
             "seed": request["seed"], "applied_settings": request["settings"],
         }
 
 
 class StudioTakeTests(unittest.TestCase):
+    def test_narration_chapter_inserts_paragraph_and_sentence_pauses_around_selected_takes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.wav"
+            write_wav(reference, 1000)
+            manager = FakeSynthesisManager()
+            manager.resume.set()
+            service = StudioService(root / "projects", manager=manager)
+            slug = service.create(
+                "Anlatım", "Sabah oldu. Kapıyı açtım.\n\nDışarı çıktım.", reference,
+                {"pacing": "narration", "sentence_pause": 0.35, "paragraph_pause": 0.85},
+            )
+            self.assertEqual(service.start(slug), 3)
+            service.wait(slug, 5)
+            segments = service.segments(slug)
+            self.assertEqual([s["paragraph"] for s in segments], [0, 0, 1])
+            paths = [Path(s["audio_path"]) for s in segments]
+            original_parts = [pcm(path) for path in paths]
+            first, second, third = original_parts
+            sentence_pause = bytes(8400 * 2)  # 0.35 s at 24 kHz, mono int16
+            paragraph_pause = bytes(20400 * 2)  # 0.85 s at 24 kHz, mono int16
+            original = first + sentence_pause + second + paragraph_pause + third
+            self.assertEqual(pcm(service.build_preview(slug)), original)
+
+            segment_id, key = segments[1]["id"], segments[1]["cache_key"]
+            service.start_take(slug, segment_id, key)
+            service.wait(slug, 5)
+            _, alternative = service.take_view(slug, segment_id)["takes"]
+            alternative_pcm = pcm(Path(alternative["path"]))
+            self.assertNotEqual(alternative_pcm, second)
+            service.change_take(slug, segment_id, key, alternative["id"])
+            self.assertEqual(
+                pcm(service.build_preview(slug)),
+                first + sentence_pause + alternative_pcm + paragraph_pause + third,
+            )
+            service.change_take(slug, segment_id, key, None)
+            self.assertEqual(pcm(service.build_preview(slug)), original)
+            self.assertEqual([pcm(path) for path in paths], original_parts)
+            self.assertEqual(len(manager.calls), 4)
+            self.assertTrue(all(request["pauses"] == [] for _, request, _ in manager.calls))
+
+    def test_xtts_chapter_keeps_gapless_pcm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.wav"
+            write_wav(reference, 1000)
+            manager = FakeSynthesisManager()
+            manager.resume.set()
+            service = StudioService(root / "projects", manager=manager)
+            slug = service.create(
+                "XTTS", "Sabah oldu. Kapıyı açtım.\n\nDışarı çıktım.", reference,
+                {"temperature": 0.7}, engine_id="xtts",
+            )
+            self.assertEqual(service.start(slug), 3)
+            service.wait(slug, 5)
+            expected = b"".join(pcm(Path(s["audio_path"])) for s in service.segments(slug))
+            self.assertEqual(pcm(service.build_preview(slug)), expected)
+
     def test_worker_stop_resume_character_take_and_chapter_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             narrator_ref, character_ref = root / "narrator.wav", root / "character.wav"
             write_wav(narrator_ref, 1000)
             write_wav(character_ref, 2000)
-            manager = FakeVoxWorker()
+            manager = FakeSynthesisManager()
             service = StudioService(root / "projects", manager=manager, quality=QualityDirector(None))
             slug = service.create("Kitap", "Sabah oldu.\n\nKapıyı açtım.", narrator_ref)
             project = service.open(slug)

@@ -22,12 +22,14 @@ import uuid
 import wave
 from contextlib import closing
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Callable
 
 from scripts.audio_concat_utils import concatenate_wavs
 from voxforge.engines import TTSEngine, engine_spec
 from voxforge.playground.adapter import WorkerEngineAdapter, worker_engine_spec
+from voxforge.playground.prosody import ControlError, VoxControls
 from voxforge.playground.service import VARIANTS
 from voxforge.playground.workers import EngineManager
 from voxforge.quality.director import QualityDirector
@@ -457,17 +459,34 @@ class StudioService:
 
     def build_preview(self, slug: str) -> Path:
         """Concatenate all segments in order into ``exports/``; refuses if any segment is missing."""
-        segments = self.segments(slug)
+        project = self.open(slug)
+        segments = project.segments()
         missing = [str(item["ord"] + 1) for item in segments if item["state"] != "done"]
         if missing:
             shown = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")
             raise StudioError(f"Önce tüm segmentler üretilmeli. Eksik segment: {shown}")
         if not segments:
             raise StudioError("Projede segment yok.")
+        pauses = None
+        if project.settings.engine_id == "voxcpm2":
+            pauses = []
+            for current, following in pairwise(segments):
+                preset = current["preset"]
+                if preset.get("pacing") != "narration":
+                    pauses.append(0.0)
+                    continue
+                try:
+                    controls = VoxControls.from_dict(preset)
+                except ControlError as exc:
+                    raise StudioError(str(exc)) from exc
+                pauses.append(
+                    controls.sentence_pause if current["paragraph"] == following["paragraph"]
+                    else controls.paragraph_pause
+                )
         exports = self.project_dir(slug) / EXPORTS_DIRNAME
         exports.mkdir(exist_ok=True)
         target = exports / f"bolum_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.wav"
-        ok, message = concatenate_wavs([Path(item["audio_path"]) for item in segments], target)
+        ok, message = concatenate_wavs([Path(item["audio_path"]) for item in segments], target, pauses=pauses)
         if not ok:
             target.unlink(missing_ok=True)
             raise StudioError(f"Birleştirme başarısız: {message}")

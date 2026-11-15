@@ -15,8 +15,10 @@ def ffmpeg_concat_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
 
 
-def _concatenate_pcm_wavs(input_paths: list[Path], output_path: Path) -> tuple[bool, str]:
-    """Portable fallback for same-format PCM WAV parts; no external packages."""
+def _concatenate_pcm_wavs(
+    input_paths: list[Path], output_path: Path, pauses: list[float],
+) -> tuple[bool, str]:
+    """Stream same-format PCM WAV parts and optional gaps without external packages."""
     temporary_path = output_path.with_name(f".{output_path.name}.partial")
     try:
         with wave.open(str(input_paths[0]), "rb") as first:
@@ -29,7 +31,8 @@ def _concatenate_pcm_wavs(input_paths: list[Path], output_path: Path) -> tuple[b
             combined.setnchannels(params.nchannels)
             combined.setsampwidth(params.sampwidth)
             combined.setframerate(params.framerate)
-            for path in input_paths:
+            silence_frame = (b"\x80" if params.sampwidth == 1 else bytes(params.sampwidth)) * params.nchannels
+            for index, path in enumerate(input_paths):
                 with wave.open(str(path), "rb") as source:
                     current = (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getcomptype())
                     if current != expected:
@@ -39,6 +42,8 @@ def _concatenate_pcm_wavs(input_paths: list[Path], output_path: Path) -> tuple[b
                         if not frames:
                             break
                         combined.writeframesraw(frames)
+                if index < len(pauses):
+                    combined.writeframesraw(silence_frame * round(params.framerate * pauses[index]))
         os.replace(temporary_path, output_path)
         return True, "PCM WAV parcalari Python ile birlestirildi."
     except (OSError, EOFError, wave.Error) as exc:
@@ -47,10 +52,16 @@ def _concatenate_pcm_wavs(input_paths: list[Path], output_path: Path) -> tuple[b
         temporary_path.unlink(missing_ok=True)
 
 
-def concatenate_wavs(input_paths: list[Path], output_path: Path) -> tuple[bool, str]:
-    """Reject missing parts instead of quietly producing a truncated recording."""
+def concatenate_wavs(
+    input_paths: list[Path], output_path: Path, *, pauses: list[float] | None = None,
+) -> tuple[bool, str]:
+    """Concatenate WAVs with optional silence in seconds at each boundary."""
     if not input_paths:
         return False, "Birlestirilecek WAV parcasi bulunamadi."
+    if pauses is not None and (
+        len(pauses) != len(input_paths) - 1 or any(not 0 <= pause <= 5 for pause in pauses)
+    ):
+        return False, "Her WAV siniri icin 0-5 saniye araliginda bir duraklama gerekir."
     missing = [path for path in input_paths if not path.is_file()]
     if missing:
         return False, "Eksik WAV parcasi var: " + ", ".join(str(path) for path in missing)
@@ -61,9 +72,11 @@ def concatenate_wavs(input_paths: list[Path], output_path: Path) -> tuple[bool, 
             shutil.copy2(input_paths[0], output_path)
         return True, "Tek WAV parcasi dogrudan kopyalandi."
 
+    if pauses and any(pauses):
+        return _concatenate_pcm_wavs(input_paths, output_path, pauses)
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        return _concatenate_pcm_wavs(input_paths, output_path)
+        return _concatenate_pcm_wavs(input_paths, output_path, [])
 
     concat_list_path = output_path.parent / f"{output_path.stem}_concat_list.txt"
     try:
