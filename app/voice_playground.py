@@ -7,6 +7,11 @@ Run with run_voice_playground.ps1. Only one engine is on the GPU at a time.
 VF-016: VoxCPM2 advanced controls (CFG, diffusion steps, seed, style instruction kept
 apart from the text, narration pacing), built-in and user presets, preset comparison and
 a "Sahne anlatımı" tab (scene-based narration merged into one WAV).
+
+VF-018: Quality Director after a generation (CPU Whisper + audio checks) and a
+"Kalite ve take'ler" tab (app/playground_quality_tab.py): alternatives with new seeds,
+side-by-side listening, selection and undo. Alternatives start automatically only on a
+high-confidence problem.
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ from voxforge.playground.prosody import (  # noqa: E402
     ControlError,
     VoxControls,
 )
+from app.playground_quality_tab import QualityTab  # noqa: E402
+from voxforge.playground.quality import PlaygroundQuality  # noqa: E402
 from voxforge.playground.scenes import SCENE_KINDS, SceneNarrator, SceneProject, slugify, split_scenes  # noqa: E402
 from voxforge.playground.service import (  # noqa: E402
     CONTROLLABLE_VARIANTS,
@@ -44,6 +51,7 @@ from voxforge.playground.service import (  # noqa: E402
     describe,
     list_profiles,
 )
+from voxforge.quality.takes import DEFAULT_ALTERNATIVES, MAX_ALTERNATIVES  # noqa: E402
 
 SLOTS = 4
 ENGINE_CHOICES = [(label, engine) for engine, label in ENGINE_LABELS.items()]
@@ -185,9 +193,10 @@ def apply_rows(project: SceneProject, rows: Any, presets: dict[str, Any]) -> Sce
     return project
 
 
-def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
+def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuality | None = None) -> gr.Blocks:
     service = service or PlaygroundService()
     narrator = SceneNarrator(service)
+    quality_tab = QualityTab(quality or PlaygroundQuality(service), lambda: history_choices(service))
     default = VoxControls()
 
     with gr.Blocks(title="VoxForge Voice Playground") as app:
@@ -249,13 +258,19 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
                         with gr.Row():
                             seed = gr.Number(value=DEFAULT_SEED, precision=0, label="Tohum / seed (varsayılan 1234; -1 = rastgele)")
                             normalize = gr.Checkbox(value=True, label="Türkçe okunuş normalizasyonu (sayı, tarih, saat)")
+                        with gr.Row():
+                            auto_check = gr.Checkbox(value=True, label="Üretimden sonra kalite denetimi (Whisper CPU'da, VRAM kullanmaz)")
+                            auto_retake = gr.Checkbox(value=True, label="Yalnız yüksek güvenli sorunda otomatik alternatif üret")
+                            auto_count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı")
                         generate = gr.Button("Üret", variant="primary")
                     with gr.Column(scale=2):
                         result_audio = gr.Audio(label="Son üretim", type="filepath", interactive=False)
                         result_file = gr.File(label="WAV indir", interactive=False)
                         result_info = gr.Markdown()
+                        result_quality = gr.Markdown()
+                        generated_id = gr.State(None)  # bu tıklamada üretilen kayıt (VF-018 kalite zinciri)
                         status = gr.Markdown(status_line(service))
-                        unload = gr.Button("Motoru kapat (VRAM boşalt)", size="sm")
+                        unload = gr.Button("Motoru ve kalite denetleyicisini kapat", size="sm")
 
                 with gr.Accordion("Toplu karşılaştırma: aynı metin, aynı tohum, birden çok motor/ayar", open=False):
                     compare_variants = gr.CheckboxGroup(
@@ -284,6 +299,10 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
                             info = gr.Markdown(visible=False)
                             slot_components += [audio, info]
                 message = gr.Markdown()
+
+            # =========================== Kalite ve take'ler (VF-018) ===========================
+            with gr.Tab("Kalite ve take'ler"):
+                quality_tab.build()
 
             # ============================== Sahne anlatımı ==============================
             with gr.Tab("Sahne anlatımı"):
@@ -394,17 +413,19 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
             text_value, engine_value, chatter_value, voxcpm_value, device_value, transcript, profile_value, seed_value,
             normalize_value, preset_value, cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v, current,
         ):
+            # Son çıktı: bu çağrıda üretilen kaydın kimliği (yoksa None). Otomatik kalite zinciri yalnız
+            # bunu kullanır; üretim başarısızsa önceki seçim gösterilmeye devam eder ama denetlenmez.
             key = variant_for(engine_value, chatter_value, voxcpm_value)
             try:
                 controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
             except ControlError as exc:
-                return after_records([], current, [str(exc)])
+                return [*after_records([], current, [str(exc)]), None]
             records, errors = service.generate_many(
                 text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value,
                 device=device_value or "cuda", reference_text=transcript, controls=controls,
                 preset_key=preset_value if controls is not None and not controls.is_default() else None,
             )
-            return after_records(records, current, errors)
+            return [*after_records(records, current, errors), records[-1]["id"] if records else None]
 
         def on_generate_many(
             text_value, keys, device_value, transcript, profile_value, seed_value, normalize_value,
@@ -433,6 +454,8 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
         def on_unload():
             engine_name = service.manager.unload()
             note = f"{ENGINE_LABELS.get(engine_name, engine_name)} kapatıldı." if engine_name else "Yüklü motor yoktu."
+            if quality_tab.quality.close():
+                note += " Kalite denetleyicisi (Whisper) kapatıldı."
             return status_line(service), note
 
         outputs = [result_audio, result_file, result_info, status, selected, message, *slot_components]
@@ -447,8 +470,8 @@ def build_app(service: PlaygroundService | None = None) -> gr.Blocks:
         generate.click(
             on_generate,
             [text, engine, chatterbox_setting, voxcpm_setting, device, reference_text, profile, seed, normalize, preset, *panel, selected],
-            outputs,
-        )
+            [*outputs, generated_id],
+        ).then(quality_tab.after_generation, [generated_id, auto_check, auto_retake, auto_count], [result_quality, *quality_tab.outputs])
         generate_many.click(
             on_generate_many, [text, compare_variants, device, reference_text, profile, seed, normalize, *panel, selected], outputs
         )
@@ -590,9 +613,11 @@ def _scene_seed(value: Any) -> int:
 
 def main() -> None:
     service = PlaygroundService()
+    quality = PlaygroundQuality(service)
     atexit.register(service.manager.close)
+    atexit.register(quality.close)
     service.audio_dir.mkdir(parents=True, exist_ok=True)
-    app = build_app(service)
+    app = build_app(service, quality)
     port = int(os.environ.get("VOXFORGE_PLAYGROUND_PORT", "7861"))
     print(f"Voice Playground çıktıları: {service.root}")
     # outputs/ bir junction olabilir; Gradio çözülmüş yolu denetler.

@@ -6,6 +6,20 @@ VoxForge, Windows üzerinde yerel çalışan Python tabanlı bir Türkçe TTS de
 
 Proje local-first çalışır. Ses kayıtları, profiller, datasetler, deney klasörleri, checkpointler ve üretilen çıktılar kullanıcının makinesinde kalır. GitHub üzerinde yalnızca kaynak kod, runner dosyaları, dokümantasyon ve boş klasör niyetini koruyan `.gitkeep` dosyaları tutulmalıdır.
 
+### Sesli kitap yol haritası (Issue #18)
+
+Ana takip: https://github.com/Baglare/VoxForge/issues/18. Birincil motor VoxCPM2 (cfg 2.0, 10 adım varsayılan);
+XTTS-v2 ve Chatterbox V3 karşılaştırma için korunur. Her aşama ayrı PR'dır, merge kullanıcıdadır.
+
+| Aşama | Durum |
+|---|---|
+| VF-018 Quality Director + Voice Takes | PR açık: bağımsız `voxforge/quality/` servisi (ses ölçümü + CPU Whisper, güven düzeyli açıklanabilir karar), farklı tohumlu take'ler, seçim/geri dönüş, Playground "Kalite ve take'ler" sekmesi. Ayrıntı: `docs/QUALITY_DIRECTOR.md` |
+| VF-019 VoxCPM2 → Studio | Bekliyor (VF-018 merge sonrası) |
+| VF-020 Kitap içe aktarma | Bekliyor |
+| VF-021 Voice Design + karakter kütüphanesi | Bekliyor |
+| VF-022 Emotion Lab | Bekliyor |
+| VF-023 Ses editörü + export | Bekliyor |
+
 ## 2. Tamamlanan bileşenler
 
 - Local Gradio demo

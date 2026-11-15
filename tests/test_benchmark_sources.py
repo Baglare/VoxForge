@@ -55,6 +55,26 @@ class SourceTests(unittest.TestCase):
         self.assertFalse(report["checks"]["source_ok"])
         self.assertTrue(re.search("kurulu değil|içe aktarılamadı", report["error"]))
 
+    def test_voxcpm_model_is_pinned_and_local_only(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        pins = {"voxcpm2": {"model": "openbmb/VoxCPM2", "revision": "a" * 40}}
+        with tempfile.TemporaryDirectory() as home:
+            folder = sources.model_snapshot_dir(home, "openbmb/VoxCPM2", "a" * 40)
+            folder.mkdir(parents=True)
+            for name in ("config.json", "model.safetensors"):
+                (folder / name).write_text("x")
+            with self.assertRaisesRegex(RuntimeError, "audiovae.pth"):  # eksik: indirme yok, açık hata
+                sources.voxcpm_model_source(pins, {"HF_HOME": home})
+            (folder / "audiovae.pth").write_text("x")
+            path, info = sources.voxcpm_model_source(pins, {"HF_HOME": home})
+            self.assertEqual(Path(path), folder)
+            self.assertTrue(info["pinned"])
+            with self.assertRaisesRegex(RuntimeError, "bbbbbbbb"):
+                sources.voxcpm_model_source(pins, {"HF_HOME": home, "VOXFORGE_VOXCPM_REVISION": "b" * 40})
+        self.assertIn("voxcpm2", sources.load_pins())  # gerçek sabit dosyada kayıtlı
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,21 @@ Ayrıntı ve ölçümler: [VF017_NARRATION_FINDINGS.md](VF017_NARRATION_FINDINGS
 - Sahne birleştirmede seviye eşleme gerçekten uygulanır (önceden ~0 dBFS'e normalize parçalarda tepe koruması
   pozitif kazancı iptal ediyordu); gösterilen kazanç uygulanan kazançtır.
 
+## VF-018: kalite denetimi ve take'ler
+Ayrıntı, eşikler ve ölçümler: [QUALITY_DIRECTOR.md](QUALITY_DIRECTOR.md).
+- **Üretimden sonra kalite denetimi** (varsayılan açık; Mock hariç): ses önce gösterilir, sonra Whisper large-v3
+  (mevcut eval ortamı, **CPU**, VRAM kullanmaz) ve ses ölçümleri raporu "Son üretim" altına yazar. Rapor
+  `outputs/playground/quality/<id>.json` dosyasına önbelleğe alınır.
+- Karar üç ayrı durumdur: **Başarılı**, **Şüpheli** (dinleyip karar verin, hiçbir şey değişmez), **Sorunlu (yüksek
+  güven)**. Yalnız sonuncusu ve "Yalnız yüksek güvenli sorunda otomatik alternatif üret" açıkken 1-3 alternatif
+  kendiliğinden üretilir. ASR farkları kesin TTS hatası sayılmaz.
+- **Kalite ve take'ler** sekmesi: üretim seç, denetle, tüm metin veya ⚠️ sorunlu cümle için farklı tohumlarla
+  alternatif üret, en fazla 4 take'i yan yana dinle (seçili önce, sonra en iyi sıralananlar), take seç, önceki
+  seçime dön. Take'ler ve WAV'ları silinmez (`outputs/playground/takes/`).
+- "Motoru ve kalite denetleyicisini kapat" TTS worker'ını ve Whisper worker'ını birlikte kapatır.
+- VoxCPM2 ağırlıkları `engine_pins.json` revizyonuna (`32279eff`) sabitlendi ve yalnız yerel önbellekten yüklenir
+  (Hub'daki yeni revizyon sessizce indirilmez).
+
 ## Her üretimde gösterilen
 Model, kaynak commit (Chatterbox), uygulanan ayarlar ve kütüphane varsayılanları (JSON'da), tohum,
 profil, parça sayısı, üretim süresi, ses süresi, RTF (üretim / ses süresi), bu istekte model yüklendiyse
@@ -123,4 +138,6 @@ reddetme, Ultimate transkript zorunluluğu/saklama, prompt önbelleği anahtarı
 indeks seçimi. `tests/test_vf016_prosody.py`: WAV birleştirme (eski birleştirme bayt eşitliği, kırpma,
 seviye), ritim ölçümü, kontrol aralıkları, preset deposu, parça planı, stilin metinden ayrı taşınması,
 Ultimate uyumsuzluğu, preset karşılaştırması ve sahne üret/birleştir akışı. Gerçek motorlarla GPU üretimi
-bu testlerde yoktur (ölçümler PR açıklamasında ve VF016_PROSODY_FINDINGS.md'de).
+bu testlerde yoktur (ölçümler PR açıklamasında ve VF016_PROSODY_FINDINGS.md'de). VF-018:
+`tests/test_quality_director.py` (kurallar, güven, take deposu, geri dönüş, sahte ASR worker protokolü, Playground
+köprüsü); sınırlı gerçek GPU doğrulaması `scripts/quality/vf018_validate.py`.

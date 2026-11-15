@@ -284,9 +284,13 @@ class EngineManager:
     # -- requests ---------------------------------------------------------------------------
     def synthesize(self, engine: str, request: dict[str, Any], device: str = "cuda") -> dict[str, Any]:
         """Run one request on ``engine`` (on ``device``); returns the worker reply plus load info."""
+        return self.call(engine, "synth", request, device)
+
+    def call(self, engine: str, cmd: str, request: dict[str, Any], device: str = "cuda") -> dict[str, Any]:
+        """Send ``cmd`` to the (single) worker of ``engine``; VF-018 uses it for the ASR worker."""
         with self._lock:
             worker, loaded_now = self._ensure(engine, device)
-            request = {"cmd": "synth", "id": f"{time.time_ns()}", **request}
+            request = {"cmd": cmd, "id": f"{time.time_ns()}", **request}
             try:
                 worker.send(request)
                 reply = worker.wait_reply(self.synth_timeout, "result")
