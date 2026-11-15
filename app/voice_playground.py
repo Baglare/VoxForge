@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """VoxForge Voice Playground: free Turkish text with XTTS-v2, Chatterbox V3 or VoxCPM2.
 
-Standalone Gradio app (127.0.0.1:7861 by default), separate from the Studio demo.
+Gradio app with Playground and persistent Studio (127.0.0.1:7861 by default).
 Run with run_voice_playground.ps1. Only one engine is on the GPU at a time.
 
 VF-016: VoxCPM2 advanced controls (CFG, diffusion steps, seed, style instruction kept
@@ -19,6 +19,7 @@ from __future__ import annotations
 import atexit
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,14 @@ from voxforge.playground.prosody import (  # noqa: E402
     VoxControls,
 )
 from app.playground_quality_tab import QualityTab  # noqa: E402
+from app.gradio_xtts_demo import (  # noqa: E402
+    INFERENCE_PRESET_CHOICES,
+    INFERENCE_PRESET_DEFAULT,
+    INFERENCE_PRESET_KWARGS,
+    build_profile_dropdown_choices,
+    resolve_studio_reference,
+)
+from app.studio_ui import build_studio  # noqa: E402
 from voxforge.playground.quality import PlaygroundQuality  # noqa: E402
 from voxforge.playground.scenes import SCENE_KINDS, SceneNarrator, SceneProject, slugify, split_scenes  # noqa: E402
 from voxforge.playground.service import (  # noqa: E402
@@ -52,6 +61,8 @@ from voxforge.playground.service import (  # noqa: E402
     list_profiles,
 )
 from voxforge.quality.takes import DEFAULT_ALTERNATIVES, MAX_ALTERNATIVES  # noqa: E402
+from voxforge.studio import studio_root  # noqa: E402
+from voxforge.studio.service import StudioService  # noqa: E402
 
 SLOTS = 4
 ENGINE_CHOICES = [(label, engine) for engine, label in ENGINE_LABELS.items()]
@@ -196,7 +207,18 @@ def apply_rows(project: SceneProject, rows: Any, presets: dict[str, Any]) -> Sce
 def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuality | None = None) -> gr.Blocks:
     service = service or PlaygroundService()
     narrator = SceneNarrator(service)
-    quality_tab = QualityTab(quality or PlaygroundQuality(service), lambda: history_choices(service))
+    quality = quality or PlaygroundQuality(service)
+    quality_tab = QualityTab(quality, lambda: history_choices(service))
+    studio = build_studio(
+        StudioService(studio_root(), manager=service.manager, quality=quality.director),
+        engine_label="voxcpm2",
+        profile_choices=build_profile_dropdown_choices,
+        resolve_reference=resolve_studio_reference,
+        preset_choices=INFERENCE_PRESET_CHOICES,
+        preset_kwargs=INFERENCE_PRESET_KWARGS,
+        default_preset=INFERENCE_PRESET_DEFAULT,
+        vox_presets={key: (preset.name, asdict(preset.controls)) for key, preset in service.presets.all().items()},
+    )
     default = VoxControls()
 
     with gr.Blocks(title="VoxForge Voice Playground") as app:
@@ -305,6 +327,9 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                 quality_tab.build()
 
             # ============================== Sahne anlatımı ==============================
+            with gr.Tab("Studio"):
+                studio.render()
+
             with gr.Tab("Sahne anlatımı"):
                 gr.Markdown(
                     "Metni sahnelere ayır (`## Başlık`, `---` ya da `[sahne: Başlık]` işaretleri; işaret yoksa boş satırla "
@@ -621,7 +646,10 @@ def main() -> None:
     port = int(os.environ.get("VOXFORGE_PLAYGROUND_PORT", "7861"))
     print(f"Voice Playground çıktıları: {service.root}")
     # outputs/ bir junction olabilir; Gradio çözülmüş yolu denetler.
-    app.launch(server_name="127.0.0.1", server_port=port, share=False, allowed_paths=[str(service.root.resolve())])
+    app.launch(
+        server_name="127.0.0.1", server_port=port, share=False,
+        allowed_paths=[str(service.root.resolve()), str(studio_root().resolve())],
+    )
 
 
 if __name__ == "__main__":

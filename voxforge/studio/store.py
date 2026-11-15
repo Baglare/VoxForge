@@ -76,6 +76,29 @@ MIGRATIONS: dict[int, str] = {
         created_at TEXT NOT NULL
     );
     """,
+    4: """
+    ALTER TABLE job ADD COLUMN seed INTEGER;
+    ALTER TABLE artifact ADD COLUMN quality_json TEXT;
+    ALTER TABLE artifact ADD COLUMN synthesis_json TEXT;
+    CREATE TABLE take (
+        id INTEGER PRIMARY KEY,
+        artifact_id INTEGER NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,
+        seed INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        duration_s REAL NOT NULL,
+        quality_json TEXT,
+        synthesis_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (artifact_id, seed)
+    );
+    CREATE TABLE take_selection (
+        id INTEGER PRIMARY KEY,
+        artifact_id INTEGER NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,
+        take_id INTEGER REFERENCES take(id) ON DELETE CASCADE
+    );
+    CREATE INDEX take_selection_stack ON take_selection(artifact_id, id);
+    """,
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 
@@ -139,17 +162,19 @@ class ProjectStore:
         existed = self.db_path.is_file()
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
+        with self.transaction() as connection:
             current = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if current > SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Proje veritabani daha yeni bir surumden ({current}); bu VoxForge surumu {SCHEMA_VERSION} destekliyor."
-            )
-        if current == SCHEMA_VERSION:
-            return
-        if existed and current > 0:
-            self.backup_to(self.db_path.with_name(f"{DB_FILENAME}.bak-v{current}"))
-        for version in range(current + 1, SCHEMA_VERSION + 1):
-            with self.connect() as connection:
-                connection.executescript(
-                    "BEGIN;\n" + MIGRATIONS[version] + f"\nPRAGMA user_version = {version};\nCOMMIT;"
+            if current > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Proje veritabani daha yeni bir surumden ({current}); bu VoxForge surumu {SCHEMA_VERSION} destekliyor."
                 )
+            if existed and 0 < current < SCHEMA_VERSION:
+                self.backup_to(self.db_path.with_name(f"{DB_FILENAME}.bak-v{current}"))
+            for version in range(current + 1, SCHEMA_VERSION + 1):
+                statement = ""
+                for line in MIGRATIONS[version].splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        connection.execute(statement)
+                        statement = ""
+                connection.execute(f"PRAGMA user_version = {version}")

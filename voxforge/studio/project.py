@@ -14,10 +14,13 @@ import os
 import socket
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from voxforge.playground.service import DEFAULT_SEED
+from voxforge.quality.takes import derive_seeds
 from voxforge.runs import utc_now_iso
 from voxforge.studio.store import ProjectStore
 from voxforge.text import NORMALIZER_VERSION, LexiconEntry, normalize_text, prepare_segments
@@ -26,6 +29,7 @@ ADAPTER_VERSION = "1"
 # A running job whose heartbeat is older than this is considered abandoned (crash/kill).
 LEASE_SECONDS = 60.0
 HEARTBEAT_SECONDS = 15.0
+PAUSED_TAKE = "Alternatif take durduruldu; Eksikleri üret ile devam edin."
 
 
 @dataclass
@@ -53,7 +57,7 @@ def file_sha256(path: Path) -> str:
 def engine_supports_presets(engine_id: str) -> bool:
     from voxforge.engines import ENGINE_SPECS
 
-    return bool(ENGINE_SPECS.get(engine_id, {}).get("supports_presets", False))
+    return engine_id == "voxcpm2" or bool(ENGINE_SPECS.get(engine_id, {}).get("supports_presets", False))
 
 
 def _recover_stale_jobs(db) -> int:
@@ -157,8 +161,8 @@ class StudioProject:
         return cached[1]
 
     # ---- voices (VF-007) -------------------------------------------
-    def voices(self) -> dict[str, dict[str, Any]]:
-        with self.store.connect() as db:
+    def voices(self, connection=None) -> dict[str, dict[str, Any]]:
+        with (self.store.connect() if connection is None else nullcontext(connection)) as db:
             rows = db.execute("SELECT * FROM voice ORDER BY created_at, key").fetchall()
         return {
             row["key"]: {
@@ -240,21 +244,32 @@ class StudioProject:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     # ---- segments --------------------------------------------------
-    def segments(self) -> list[dict[str, Any]]:
+    def segments(self, segment_id: int | None = None) -> list[dict[str, Any]]:
         """Segments in order with derived state: done / queued / running / failed / cancelled / pending."""
         settings = self.settings
-        voices = self.voices()
         with self.store.connect() as db:
-            rows = db.execute("SELECT * FROM segment ORDER BY ord").fetchall()
+            db.execute("BEGIN")
+            voices = self.voices(db)
+            rows = db.execute(
+                "SELECT * FROM segment WHERE id = ? ORDER BY ord", (segment_id,)
+            ) if segment_id is not None else db.execute("SELECT * FROM segment ORDER BY ord")
             result = []
             for row in rows:
                 key = self.cache_key(row["spoken_text"], settings, row["voice_id"], voices)
                 artifact = db.execute(
-                    "SELECT path, duration_s FROM artifact WHERE segment_id = ? AND cache_key = ?",
+                    """SELECT a.id, COALESCE(t.path, a.path) AS path,
+                              COALESCE(t.duration_s, a.duration_s) AS duration_s,
+                              COALESCE(t.id, 0) AS selected_take
+                       FROM artifact a
+                       LEFT JOIN take t ON t.id = (
+                           SELECT take_id FROM take_selection WHERE artifact_id = a.id ORDER BY id DESC LIMIT 1
+                       )
+                       WHERE a.segment_id = ? AND a.cache_key = ?""",
                     (row["id"], key),
                 ).fetchone()
                 job = db.execute(
-                    "SELECT status, error FROM job WHERE segment_id = ? AND cache_key = ? ORDER BY id DESC LIMIT 1",
+                    "SELECT status, error FROM job WHERE segment_id = ? AND cache_key = ?"
+                    " AND seed IS NULL ORDER BY id DESC LIMIT 1",
                     (row["id"], key),
                 ).fetchone()
                 if artifact and Path(artifact["path"]).is_file():
@@ -265,6 +280,8 @@ class StudioProject:
                         state = "pending"  # artifact file disappeared
                 else:
                     state, error = "pending", None
+                if artifact and artifact["selected_take"] and state != "done":
+                    state, error = "failed", "Seçili take'in WAV dosyası eksik. Başka bir take seçin."
                 result.append(
                     {
                         "id": row["id"],
@@ -280,9 +297,88 @@ class StudioProject:
                         "error": error,
                         "audio_path": artifact["path"] if state == "done" else None,
                         "duration_s": artifact["duration_s"] if state == "done" else None,
+                        "artifact_id": artifact["id"] if artifact else None,
+                        "selected_take": artifact["selected_take"] if artifact else None,
                     }
                 )
         return result
+
+    def take_details(self, segment: dict[str, Any]) -> dict[str, Any]:
+        artifact_id = segment["artifact_id"]
+        with self.store.connect() as db:
+            db.execute("BEGIN")
+            rows = db.execute(
+                """SELECT 0 AS id, path, quality_json, sha256, synthesis_json FROM artifact WHERE id = ?
+                   UNION ALL
+                   SELECT id, path, quality_json, sha256, synthesis_json FROM take WHERE artifact_id = ?
+                   ORDER BY id""",
+                (artifact_id, artifact_id),
+            ).fetchall()
+            job = db.execute(
+                """SELECT status, error FROM job WHERE segment_id = ? AND cache_key = ? AND seed IS NOT NULL
+                   ORDER BY id DESC LIMIT 1""",
+                (segment["id"], segment["cache_key"]),
+            ).fetchone()
+            history_size = db.execute(
+                "SELECT COUNT(*) FROM take_selection WHERE artifact_id = ?", (artifact_id,)
+            ).fetchone()[0]
+        takes = [
+            {"id": row["id"], "path": row["path"] if Path(row["path"]).is_file() else None,
+             "quality": json.loads(row["quality_json"] or "null"),
+             "sha256": row["sha256"], "synthesis": json.loads(row["synthesis_json"] or "{}")}
+            for row in rows
+        ]
+        return {"takes": takes, "job": dict(job) if job else None, "can_undo": bool(history_size)}
+
+    def save_quality(self, segment: dict[str, Any], take: dict[str, Any], report: dict[str, Any]) -> None:
+        quality = json.dumps(report, ensure_ascii=False)
+        with self.store.transaction() as db:
+            if self.current_key_for(segment["id"]) != segment["cache_key"]:
+                raise ValueError("Segment değişti. Yeniden seçin.")
+            if take["id"]:
+                saved = db.execute(
+                    "UPDATE take SET quality_json = ? WHERE id = ? AND artifact_id = ? AND sha256 = ?",
+                    (quality, take["id"], segment["artifact_id"], take["sha256"]),
+                )
+            else:
+                saved = db.execute(
+                    "UPDATE artifact SET quality_json = ? WHERE id = ? AND sha256 = ?",
+                    (quality, segment["artifact_id"], take["sha256"]),
+                )
+            if not saved.rowcount:
+                raise ValueError("Take değişti. Yeniden seçin.")
+
+    def change_take(self, segment_id: int, cache_key: str, take_id: int | None) -> None:
+        """Select an available take (0 = original), or pop one choice when take_id is None."""
+        with self.store.transaction() as db:
+            if self.current_key_for(segment_id) != cache_key:
+                raise ValueError("Segment değişti. Yeniden seçin.")
+            artifact = db.execute(
+                "SELECT id, path FROM artifact WHERE segment_id = ? AND cache_key = ?", (segment_id, cache_key)
+            ).fetchone()
+            if not artifact:
+                raise ValueError("Önce segmenti üretin.")
+            history = db.execute(
+                "SELECT id, take_id FROM take_selection WHERE artifact_id = ? ORDER BY id DESC LIMIT 2",
+                (artifact["id"],),
+            ).fetchall()
+            if take_id is None and not history:
+                raise ValueError("Geri alınacak take seçimi yok.")
+            selected = (history[0]["take_id"] or 0) if history else 0
+            target = take_id
+            if target is None:
+                target = (history[1]["take_id"] or 0) if len(history) > 1 else 0
+            row = db.execute(
+                "SELECT path FROM take WHERE id = ? AND artifact_id = ?", (target, artifact["id"])
+            ).fetchone() if target else artifact
+            if row is None or not Path(row["path"]).is_file():
+                raise ValueError("Take'in WAV dosyası bulunamadı.")
+            if take_id is None:
+                db.execute("DELETE FROM take_selection WHERE id = ?", (history[0]["id"],))
+            elif selected != target:
+                db.execute(
+                    "INSERT INTO take_selection (artifact_id, take_id) VALUES (?, ?)", (artifact["id"], target or None)
+                )
 
     def update_segment_text(self, segment_id: int, source_text: str) -> str:
         """Change one segment's source text; returns its new spoken text. Other segments are untouched."""
@@ -336,34 +432,80 @@ class StudioProject:
             for segment in self.segments()
             if (wanted is None or segment["id"] in wanted)
             and segment["state"] not in ("done", "queued", "running")
+            and not segment["selected_take"]
         ]
         with self.store.transaction() as db:
-            db.executemany(
-                "INSERT INTO job (segment_id, cache_key, status, queued_at) VALUES (?, ?, 'queued', ?)", rows
-            )
-        return len(rows)
+            return db.executemany(
+                """INSERT INTO job (segment_id, cache_key, queued_at, status)
+                   SELECT segment_id, cache_key, queued_at, 'queued'
+                   FROM (SELECT ? AS segment_id, ? AS cache_key, ? AS queued_at) candidate
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM job j WHERE j.segment_id = candidate.segment_id
+                       AND j.cache_key = candidate.cache_key AND j.seed IS NULL
+                       AND j.status IN ('queued', 'running')
+                   )""", rows,
+            ).rowcount
 
-    def queued_job_count(self) -> int:
+    def enqueue_take(self, segment_id: int, cache_key: str) -> None:
+        """Queue a new seed for the segment's current recipe, keeping its active WAV."""
+        with self.store.transaction() as db:
+            key = self.current_key_for(segment_id)
+            if key != cache_key:
+                raise ValueError("Segment değişti. Yeniden seçin.")
+            artifact = db.execute(
+                "SELECT synthesis_json FROM artifact WHERE segment_id = ? AND cache_key = ?",
+                (segment_id, key),
+            ).fetchone()
+            if artifact is None:
+                raise ValueError("Önce segmentin ilk sesini üretin.")
+            previous = db.execute(
+                "SELECT seed, status, error FROM job WHERE segment_id = ? AND cache_key = ? AND seed IS NOT NULL",
+                (segment_id, key),
+            ).fetchall()
+            if any(row["status"] in ("queued", "running") or row["error"] == PAUSED_TAKE for row in previous):
+                raise ValueError("Bu segment için bir alternatif zaten kuyrukta.")
+            base_seed = json.loads(artifact["synthesis_json"] or "{}").get("seed", DEFAULT_SEED)
+            seeds = {base_seed, *(row["seed"] for row in previous)}
+            seed, = derive_seeds(base_seed, seeds, 1)
+            db.execute(
+                "INSERT INTO job (segment_id, cache_key, status, queued_at, seed) VALUES (?, ?, 'queued', ?, ?)",
+                (segment_id, key, utc_now_iso(), seed),
+            )
+
+    def queued_job_count(self, *, include_takes: bool = True) -> int:
         """Jobs waiting for a worker, after requeueing abandoned (stale-lease) running jobs."""
         with self.store.transaction() as db:
             _recover_stale_jobs(db)
-            return int(db.execute("SELECT COUNT(*) FROM job WHERE status = 'queued'").fetchone()[0])
+            return int(db.execute(
+                "SELECT COUNT(*) FROM job WHERE status = 'queued' AND (? OR seed IS NULL)", (include_takes,)
+            ).fetchone()[0])
 
     def cancel_queued(self) -> int:
         with self.store.transaction() as db:
             return db.execute(
-                "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'queued'",
-                (utc_now_iso(),),
+                """UPDATE job SET status = 'cancelled', finished_at = ?,
+                                  error = CASE WHEN seed IS NOT NULL THEN ? ELSE NULL END
+                   WHERE status = 'queued'""",
+                (utc_now_iso(), PAUSED_TAKE),
             ).rowcount
 
-    def claim_next_job(self) -> dict[str, Any] | None:
+    def resume_takes(self) -> None:
+        with self.store.transaction() as db:
+            db.execute(
+                """UPDATE job SET status = 'queued', finished_at = NULL, error = NULL
+                   WHERE status = 'cancelled' AND seed IS NOT NULL AND error = ?""",
+                (PAUSED_TAKE,),
+            )
+
+    def claim_next_job(self, *, include_takes: bool = True) -> dict[str, Any] | None:
         """Atomically move the oldest queued job to ``running`` under this worker's lease."""
         with self.store.transaction() as db:
             _recover_stale_jobs(db)
             row = db.execute(
-                "SELECT job.id, job.segment_id, job.cache_key, job.attempts, segment.spoken_text, segment.voice_id"
+                "SELECT job.id, job.segment_id, job.cache_key, job.attempts, job.seed, segment.spoken_text, segment.voice_id"
                 " FROM job JOIN segment ON segment.id = job.segment_id"
-                " WHERE job.status = 'queued' ORDER BY segment.ord, job.id LIMIT 1"
+                " WHERE job.status = 'queued' AND (? OR job.seed IS NULL) ORDER BY segment.ord, job.id LIMIT 1",
+                (include_takes,),
             ).fetchone()
             if row is None:
                 return None
@@ -387,16 +529,27 @@ class StudioProject:
     def find_artifact_by_key(self, cache_key: str) -> dict[str, Any] | None:
         with self.store.connect() as db:
             for row in db.execute(
-                "SELECT path, sha256, duration_s FROM artifact WHERE cache_key = ? ORDER BY id DESC", (cache_key,)
+                "SELECT path, sha256, duration_s, quality_json, synthesis_json FROM artifact"
+                " WHERE cache_key = ? ORDER BY id DESC", (cache_key,)
             ):
                 if Path(row["path"]).is_file():
                     return dict(row)
         return None
 
-    def complete_job(self, job: dict[str, Any], path: Path, sha256: str, duration_s: float) -> bool:
+    def complete_job(
+        self, job: dict[str, Any], path: Path, sha256: str, duration_s: float,
+        quality_json: str | None = None, synthesis_json: str | None = None,
+    ) -> bool:
         """Record the artifact only if this worker still owns the running job."""
         now = utc_now_iso()
         with self.store.transaction() as db:
+            if self.current_key_for(job["segment_id"]) != job["cache_key"]:
+                db.execute(
+                    "UPDATE job SET status = 'cancelled', finished_at = ?"
+                    " WHERE id = ? AND status = 'running' AND worker_id = ?",
+                    (now, job["id"], job["worker_id"]),
+                )
+                return False
             owned = db.execute(
                 "UPDATE job SET status = 'done', error = NULL, finished_at = ?"
                 " WHERE id = ? AND status = 'running' AND worker_id = ?",
@@ -404,11 +557,25 @@ class StudioProject:
             ).rowcount
             if not owned:
                 return False
-            db.execute(
-                "INSERT OR REPLACE INTO artifact (segment_id, cache_key, path, sha256, duration_s, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (job["segment_id"], job["cache_key"], str(path), sha256, duration_s, now),
-            )
+            fields = (str(path), sha256, duration_s, quality_json, synthesis_json, now)
+            if job.get("seed") is None:
+                db.execute(
+                    """INSERT INTO artifact (segment_id, cache_key, path, sha256, duration_s,
+                                             quality_json, synthesis_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(segment_id, cache_key) DO UPDATE SET
+                           path = excluded.path, sha256 = excluded.sha256, duration_s = excluded.duration_s,
+                           quality_json = excluded.quality_json, synthesis_json = excluded.synthesis_json,
+                           created_at = excluded.created_at""",
+                    (job["segment_id"], job["cache_key"], *fields),
+                )
+            else:
+                db.execute(
+                    """INSERT INTO take (artifact_id, seed, path, sha256, duration_s,
+                                         quality_json, synthesis_json, created_at)
+                       VALUES ((SELECT id FROM artifact WHERE segment_id = ? AND cache_key = ?), ?, ?, ?, ?, ?, ?, ?)""",
+                    (job["segment_id"], job["cache_key"], job["seed"], *fields),
+                )
             return True
 
     def finish_job(self, job: dict[str, Any], status: str, error: str | None) -> bool:
@@ -447,7 +614,7 @@ class StudioProject:
     def orphan_audio_files(self) -> list[Path]:
         """Audio files not referenced by any artifact. Reported only; never deleted automatically."""
         with self.store.connect() as db:
-            known = {Path(row["path"]).resolve() for row in db.execute("SELECT path FROM artifact")}
+            known = {Path(row["path"]).resolve() for row in db.execute("SELECT path FROM artifact UNION SELECT path FROM take")}
         return sorted(
             path for path in self.store.audio_dir.glob("*.wav") if path.resolve() not in known
         )

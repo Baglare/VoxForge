@@ -13,8 +13,8 @@ XTTS-v2 ve Chatterbox V3 karşılaştırma için korunur. Her aşama ayrı PR'd�
 
 | Aşama | Durum |
 |---|---|
-| VF-018 Quality Director + Voice Takes | PR açık: bağımsız `voxforge/quality/` servisi (ses ölçümü + CPU Whisper, güven düzeyli açıklanabilir karar), farklı tohumlu take'ler, seçim/geri dönüş, Playground "Kalite ve take'ler" sekmesi. Ayrıntı: `docs/QUALITY_DIRECTOR.md` |
-| VF-019 VoxCPM2 → Studio | Bekliyor (VF-018 merge sonrası) |
+| VF-018 Quality Director + Voice Takes | Main'de (#19). Bağımsız `voxforge/quality/` servisi (ses ölçümü + CPU Whisper), farklı tohumlu take'ler, seçim ve geri dönüş. Ayrıntı `docs/QUALITY_DIRECTOR.md` dosyasında. |
+| VF-019 VoxCPM2 → Studio | VF-019 dalında. Playground ve Studio aynı GPU worker'ını paylaşır. SQLite v4 kalite raporu, alternatif take ve seçim geçmişini saklar. Bölüm WAV'ı aktif take'leri kullanır. |
 | VF-020 Kitap içe aktarma | Bekliyor |
 | VF-021 Voice Design + karakter kütüphanesi | Bekliyor |
 | VF-022 Emotion Lab | Bekliyor |

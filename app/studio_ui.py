@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import gradio as gr
 
+from voxforge.quality.checks import describe_report, summarize
 from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
 
 TABLE_HEADERS = ["#", "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Süre (sn)", "Hata"]
@@ -49,6 +50,7 @@ def build_studio(
     preset_choices: list[str],
     preset_kwargs: dict[str, dict[str, Any]],
     default_preset: str,
+    vox_presets: dict[str, tuple[str, dict[str, Any]]] | None = None,
 ) -> gr.Blocks:
     def project_choices() -> list[tuple[str, str]]:
         return service.list_projects()
@@ -120,12 +122,51 @@ def build_studio(
             item["audio_path"],
         )
 
+    def take_panel(slug, segment_id, token=None):
+        if not slug or segment_id is None:
+            return gr.update(choices=[], value=None), "", None, gr.update(interactive=False), gr.update(interactive=False)
+        item = service.take_view(slug, segment_id)
+        current = item["selected_take"]
+        prefix = item["cache_key"] + ":"
+        choices = [
+            (f"{'İlk take' if i == 0 else f'Take {i + 1}'}"
+             f"{' · seçili' if current == take['id'] else ''} · {summarize(take['quality'])}", prefix + str(take["id"]))
+            for i, take in enumerate(item["takes"]) if take["path"]
+        ]
+        value = token if token in {value for _, value in choices} else prefix + str(current)
+        candidate = next((take for take in item["takes"] if value == prefix + str(take["id"])), None)
+        job = item["job"]
+        message = STATE_LABELS.get(job["status"], "") if job and job["status"] != "done" else ""
+        if job and job["error"]:
+            message += f" · {job['error']}"
+        report = describe_report(candidate["quality"]) if candidate else ""
+        return (
+            gr.update(choices=choices, value=value if candidate and candidate["path"] else None),
+            "\n\n".join(part for part in (message, report) if part),
+            candidate["path"] if candidate and candidate["id"] != current else None,
+            gr.update(interactive=bool(candidate and candidate["path"] and candidate["id"] != current)),
+            gr.update(interactive=item["can_undo"]),
+        )
+
+    def preset_for(engine_id, label):
+        if engine_id == "voxcpm2":
+            return (vox_presets or {}).get(label, ("", {}))[1]
+        return preset_kwargs.get(label, {})
+
+    def preset_update(engine_id):
+        if engine_id == "voxcpm2" and vox_presets:
+            choices = [(name, key) for key, (name, _) in vox_presets.items()]
+            return gr.update(choices=choices, value="normal", visible=True)
+        return gr.update(choices=preset_choices, value=default_preset, visible=engine_id != "mock")
+
     with gr.Blocks(title="VoxForge Studio") as studio:
         gr.Markdown("# VoxForge Studio")
         gr.Markdown(
-            f"Metni projeye dönüştürün, segmentleri inceleyin ve yalnız eksik ya da değişen parçaları üretin. "
-            f"Etkin motor: `{engine_label}`. Projeler yerel `studio_projects/` klasöründe tutulur."
+            "Metni projeye dönüştürün, segmentleri inceleyin ve yalnız eksik ya da değişen parçaları üretin. "
+            "Projeler ve çıktı WAV'ları yerelde tutulur."
         )
+        if not vox_presets:
+            gr.Markdown("VoxCPM2 üretimi için Voice Playground uygulamasında **Studio** sekmesini açın.")
         slug_state = gr.State(None)
         ids_state = gr.State([])
         selected_state = gr.State(None)
@@ -138,10 +179,18 @@ def build_studio(
         with gr.Accordion("Yeni proje", open=False):
             new_name = gr.Textbox(label="Proje adı")
             new_text = gr.Textbox(label="Metin", lines=10, placeholder="Seslendirilecek Türkçe metni yapıştırın.")
+            new_engine = gr.Dropdown(
+                label="Studio motoru", choices=[("VoxCPM2 (CUDA)", "voxcpm2"), ("XTTS-v2 (CUDA)", "xtts"), ("Mock", "mock")],
+                value="voxcpm2" if vox_presets else None, visible=bool(vox_presets),
+            )
             with gr.Row():
                 new_profile = gr.Dropdown(label="Ses profili", choices=profile_choices(), value="")
                 new_upload = gr.Audio(label="veya referans ses yükle", type="filepath")
-            new_preset = gr.Dropdown(label="Üretim modu", choices=preset_choices, value=default_preset)
+            new_preset = gr.Dropdown(
+                label="Üretim modu",
+                choices=[(name, key) for key, (name, _) in vox_presets.items()] if vox_presets else preset_choices,
+                value="normal" if vox_presets else default_preset,
+            )
             new_lexicon = gr.Textbox(
                 label="Telaffuz sözlüğü (isteğe bağlı)",
                 lines=3,
@@ -158,9 +207,9 @@ def build_studio(
         with gr.Row():
             start_button = gr.Button("Eksikleri üret", variant="primary")
             stop_button = gr.Button("Durdur")
-            preview_button = gr.Button("Tümünü birleştir (önizleme)")
+            preview_button = gr.Button("Bölümü WAV olarak dışa aktar")
         action_status = gr.Markdown()
-        preview_audio = gr.Audio(label="Önizleme", type="filepath", interactive=False, visible=False)
+        preview_audio = gr.Audio(label="Bölüm WAV", type="filepath", interactive=False, visible=False)
 
         segment_table = gr.Dataframe(
             headers=TABLE_HEADERS,
@@ -179,6 +228,17 @@ def build_studio(
             transformations_md = gr.Markdown()
             segment_audio = gr.Audio(label="Segment sesi", type="filepath", interactive=False)
             segment_status = gr.Markdown()
+
+        with gr.Accordion("Segment kalitesi ve take'ler", open=True):
+            take_choice = gr.Dropdown(label="Take", choices=[])
+            take_quality = gr.Markdown()
+            take_audio = gr.Audio(label="Alternatif take sesi", type="filepath", interactive=False)
+            with gr.Row():
+                take_generate = gr.Button("Bir alternatif üret", visible=bool(vox_presets))
+                take_check = gr.Button("Kaliteyi denetle")
+                take_select = gr.Button("Take'i kullan", interactive=False)
+                take_undo = gr.Button("Take seçimini geri al", interactive=False)
+            take_status = gr.Markdown()
 
         with gr.Accordion("Karakterler ve sesler", open=False):
             gr.Markdown(
@@ -207,6 +267,7 @@ def build_studio(
 
         view_outputs = [progress_md, segment_table, ids_state, running_state]
         segment_outputs = [segment_header, source_box, spoken_box, transformations_md, segment_audio]
+        take_outputs = [take_choice, take_quality, take_audio, take_select, take_undo]
 
         def on_project_change(slug):
             if not slug:
@@ -221,13 +282,18 @@ def build_studio(
             inputs=project_dropdown,
             outputs=[slug_state, *view_outputs, selected_state, *segment_outputs],
         )
+        project_dropdown.change(
+            lambda: (*take_panel(None, None), gr.update(value=None, visible=False)),
+            outputs=[*take_outputs, preview_audio],
+        )
         refresh_projects.click(lambda: gr.update(choices=project_choices()), outputs=project_dropdown)
+        new_engine.change(preset_update, inputs=new_engine, outputs=new_preset)
 
-        def on_create(name, text, profile_slug, upload, preset_label, lexicon_text):
+        def on_create(name, text, profile_slug, upload, preset_label, lexicon_text, engine_id):
             try:
                 reference = resolve_reference(profile_slug or None, upload)
                 slug = service.create(
-                    name, text, reference, preset_kwargs.get(preset_label, {}), lexicon_text
+                    name, text, reference, preset_for(engine_id, preset_label), lexicon_text, engine_id=engine_id,
                 )
             except StudioError as exc:
                 return f"⚠️ {exc}", gr.update()
@@ -241,7 +307,7 @@ def build_studio(
 
         create_button.click(
             on_create,
-            inputs=[new_name, new_text, new_profile, new_upload, new_preset, new_lexicon],
+            inputs=[new_name, new_text, new_profile, new_upload, new_preset, new_lexicon, new_engine],
             outputs=[create_status, project_dropdown],
         )
 
@@ -279,7 +345,7 @@ def build_studio(
             except StudioError as exc:
                 return f"⚠️ {exc}", gr.update(visible=False)
             return (
-                f"Önizleme hazır ({service.preview_seconds(path):.1f} sn): `{path.name}`",
+                f"Bölüm WAV hazır ({service.preview_seconds(path):.1f} sn) · `{path.name}`",
                 gr.update(value=str(path), visible=True),
             )
 
@@ -288,16 +354,51 @@ def build_studio(
         def on_select(slug, ids, evt: gr.SelectData):
             row = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
             if not slug or row is None or row >= len(ids):
-                return None, *segment_view(None, None)
+                return None, *segment_view(None, None), *take_panel(None, None)
             segment_id = ids[row]
-            return segment_id, *segment_view(slug, segment_id)
+            return segment_id, *segment_view(slug, segment_id), *take_panel(slug, segment_id)
 
-        segment_table.select(on_select, inputs=[slug_state, ids_state], outputs=[selected_state, *segment_outputs])
+        segment_table.select(
+            on_select, inputs=[slug_state, ids_state], outputs=[selected_state, *segment_outputs, *take_outputs]
+        )
+        take_choice.input(take_panel, inputs=[slug_state, selected_state, take_choice], outputs=take_outputs)
+
+        def on_take(slug, segment_id, token, action):
+            if not slug or segment_id is None:
+                return "⚠️ Önce bir segment seçin.", *view(slug), *take_panel(slug, segment_id), gr.skip(), gr.skip()
+            try:
+                item = service.segment(slug, segment_id)
+                key, take_id = token.split(":") if token else (item["cache_key"], "0")
+                if action == "generate":
+                    service.start_take(slug, segment_id, key)
+                    message = "Alternatif take kuyruğa alındı."
+                elif action == "check":
+                    service.check_take(slug, segment_id, key, int(take_id))
+                    message = "Kalite raporu kaydedildi."
+                else:
+                    service.change_take(slug, segment_id, key, int(take_id) if action == "select" else None)
+                    message = "Aktif take güncellendi."
+            except (StudioError, ValueError) as exc:
+                return f"⚠️ {exc}", *view(slug), *take_panel(slug, segment_id, token), gr.skip(), gr.skip()
+            return (
+                message, *view(slug), *take_panel(slug, segment_id, token if action == "check" else None),
+                service.segment(slug, segment_id)["audio_path"],
+                gr.update(value=None, visible=False) if action in ("select", "undo") else gr.skip(),
+            )
+
+        for button, action in (
+            (take_generate, "generate"), (take_check, "check"), (take_select, "select"), (take_undo, "undo"),
+        ):
+            button.click(
+                lambda slug, segment_id, token, action=action: on_take(slug, segment_id, token, action),
+                inputs=[slug_state, selected_state, take_choice],
+                outputs=[take_status, *view_outputs, *take_outputs, segment_audio, preview_audio],
+            )
 
         def on_save(kind):
             def handler(slug, segment_id, text):
                 if not slug or segment_id is None:
-                    return "⚠️ Önce bir segment seçin.", *view(slug), *segment_view(slug, segment_id)
+                    return "⚠️ Önce bir segment seçin.", *view(slug), *segment_view(slug, segment_id), *take_panel(slug, segment_id)
                 try:
                     if kind == "source":
                         service.update_source(slug, segment_id, text)
@@ -306,21 +407,21 @@ def build_studio(
                         service.set_spoken(slug, segment_id, text)
                         message = "Okunacak metin elle kaydedildi."
                 except StudioError as exc:
-                    return f"⚠️ {exc}", *view(slug), *segment_view(slug, segment_id)
+                    return f"⚠️ {exc}", *view(slug), *segment_view(slug, segment_id), *take_panel(slug, segment_id)
                 message += " Yalnız bu segment yeniden üretilecek; **Eksikleri üret** ile başlatın."
-                return message, *view(slug), *segment_view(slug, segment_id)
+                return message, *view(slug), *segment_view(slug, segment_id), *take_panel(slug, segment_id)
 
             return handler
 
         save_source.click(
             on_save("source"),
             inputs=[slug_state, selected_state, source_box],
-            outputs=[segment_status, *view_outputs, *segment_outputs],
+            outputs=[segment_status, *view_outputs, *segment_outputs, *take_outputs],
         )
         save_spoken.click(
             on_save("spoken"),
             inputs=[slug_state, selected_state, spoken_box],
-            outputs=[segment_status, *view_outputs, *segment_outputs],
+            outputs=[segment_status, *view_outputs, *segment_outputs, *take_outputs],
         )
 
         # ---- karakterler (VF-007) ----------------------------------------
@@ -341,13 +442,18 @@ def build_studio(
 
         voice_outputs = [voices_md, assign_voice]
         project_dropdown.change(voice_panel, inputs=project_dropdown, outputs=voice_outputs)
+        project_dropdown.change(
+            lambda slug: preset_update(service.open(slug).settings.engine_id if slug else engine_label),
+            inputs=project_dropdown, outputs=voice_preset,
+        )
 
         def on_add_voice(slug, name, profile_slug, upload, preset_label):
             if not slug:
                 return "⚠️ Önce bir proje seçin.", *voice_panel(None)
             try:
                 reference = resolve_reference(profile_slug or None, upload)
-                service.add_voice(slug, name, reference, preset_kwargs.get(preset_label, {}))
+                engine_id = service.open(slug).settings.engine_id
+                service.add_voice(slug, name, reference, preset_for(engine_id, preset_label))
             except StudioError as exc:
                 return f"⚠️ {exc}", *voice_panel(slug)
             return f"Karakter eklendi: **{name.strip()}**", *voice_panel(slug)
@@ -411,18 +517,18 @@ def build_studio(
             outputs=[voice_status, *view_outputs, suggestions_md, voices_md],
         )
 
-        def on_tick(slug, was_running, segment_id):
+        def on_tick(slug, was_running, segment_id, token):
             # Yalnız üretim sürerken (ve bittiği ilk turda) yenile; boşta veritabanını yormaz.
             # Düzenleme kutularına dokunulmaz ki kullanıcının yazdığı metin ezilmesin.
             if not slug or (not was_running and not service.is_running(slug)):
-                return (gr.skip(),) * 6
+                return (gr.skip(),) * (6 + len(take_outputs))
             header, _source, _spoken, _transforms, audio = segment_view(slug, segment_id)
-            return *view(slug), header, audio
+            return *view(slug), header, audio, *take_panel(slug, segment_id, token)
 
         timer.tick(
             on_tick,
-            inputs=[slug_state, running_state, selected_state],
-            outputs=[*view_outputs, segment_header, segment_audio],
+            inputs=[slug_state, running_state, selected_state, take_choice],
+            outputs=[*view_outputs, segment_header, segment_audio, *take_outputs],
         )
 
     return studio

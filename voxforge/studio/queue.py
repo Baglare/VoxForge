@@ -8,6 +8,7 @@ that job ``failed`` and the worker continues with the next one.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import threading
@@ -16,8 +17,11 @@ import wave
 from pathlib import Path
 from typing import Any, Callable
 
-from voxforge.engines.base import TTSEngine
+from voxforge.engines.base import SynthesisRequest, TTSEngine
 from voxforge.generation import synthesize_text
+from voxforge.playground.adapter import WorkerEngineAdapter
+from voxforge.playground.service import DEFAULT_SEED
+from voxforge.quality.director import QualityDirector
 from voxforge.studio.project import HEARTBEAT_SECONDS, StudioProject, file_sha256
 
 TEMP_DIRNAME = ".tmp"
@@ -62,14 +66,20 @@ class _Heartbeat:
 CHANGED_MESSAGE = "Segment veya referans ses kuyruga alindiktan sonra degisti."
 
 
-def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) -> str:
+def process_job(
+    project: StudioProject, engine: TTSEngine, job: dict[str, Any], quality: QualityDirector | None = None,
+) -> str:
     """Run one claimed job. Returns ``done``, ``failed``, ``cancelled`` or ``lost`` (lease taken over)."""
     if project.current_key_for(job["segment_id"]) != job["cache_key"]:
         return "cancelled" if project.finish_job(job, "cancelled", CHANGED_MESSAGE) else "lost"
 
-    reusable = project.find_artifact_by_key(job["cache_key"])
+    seed = job.get("seed")
+    reusable = project.find_artifact_by_key(job["cache_key"]) if seed is None else None
     if reusable:
-        owned = project.complete_job(job, Path(reusable["path"]), reusable["sha256"], reusable["duration_s"])
+        owned = project.complete_job(
+            job, Path(reusable["path"]), reusable["sha256"], reusable["duration_s"],
+            reusable["quality_json"], reusable["synthesis_json"],
+        )
         return "done" if owned else "lost"
 
     settings = project.settings
@@ -80,28 +90,54 @@ def process_job(project: StudioProject, engine: TTSEngine, job: dict[str, Any]) 
     attempt = uuid.uuid4().hex[:8]
     temp_dir = audio_dir / TEMP_DIRNAME / f"job{job['id']}_{attempt}"
     final_path = audio_dir / f"seg{job['segment_id']:05d}_{job['cache_key'][:16]}_{attempt}.wav"
+    reference_path = Path(reference) if reference else None
     try:
         with _Heartbeat(project, job):
-            result = synthesize_text(
-                engine,
-                job["spoken_text"],
-                output_dir=temp_dir,
-                output_stem="segment",
-                reference_path=Path(reference) if reference else None,
-                preset=preset,
-                language=settings.language,
-                max_chars=settings.max_chars,
-            )
-        # Referans ses veya metin uretim sirasinda degistiyse bu ses eski anahtara yazilmaz.
-        if project.current_key_for(job["segment_id"]) != job["cache_key"]:
-            return "cancelled" if project.finish_job(job, "cancelled", CHANGED_MESSAGE) else "lost"
-        os.replace(result["final_output_path"], final_path)
-        owned = project.complete_job(job, final_path, file_sha256(final_path), wav_duration(final_path))
+            metadata = None
+            pauses = None
+            if isinstance(engine, WorkerEngineAdapter):
+                synthesis = engine.synthesize(
+                    SynthesisRequest(job["spoken_text"], temp_dir / "segment.wav", settings.language,
+                                     reference_path, preset),
+                    seed=DEFAULT_SEED if seed is None else seed,
+                    max_chars=settings.max_chars,
+                )
+                output = synthesis.path
+                metadata = {**synthesis.params, "text": job["spoken_text"], "reference": reference,
+                            "reference_sha256": project.reference_hash(reference, use_project_default=False),
+                            "voice_id": job["voice_id"], "warnings": synthesis.warnings}
+                pauses = (metadata.get("join") or {}).get("pauses")
+            else:
+                if seed is not None:
+                    raise ValueError("Alternatif take üretimi Playground worker gerektirir.")
+                result = synthesize_text(
+                    engine,
+                    job["spoken_text"],
+                    output_dir=temp_dir,
+                    output_stem="segment",
+                    reference_path=reference_path,
+                    preset=preset,
+                    language=settings.language,
+                    max_chars=settings.max_chars,
+                )
+                output = result["final_output_path"]
+            report = quality.check(output, job["spoken_text"], pauses, reference_path) if quality else None
+            if report is not None:
+                report["wav"] = str(final_path)
+            quality_json = json.dumps(report, ensure_ascii=False) if report is not None else None
+            synthesis_json = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
+            checksum, duration = file_sha256(output), wav_duration(output)
+            # Revalidate the recipe and lease again inside the commit transaction.
+            if project.current_key_for(job["segment_id"]) != job["cache_key"]:
+                return "cancelled" if project.finish_job(job, "cancelled", CHANGED_MESSAGE) else "lost"
+            os.replace(output, final_path)
+            owned = project.complete_job(job, final_path, checksum, duration, quality_json, synthesis_json)
         if not owned:
             final_path.unlink(missing_ok=True)  # sahipsiz deneme dosyasi; kayitli artefakt baska dosyada
             return "lost"
         return "done"
     except Exception as exc:  # noqa: BLE001 - every engine error must become a failed job
+        final_path.unlink(missing_ok=True)
         failed = project.finish_job(job, "failed", f"{type(exc).__name__}: {exc}")
         return "failed" if failed else "lost"
     finally:
@@ -115,6 +151,7 @@ def run_pending(
     stop_event: threading.Event | None = None,
     max_jobs: int | None = None,
     on_progress: Callable[[dict[str, Any], str], None] | None = None,
+    quality: QualityDirector | None = None,
 ) -> dict[str, int]:
     """Process queued jobs until the queue is empty, ``stop_event`` is set or ``max_jobs`` is reached."""
     _check_engine(project, engine)
@@ -123,10 +160,10 @@ def run_pending(
     while not (stop_event and stop_event.is_set()):
         if max_jobs is not None and processed >= max_jobs:
             break
-        job = project.claim_next_job()
+        job = project.claim_next_job(include_takes=isinstance(engine, WorkerEngineAdapter))
         if job is None:
             break
-        status = process_job(project, engine, job)
+        status = process_job(project, engine, job, quality)
         counts[status] += 1
         processed += 1
         if on_progress:
@@ -137,9 +174,10 @@ def run_pending(
 class StudioWorker:
     """Background thread for the UI. ``stop()`` finishes the current segment, then stops."""
 
-    def __init__(self, project: StudioProject, engine: TTSEngine) -> None:
+    def __init__(self, project: StudioProject, engine: TTSEngine, quality: QualityDirector | None = None) -> None:
         self.project = project
         self.engine = engine
+        self.quality = quality
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.last_counts: dict[str, int] | None = None
@@ -154,7 +192,7 @@ class StudioWorker:
 
     def _run(self) -> None:
         try:
-            self.last_counts = run_pending(self.project, self.engine, stop_event=self.stop_event)
+            self.last_counts = run_pending(self.project, self.engine, stop_event=self.stop_event, quality=self.quality)
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"{type(exc).__name__}: {exc}"
 
