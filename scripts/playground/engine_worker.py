@@ -225,6 +225,7 @@ def memoized_prompt_builder(
 
 def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
     from voxcpm import VoxCPM
+    from voxcpm.model.voxcpm2 import VoxCPM2Model
 
     compile_on, compile_note = voxcpm_compile_choice(device)
     load_kwargs, dropped = supported_kwargs(
@@ -256,10 +257,15 @@ def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
         seed: int,
         reference_text: str | None = None,
         style: str | None = None,
+        voice_design: bool = False,
     ) -> dict[str, Any]:
-        if reference is None:
-            raise ValueError("VoxCPM2 referans ses ister.")
         style = clean_style(style)
+        if voice_design and not isinstance(tts, VoxCPM2Model):
+            raise ValueError("Yüklenen model VoxCPM2 ses tasarımını desteklemiyor.")
+        if voice_design and (reference is not None or reference_text is not None or not style):
+            raise ValueError("Ses tasarımı için yalnız ses tanımı ve metin verin.")
+        if reference is None and not voice_design:
+            raise ValueError("VoxCPM2 referans ses ister.")
         if style and reference_text is not None:
             raise ValueError(
                 "Stil yönergesi Ultimate Cloning ile birlikte kullanılamaz (model prompt devamı yapar; "
@@ -268,8 +274,11 @@ def load_voxcpm(device: str) -> tuple[Synth, dict[str, Any]]:
         unknown = sorted(set(settings) - set(VOXCPM_ALLOWED))
         if unknown:
             raise ValueError(f"VoxCPM2 Playground bu ayarları desteklemiyor: {unknown}")
-        wanted = {**VOXCPM_BASE, **settings, "reference_wav_path": str(reference)}
-        mode = "controllable (yalnız referans)"
+        wanted = {**VOXCPM_BASE, **settings}
+        mode = "voice_design"
+        if reference is not None:
+            wanted["reference_wav_path"] = str(reference)
+            mode = "controllable (yalnız referans)"
         if reference_text is not None:
             if not reference_text.strip():
                 raise ValueError("Ultimate Cloning için referansın birebir transkripti gerekli.")
@@ -392,6 +401,8 @@ def handle_synth(request: dict[str, Any], synth: Synth, torch_helper: Torch) -> 
         extra["reference_text"] = str(request["reference_text"])
     if request.get("style"):
         extra["style"] = str(request["style"])
+    if request.get("voice_design") is True:
+        extra["voice_design"] = True
     pauses = request.get("pauses")
     if pauses is not None:
         pauses = [float(value) for value in pauses]

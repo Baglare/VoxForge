@@ -55,6 +55,12 @@ def build_studio(
     def project_choices() -> list[tuple[str, str]]:
         return service.list_projects()
 
+    def design_choices() -> list[tuple[str, str]]:
+        return [
+            (f"{item['name']} · {item['created_at'][:10]} · {item['id'][:8]}", item["id"])
+            for item in service.designs.versions()
+        ]
+
     def progress_text(slug: str | None, info: dict[str, Any] | None) -> str:
         if not slug or info is None:
             return "Proje seçilmedi. Mevcut bir projeyi açın veya yeni proje oluşturun."
@@ -261,8 +267,8 @@ def build_studio(
             voices_md = gr.Markdown()
             with gr.Row():
                 voice_name = gr.Textbox(label="Karakter adı", scale=2)
-                voice_profile = gr.Dropdown(label="Ses profili", choices=profile_choices(), value="", scale=2)
-                voice_upload = gr.Audio(label="veya referans ses", type="filepath", scale=2)
+                voice_profile = gr.Dropdown(label="Klonlama için ses profili", choices=profile_choices(), value="", scale=2)
+                voice_upload = gr.Audio(label="veya klonlama için referans ses", type="filepath", scale=2)
                 voice_preset = gr.Dropdown(label="Üretim modu", choices=preset_choices, value=default_preset, scale=1)
             add_voice_button = gr.Button("Karakter ekle")
             with gr.Row():
@@ -275,6 +281,29 @@ def build_studio(
                 apply_button = gr.Button("Eşleşen önerileri uygula")
             suggestions_md = gr.Markdown()
             voice_status = gr.Markdown()
+
+        if vox_presets:
+            with gr.Accordion("Ses tasarımı (VoxCPM2)", open=False):
+                gr.Markdown(
+                    "Ses tanımından referanssız bir örnek üretin. Studio, tasarımın ses kimliğini "
+                    "sürdürmek için kaydedilen örneği karakter sesi olarak kullanır."
+                )
+                design_token = gr.State(None)
+                design_description = gr.Textbox(label="Ses tanımı", placeholder="Yetişkin, sıcak, sakin ve tok bir ses")
+                design_text = gr.Textbox(label="Önizleme repliği", lines=2)
+                design_seed = gr.Number(label="Tohum", value=1234, precision=0)
+                design_preview_button = gr.Button("Referanssız örnek üret", variant="primary")
+                design_audio = gr.Audio(label="Tasarım önizlemesi", type="filepath", interactive=False)
+                with gr.Row():
+                    design_name = gr.Textbox(label="Kütüphane adı")
+                    design_save = gr.Button("Yeni sürüm kaydet", interactive=False)
+                design_choice = gr.Dropdown(
+                    label="Kaydedilmiş tasarım sürümü", choices=design_choices(),
+                )
+                saved_design_audio = gr.Audio(label="Kaydedilmiş örnek", type="filepath", interactive=False)
+                design_character = gr.Textbox(label="Studio karakter adı (boşsa kütüphane adı)")
+                design_add = gr.Button("Tasarımı projeye karakter olarak ekle")
+                design_status = gr.Markdown()
 
         timer = gr.Timer(REFRESH_SECONDS)
 
@@ -479,11 +508,15 @@ def build_studio(
             usage: dict[str | None, int] = {}
             for item in service.segments(slug):
                 usage[item["voice_id"]] = usage.get(item["voice_id"], 0) + 1
-            lines = ["| Ses | Referans | Segment |", "|---|---|---:|"]
+            lines = ["| Ses | Ses kaynağı | Segment |", "|---|---|---:|"]
             lines.append(f"| {NARRATOR_LABEL} | proje sesi | {usage.get(None, 0)} |")
             for voice in voices:
                 reference = Path(voice["reference_path"]).name if voice["reference_path"] else "—"
-                lines.append(f"| {voice['name']} | `{reference}` | {usage.get(voice['key'], 0)} |")
+                if voice["design_version"]:
+                    reference = f"Tasarlanmış ses · {voice['design_version'][:8]}"
+                elif voice["reference_path"]:
+                    reference = f"Referanslı klonlama · `{reference}`"
+                lines.append(f"| {voice['name']} | {reference} | {usage.get(voice['key'], 0)} |")
             choices = [(NARRATOR_LABEL, "")] + [(voice["name"], voice["key"]) for voice in voices]
             return "\n".join(lines), gr.update(choices=choices, value="")
 
@@ -510,6 +543,54 @@ def build_studio(
             inputs=[slug_state, voice_name, voice_profile, voice_upload, voice_preset],
             outputs=[voice_status, *voice_outputs],
         )
+
+        if vox_presets:
+            def on_design_preview(description, text, seed):
+                try:
+                    sample = service.preview_design(description, text, seed)
+                except StudioError as exc:
+                    return f"⚠️ {exc}", None, None, gr.update(interactive=False)
+                return "Referanssız örnek hazır.", str(sample["wav"]), sample["id"], gr.update(interactive=True)
+
+            design_preview_button.click(
+                on_design_preview, inputs=[design_description, design_text, design_seed],
+                outputs=[design_status, design_audio, design_token, design_save],
+            )
+
+            def on_save_design(token, name):
+                if not token:
+                    return "⚠️ Önce bir örnek üretin.", gr.skip()
+                try:
+                    version = service.save_design(token, name or "")
+                except StudioError as exc:
+                    return f"⚠️ {exc}", gr.skip()
+                return "Yeni sürüm kaydedildi.", gr.update(choices=design_choices(), value=version["id"])
+
+            design_save.click(on_save_design, inputs=[design_token, design_name], outputs=[design_status, design_choice])
+
+            def on_design_version(token):
+                if not token:
+                    return None
+                try:
+                    return str(service.designs.version(token)["wav"])
+                except (ValueError, OSError, KeyError) as exc:
+                    raise gr.Error(f"Ses tasarımı açılamadı: {exc}") from exc
+
+            design_choice.change(on_design_version, inputs=design_choice, outputs=saved_design_audio)
+
+            def on_add_design(slug, token, name, preset_label):
+                if not slug or not token:
+                    return "⚠️ Bir VoxCPM2 projesi ve tasarım sürümü seçin.", *voice_panel(slug)
+                try:
+                    service.add_designed_voice(slug, name or "", token, preset_for("voxcpm2", preset_label))
+                except StudioError as exc:
+                    return f"⚠️ {exc}", *voice_panel(slug)
+                return "Tasarlanmış ses eklendi. Karakterler bölümünden segmentlere atayın.", *voice_panel(slug)
+
+            design_add.click(
+                on_add_design, inputs=[slug_state, design_choice, design_character, voice_preset],
+                outputs=[design_status, *voice_outputs],
+            )
 
         def on_assign(slug, numbers, voice_key):
             if not slug:

@@ -111,6 +111,9 @@ MIGRATIONS: dict[int, str] = {
     ALTER TABLE segment ADD COLUMN pronunciation_source TEXT;
     CREATE INDEX segment_chapter ON segment(chapter_id, ord);
     """,
+    6: """
+    ALTER TABLE voice ADD COLUMN design_version TEXT;
+    """,
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

@@ -13,6 +13,7 @@ Local data safety:
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import sqlite3
@@ -32,10 +33,12 @@ from scripts.audio_concat_utils import concatenate_wavs
 from voxforge.engines import TTSEngine, engine_spec
 from voxforge.playground.adapter import WorkerEngineAdapter, worker_engine_spec
 from voxforge.playground.prosody import ControlError, VoxControls
-from voxforge.playground.service import VARIANTS
-from voxforge.playground.workers import EngineManager
+from voxforge.playground.service import DEFAULT_SEED, VARIANTS
+from voxforge.playground.workers import EngineManager, WorkerError
 from voxforge.quality.director import QualityDirector
+from voxforge.runs import utc_now_iso
 from voxforge.studio.book import read_book
+from voxforge.studio.design import DesignLibrary
 from voxforge.studio.project import ProjectSettings, StudioProject, file_sha256
 from voxforge.studio.queue import StudioWorker
 from voxforge.studio.store import DB_FILENAME
@@ -105,6 +108,7 @@ class StudioService:
         manager: EngineManager | None = None, quality: QualityDirector | None = None,
     ) -> None:
         self.root = Path(root).resolve()
+        self.designs = DesignLibrary(self.root)
         self.engine_provider = engine_provider
         self.manager = manager
         self.quality = quality
@@ -293,12 +297,74 @@ class StudioService:
     def voices(self, slug: str) -> list[dict[str, Any]]:
         return list(self.open(slug).voices().values())
 
+    def preview_design(self, description: str, text: str, seed: int = DEFAULT_SEED) -> dict[str, Any]:
+        """Audition one short utterance using native, reference-free VoxCPM2 synthesis."""
+        if self.manager is None:
+            raise StudioError("Ses tasarımı için Voice Playground’da Studio’yu açın.")
+        try:
+            description = VoxControls(style=description or "").validated().style
+        except ControlError as exc:
+            raise StudioError(str(exc)) from exc
+        text = " ".join((text or "").split())
+        limit = VARIANTS["voxcpm2"].max_chars
+        if not description or not text or len(text) > limit:
+            raise StudioError(f"Ses tanımı ve 1–{limit} karakterlik bir önizleme repliği girin.")
+        if type(seed) is not int or not 0 <= seed < 2**32:
+            raise StudioError("Tohum 0 ile 4294967295 arasında bir tam sayı olmalı.")
+
+        token = uuid.uuid4().hex
+        folder = self.designs.preview_dir(token)
+        folder.mkdir(parents=True)
+        wav = folder / "voice.wav"
+        model_id = self._engine_spec("voxcpm2")["model_id"]
+        try:
+            reply = self.manager.synthesize(
+                "voxcpm2", {"chunks": [text], "style": description, "seed": seed,
+                           "voice_design": True, "out": str(wav)}, device="cuda",
+            )
+            source = (reply.get("worker") or {}).get("source") or {}
+            actual = f"{source.get('model')}@{source.get('revision')}"
+            if actual != model_id or (reply.get("applied_settings") or {}).get("mode") != "voice_design":
+                raise ValueError("Sabit modelde referanssız ses tasarımı doğrulanamadı.")
+            if _wav_seconds(wav) <= 0:
+                raise ValueError("Ses tasarımı WAV dosyası boş.")
+            metadata = {
+                "id": token, "description": description, "text": text, "seed": seed, "model_id": model_id,
+                "created_at": utc_now_iso(), "sha256": file_sha256(wav), "vram_peak_mb": reply.get("vram_peak_mb"),
+            }
+            with (folder / "voice.json").open("w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, ensure_ascii=False)
+        except (OSError, ValueError, wave.Error, WorkerError) as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise StudioError(f"Ses tasarımı üretilemedi: {exc}") from exc
+        return {**metadata, "wav": wav}
+
+    def save_design(self, preview_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self.designs.save(preview_id, name)
+        except (OSError, ValueError, KeyError) as exc:
+            raise StudioError(f"Ses tasarımı kaydedilemedi: {exc}") from exc
+
+    def add_designed_voice(
+        self, slug: str, name: str, version_id: str, preset: dict[str, Any] | None = None,
+    ) -> str:
+        project = self.open(slug)
+        try:
+            version = self.designs.version(version_id)
+        except (OSError, ValueError, KeyError) as exc:
+            raise StudioError(f"Ses tasarımı açılamadı: {exc}") from exc
+        if project.settings.engine_id != "voxcpm2" or project.settings.model_id != version["model_id"]:
+            raise StudioError("Tasarım, aynı VoxCPM2 model revizyonunu kullanan bir projeye atanabilir.")
+        return self.add_voice(slug, name.strip() or version["name"], version["wav"], preset, design_version=version_id)
+
     def add_voice(
         self,
         slug: str,
         name: str,
         reference: Path | None,
         preset: dict[str, Any] | None = None,
+        *,
+        design_version: str | None = None,
     ) -> str:
         """Add a character voice; its reference is copied into ``voices/`` inside the project."""
         project = self.open(slug)
@@ -316,17 +382,21 @@ class StudioService:
         while key in existing:
             key, counter = f"{base}-{counter}", counter + 1
         reference_path = None
-        if reference is not None and Path(reference).is_file():
-            voices_dir = self.project_dir(slug) / VOICES_DIRNAME
-            voices_dir.mkdir(exist_ok=True)
-            reference_path = voices_dir / f"{key}.wav"
-            shutil.copy2(reference, reference_path)
         try:
+            if reference is not None and Path(reference).is_file():
+                voices_dir = self.project_dir(slug) / VOICES_DIRNAME
+                voices_dir.mkdir(exist_ok=True)
+                filename = f"{key}_{uuid.uuid4().hex[:8]}.wav" if design_version else f"{key}.wav"
+                reference_path = voices_dir / filename
+                shutil.copy2(reference, reference_path)
             project.add_voice(
                 key, name, str(reference_path) if reference_path else None,
                 dict(preset or {}) if spec["supports_presets"] else {},
+                design_version=design_version,
             )
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
+            if design_version and reference_path:
+                reference_path.unlink(missing_ok=True)
             raise StudioError(str(exc)) from exc
         return key
 
