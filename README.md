@@ -134,15 +134,22 @@ Bu kontroller otomatik kalite ölçümü değildir. Ama farklı üretim ayarlar�
 
 ### Studio sekmesi
 
-`run_gradio_demo.ps1` iki sekme açar: mevcut **XTTS Demo** ve **Studio**. Studio'da:
+`run_voice_playground.ps1` ile **Studio** sekmesini açın. Yeni projenin varsayılanı VoxCPM2 (CUDA).
+Studio ve Playground, tek GPU worker'ını ve yerel model önbelleğini paylaşır. Mevcut XTTS ve Mock projelerini
+buradan veya `run_gradio_demo.ps1` içindeki **Studio** sekmesinden açabilirsiniz.
 
 - **Yeni proje:** metin cümle/paragraf segmentlerine bölünür, sayı/tarih/saat/yüzde/TL için okunacak metin ayrıca üretilir (orijinal değişmez). İsteğe bağlı telaffuz sözlüğü: her satıra `kelime = okunuş`. Referans önceliği demo ile aynıdır (profil → yüklenen ses → varsayılan); seçilen referans proje klasörüne kopyalanır.
 - **Segment tablosu:** satıra tıklayınca orijinal metin, okunacak metin, dönüşümler ve segment sesi görünür. Orijinali kaydetmek okunuşu yeniden hesaplar; okunuş elle de düzeltilebilir. Yalnız düzenlenen segment yeniden üretilir.
 - **Eksikleri üret / Durdur:** yalnız sesi eksik veya değişmiş segmentler üretilir. Durdur, o anki segmenti bitirip kuyruğu boşaltır; tekrar başlatınca kaldığı yerden devam eder. Hatalı segmentler tabloda görünür ve yeniden denenebilir.
-- **Tümünü birleştir (önizleme):** tüm segmentler hazırsa sırasıyla tek WAV'a birleştirir (`exports/` altına).
+- **Segment kalitesi ve take'ler:** her yeni üretimin kalite raporu segmente kaydedilir. Bir alternatif üretip
+  raporunu ve sesini inceleyin. **Take'i kullan** aktif sesi değiştirir, **Take seçimini geri al** önceki seçime döner.
+- **Bölümü WAV olarak dışa aktar:** bütün segmentler hazırsa her segmentin seçili take'ini sırayla tek bir WAV'a
+  birleştirir (`exports/` altına). Seçim değiştiğinde güncel WAV için tekrar dışa aktarın.
 - **Karakterler ve sesler:** atanmamış segmentler Anlatıcı (projenin referans sesi) ile üretilir. Karakter ekleyip (profil veya yüklenen ses + üretim modu) segment numaralarıyla atayın (`3, 5-8`). `Ayşe: ...` biçimindeki senaryo satırları ve tire/tırnakla başlayan diyaloglar öneri olarak listelenir; adı mevcut bir karakterle eşleşenler tek tıkla atanır ve isterseniz `Ayşe:` etiketi okunuştan çıkarılır. Bu biçimdeki her satır ayrı segment olur. Sesi değişen segmentler yeniden üretilir.
 
-Projeler `studio_projects/` altında tutulur (Git dışı; `VOXFORGE_STUDIO_ROOT` ile değiştirilebilir). Proje, oluşturulduğu motorla üretilir: Mock ile oluşturulan proje XTTS modunda üretilmez (ve tersi).
+Projeler `studio_projects/` altında tutulur (Git dışı; `VOXFORGE_STUDIO_ROOT` ile değiştirilebilir).
+Her proje kendi motoruyla üretilir. Eski SQLite projeleri açıldığında şema yükseltilir ve proje dizininde
+`project.sqlite.bak-v<eski_sürüm>` yedeği tutulur.
 
 ## 9. Fine-tuning hazırlığı
 

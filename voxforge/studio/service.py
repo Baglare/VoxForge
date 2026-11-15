@@ -15,16 +15,25 @@ from __future__ import annotations
 
 import re
 import shutil
+import sqlite3
 import threading
 import unicodedata
+import uuid
 import wave
+from contextlib import closing
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Callable
 
 from scripts.audio_concat_utils import concatenate_wavs
-from voxforge.engines import ToFileEngineAdapter, engine_spec
-from voxforge.studio.project import ProjectSettings, StudioProject
+from voxforge.engines import TTSEngine, engine_spec
+from voxforge.playground.adapter import WorkerEngineAdapter, worker_engine_spec
+from voxforge.playground.prosody import ControlError, VoxControls
+from voxforge.playground.service import VARIANTS
+from voxforge.playground.workers import EngineManager
+from voxforge.quality.director import QualityDirector
+from voxforge.studio.project import ProjectSettings, StudioProject, file_sha256
 from voxforge.studio.queue import StudioWorker
 from voxforge.studio.store import DB_FILENAME
 from voxforge.text import LexiconEntry
@@ -78,12 +87,25 @@ def _wav_seconds(path: Path) -> float:
 
 
 class StudioService:
-    def __init__(self, root: Path, engine_provider: Callable[[], ToFileEngineAdapter]) -> None:
-        self.root = Path(root)
+    def __init__(
+        self, root: Path, engine_provider: Callable[[], TTSEngine] | None = None, *,
+        manager: EngineManager | None = None, quality: QualityDirector | None = None,
+    ) -> None:
+        self.root = Path(root).resolve()
         self.engine_provider = engine_provider
+        self.manager = manager
+        self.quality = quality
         self._projects: dict[str, StudioProject] = {}
         self._workers: dict[str, StudioWorker] = {}
         self._lock = threading.Lock()
+
+    def _engine_spec(self, engine_id: str | None = None) -> dict[str, Any]:
+        if self.manager is not None:
+            return worker_engine_spec(engine_id or "voxcpm2", self.manager.env)
+        spec = engine_spec()
+        if engine_id is not None and engine_id != spec["engine_id"]:
+            raise StudioError(f"Bu oturum {spec['engine_id']} kullanıyor. {engine_id} için Playground'da Studio'yu açın.")
+        return spec
 
     # ---- projects ----------------------------------------------------
     def project_dir(self, slug: str) -> Path:
@@ -104,8 +126,10 @@ class StudioService:
         choices = []
         for _, slug in sorted(found, reverse=True):
             try:
-                name = self.open(slug).name
-            except Exception:  # noqa: BLE001 - a broken project must not hide the others
+                database = self.project_dir(slug) / DB_FILENAME
+                with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+                    name = db.execute("SELECT name FROM project WHERE id = 1").fetchone()[0]
+            except (sqlite3.Error, StudioError, TypeError):  # a broken project must not hide the others
                 name = f"{slug} (açılamadı)"
             choices.append((name, slug))
         return choices
@@ -126,13 +150,15 @@ class StudioService:
         reference: Path | None,
         preset: dict[str, Any] | None = None,
         lexicon_text: str = "",
+        *,
+        engine_id: str | None = None,
     ) -> str:
         name = (name or "").strip()
         if not name:
             raise StudioError("Proje adı gerekli.")
         if not (text or "").strip():
             raise StudioError("Metin boş olamaz.")
-        spec = engine_spec()
+        spec = self._engine_spec(engine_id)
         if spec["needs_reference"] and (reference is None or not Path(reference).is_file()):
             raise StudioError(f"{spec['engine_id']} motoru referans ses gerektirir; profil seçin veya ses yükleyin.")
         entries = parse_lexicon(lexicon_text)
@@ -153,6 +179,7 @@ class StudioService:
                 model_id=spec["model_id"],
                 reference_path=str(reference_path) if reference_path else None,
                 preset=dict(preset or {}) if spec["supports_presets"] else {},
+                max_chars=VARIANTS[spec["engine_id"]].max_chars,
             )
             project = StudioProject.create(folder, name, text, settings, entries)
         except Exception:
@@ -170,10 +197,41 @@ class StudioService:
         return self.open(slug).segments()
 
     def segment(self, slug: str, segment_id: int) -> dict[str, Any]:
-        for item in self.segments(slug):
-            if item["id"] == segment_id:
-                return item
+        items = self.open(slug).segments(segment_id)
+        if items:
+            return items[0]
         raise StudioError("Segment bulunamadı.")
+
+    def take_view(self, slug: str, segment_id: int) -> dict[str, Any]:
+        project = self.open(slug)
+        item = self.segment(slug, segment_id)
+        return {**item, **project.take_details(item)}
+
+    def change_take(self, slug: str, segment_id: int, cache_key: str, take_id: int | None) -> None:
+        try:
+            self.open(slug).change_take(segment_id, cache_key, take_id)
+        except ValueError as exc:
+            raise StudioError(str(exc)) from exc
+
+    def check_take(self, slug: str, segment_id: int, cache_key: str, take_id: int) -> None:
+        project = self.open(slug)
+        item = self.take_view(slug, segment_id)
+        if item["cache_key"] != cache_key:
+            raise StudioError("Segment değişti. Yeniden seçin.")
+        take = next((take for take in item["takes"] if take["id"] == take_id and take["path"]), None)
+        if not take:
+            raise StudioError("Denetlenecek take bulunamadı.")
+        path = Path(take["path"])
+        reference, _ = project.synthesis_voice(item["voice_id"])
+        director = self.quality or QualityDirector(None)
+        pauses = (take["synthesis"].get("join") or {}).get("pauses")
+        try:
+            if file_sha256(path) != take["sha256"]:
+                raise ValueError("Take'in WAV dosyası değişmiş.")
+            report = director.check(path, item["spoken_text"], pauses, Path(reference) if reference else None)
+            project.save_quality(item, take, report)
+        except (OSError, ValueError) as exc:
+            raise StudioError(str(exc)) from exc
 
     def update_source(self, slug: str, segment_id: int, text: str) -> None:
         if not (text or "").strip():
@@ -202,7 +260,7 @@ class StudioService:
         name = (name or "").strip()
         if not name:
             raise StudioError("Karakter adı gerekli.")
-        spec = engine_spec(project.settings.engine_id)
+        spec = worker_engine_spec(project.settings.engine_id)
         if spec["needs_reference"] and (reference is None or not Path(reference).is_file()):
             raise StudioError(f"{spec['engine_id']} motorunda her karakter için referans ses gerekir.")
         existing = project.voices()
@@ -314,28 +372,56 @@ class StudioService:
         nothing new was queued.
         """
         project = self.open(slug)
-        if self.is_running(slug):
-            raise StudioError("Üretim zaten devam ediyor.")
+        with self._lock:
+            if self.is_running(slug):
+                raise StudioError("Üretim zaten devam ediyor.")
+            self._validate_engine(project)
+            project.enqueue_missing()
+            if self.manager is not None:
+                project.resume_takes()
+            return self._start_worker(slug, project)
+
+    def start_take(self, slug: str, segment_id: int, cache_key: str) -> None:
+        project = self.open(slug)
+        with self._lock:
+            if self.manager is None or project.settings.engine_id == "mock":
+                raise StudioError("Alternatif üretmek için Playground Studio'da VoxCPM2 veya XTTS kullanın.")
+            if self.is_running(slug):
+                raise StudioError("Alternatif üretmek için kuyruk durana kadar bekleyin.")
+            self._validate_engine(project)
+            try:
+                project.enqueue_take(segment_id, cache_key)
+            except ValueError as exc:
+                raise StudioError(str(exc)) from exc
+            self._start_worker(slug, project)
+
+    def _validate_engine(self, project: StudioProject) -> None:
         settings = project.settings
-        spec = engine_spec()
-        if (spec["engine_id"], spec["model_id"]) != (settings.engine_id, settings.model_id):
-            raise StudioError(
-                f"Bu proje {settings.engine_id} motoruyla oluşturuldu; uygulama şu an {spec['engine_id']} ile çalışıyor."
-            )
-        project.enqueue_missing()
-        waiting = project.queued_job_count()
+        spec = self._engine_spec(settings.engine_id)
+        if spec["model_id"] != settings.model_id:
+            raise StudioError(f"Bu proje {settings.model_id} ile oluşturuldu. Etkin model: {spec['model_id']}.")
+
+    def _start_worker(self, slug: str, project: StudioProject) -> int:
+        waiting = project.queued_job_count(include_takes=self.manager is not None)
         if waiting:
-            worker = StudioWorker(project, self.engine_provider())
+            if self.manager is not None:
+                engine = WorkerEngineAdapter(project.settings.engine_id, self.manager)
+            else:
+                assert self.engine_provider is not None
+                engine = self.engine_provider()
+            worker = StudioWorker(project, engine, self.quality)
             self._workers[slug] = worker
             worker.start()
         return waiting
 
     def stop(self, slug: str) -> int:
-        """Stop after the current segment; queued segments are cancelled (restart re-queues them)."""
-        worker = self._workers.get(slug)
-        if worker:
-            worker.stop_event.set()
-        return self.open(slug).cancel_queued()
+        """Stop after the current job; cancelled alternatives retain their seeds for resume."""
+        project = self.open(slug)
+        with self._lock:
+            worker = self._workers.get(slug)
+            if worker:
+                worker.stop_event.set()
+            return project.cancel_queued()
 
     def wait(self, slug: str, timeout: float | None = None) -> None:
         worker = self._workers.get(slug)
@@ -373,18 +459,36 @@ class StudioService:
 
     def build_preview(self, slug: str) -> Path:
         """Concatenate all segments in order into ``exports/``; refuses if any segment is missing."""
-        segments = self.segments(slug)
+        project = self.open(slug)
+        segments = project.segments()
         missing = [str(item["ord"] + 1) for item in segments if item["state"] != "done"]
         if missing:
             shown = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")
             raise StudioError(f"Önce tüm segmentler üretilmeli. Eksik segment: {shown}")
         if not segments:
             raise StudioError("Projede segment yok.")
+        pauses = None
+        if project.settings.engine_id == "voxcpm2":
+            pauses = []
+            for current, following in pairwise(segments):
+                preset = current["preset"]
+                if preset.get("pacing") != "narration":
+                    pauses.append(0.0)
+                    continue
+                try:
+                    controls = VoxControls.from_dict(preset)
+                except ControlError as exc:
+                    raise StudioError(str(exc)) from exc
+                pauses.append(
+                    controls.sentence_pause if current["paragraph"] == following["paragraph"]
+                    else controls.paragraph_pause
+                )
         exports = self.project_dir(slug) / EXPORTS_DIRNAME
         exports.mkdir(exist_ok=True)
-        target = exports / f"onizleme_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-        ok, message = concatenate_wavs([Path(item["audio_path"]) for item in segments], target)
+        target = exports / f"bolum_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.wav"
+        ok, message = concatenate_wavs([Path(item["audio_path"]) for item in segments], target, pauses=pauses)
         if not ok:
+            target.unlink(missing_ok=True)
             raise StudioError(f"Birleştirme başarısız: {message}")
         return target
 
