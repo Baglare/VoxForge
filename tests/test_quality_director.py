@@ -342,6 +342,82 @@ class PlaygroundBridgeTest(unittest.TestCase):
         with self.assertRaises(TakeError):
             quality.sentence_group(record["id"], 5)
 
+    def test_forced_recheck_updates_original_take_only(self) -> None:
+        """PR #19 P2: a forced recheck refreshes t1's report/similarity and the recommendation."""
+        import hashlib
+
+        from voxforge.playground.quality import PlaygroundQuality
+
+        service = PlaygroundService(self.tmp / "pg", self.manager())
+        text = "Merhaba dünya. Bugün hava çok güzel."
+        record = service.generate(text, "mock", None, seed=5)
+        recogniser = FakeRecogniser(text, heard={Path(record["wav"]).name: ""})  # orijinal ilk denetimde boş duyulur
+        quality = PlaygroundQuality(service, director=QualityDirector(recogniser))
+        group, _ = quality.alternatives(record["id"], 2)
+        self.assertIn("asr_empty", {f["code"] for f in group["takes"][0]["quality"]["findings"]})
+        self.assertNotEqual(group["recommended"], "t1")
+        quality.select(group["group_id"], "t3")
+        before = quality.store.load(group["group_id"])
+        hashes = {t["take_id"]: hashlib.sha256(Path(t["wav"]).read_bytes()).hexdigest() for t in before["takes"]}
+
+        recogniser.heard = {}  # ASR artık metni duyuyor
+        report = quality.check(record["id"], force=True)
+        after = quality.store.load(group["group_id"])
+        original = after["takes"][0]
+        self.assertEqual(original["quality"]["checked_at"], report["checked_at"])
+        self.assertNotIn("asr_empty", {f["code"] for f in original["quality"]["findings"]})
+        self.assertEqual(after["recommended"], "t1")  # öneri yeniden hesaplandı
+        self.assertEqual(after["selected"], "t3")  # seçim ve geçmiş aynı
+        self.assertEqual(after["selection_history"], before["selection_history"])
+        self.assertEqual([t["quality"] for t in after["takes"][1:]], [t["quality"] for t in before["takes"][1:]])
+        self.assertEqual({t["take_id"]: hashlib.sha256(Path(t["wav"]).read_bytes()).hexdigest() for t in after["takes"]}, hashes)
+
+
+class AutoQualityChainTest(unittest.TestCase):
+    """PR #19 P2: the automatic chain only sees the record made by this click."""
+
+    def test_failed_generation_checks_and_retakes_nothing(self) -> None:
+        sys.path.insert(0, str(REPO_ROOT / "app"))
+        from app.playground_quality_tab import QualityTab
+
+        calls: list[str] = []
+
+        class Spy:
+            service = None
+
+            def after_generation(self, *args, **kwargs):
+                calls.append("after_generation")
+
+            def check(self, *args, **kwargs):
+                calls.append("check")
+
+            def alternatives(self, *args, **kwargs):
+                calls.append("alternatives")
+
+        tab = QualityTab(Spy(), lambda: [])
+        tab.record, tab.report, tab.sentence, tab.group, tab.table, tab.take, tab.message = (object(),) * 7
+        tab.take_components = [object()] * 8
+        updates = tab.after_generation(None, True, True, 2)  # üretim başarısız: kimlik yok
+        self.assertEqual(calls, [])
+        self.assertEqual(updates[0], "")
+        self.assertEqual(len(updates), 1 + len(tab.outputs))
+        self.assertTrue(all(u == {"__type__": "update"} for u in updates[1:]))  # önceki seçim/ekran korunur
+
+    def test_chain_input_is_the_generated_id_not_the_selection(self) -> None:
+        import gradio as gr
+
+        from app.voice_playground import build_app
+
+        tmp = Path(tempfile.mkdtemp(prefix="vf_chain_"))
+        app = build_app(PlaygroundService(tmp / "pg", EngineManager(tmp / "logs")))
+        chained = [f for f in app.fns.values() if getattr(f.fn, "__name__", "") == "after_generation"]
+        self.assertEqual(len(chained), 1)
+        self.assertIsInstance(chained[0].inputs[0], gr.State)
+        # Playground'daki "Üret" (QualityTab'ın kendi on_generate'i de var; o State üretmez)
+        producers = [f for f in app.fns.values() if getattr(f.fn, "__name__", "") == "on_generate" and f.outputs and f.outputs[-1] is chained[0].inputs[0]]
+        self.assertEqual(len(producers), 1)
+        self.assertNotIn("selected", [getattr(c, "label", "") for c in chained[0].inputs])
+
 
 if __name__ == "__main__":
     unittest.main()

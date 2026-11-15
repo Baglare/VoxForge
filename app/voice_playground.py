@@ -268,6 +268,7 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                         result_file = gr.File(label="WAV indir", interactive=False)
                         result_info = gr.Markdown()
                         result_quality = gr.Markdown()
+                        generated_id = gr.State(None)  # bu tıklamada üretilen kayıt (VF-018 kalite zinciri)
                         status = gr.Markdown(status_line(service))
                         unload = gr.Button("Motoru ve kalite denetleyicisini kapat", size="sm")
 
@@ -412,17 +413,19 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
             text_value, engine_value, chatter_value, voxcpm_value, device_value, transcript, profile_value, seed_value,
             normalize_value, preset_value, cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v, current,
         ):
+            # Son çıktı: bu çağrıda üretilen kaydın kimliği (yoksa None). Otomatik kalite zinciri yalnız
+            # bunu kullanır; üretim başarısızsa önceki seçim gösterilmeye devam eder ama denetlenmez.
             key = variant_for(engine_value, chatter_value, voxcpm_value)
             try:
                 controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
             except ControlError as exc:
-                return after_records([], current, [str(exc)])
+                return [*after_records([], current, [str(exc)]), None]
             records, errors = service.generate_many(
                 text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value,
                 device=device_value or "cuda", reference_text=transcript, controls=controls,
                 preset_key=preset_value if controls is not None and not controls.is_default() else None,
             )
-            return after_records(records, current, errors)
+            return [*after_records(records, current, errors), records[-1]["id"] if records else None]
 
         def on_generate_many(
             text_value, keys, device_value, transcript, profile_value, seed_value, normalize_value,
@@ -467,8 +470,8 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
         generate.click(
             on_generate,
             [text, engine, chatterbox_setting, voxcpm_setting, device, reference_text, profile, seed, normalize, preset, *panel, selected],
-            outputs,
-        ).then(quality_tab.after_generation, [selected, auto_check, auto_retake, auto_count], [result_quality, *quality_tab.outputs])
+            [*outputs, generated_id],
+        ).then(quality_tab.after_generation, [generated_id, auto_check, auto_retake, auto_count], [result_quality, *quality_tab.outputs])
         generate_many.click(
             on_generate_many, [text, compare_variants, device, reference_text, profile, seed, normalize, *panel, selected], outputs
         )

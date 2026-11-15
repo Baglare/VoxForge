@@ -235,10 +235,16 @@ class QualityTab:
             return self.group_view(group_id, str(exc))
         return self.group_view(group_id, f"Önceki seçime dönüldü: **{group['selected']}**.")
 
-    def after_generation(self, ids: list[str] | None, enabled: bool, retake: bool, count: Any) -> list[Any]:
-        """Runs after a Playground generation (``.then``): the audio is already shown."""
-        record_id = (list(ids or []) or [None])[0]
-        record = self.quality.service.get(record_id) if record_id else None
+    def after_generation(self, record_id: str | None, enabled: bool, retake: bool, count: Any) -> list[Any]:
+        """Runs after a Playground generation (``.then``): the audio is already shown.
+
+        ``record_id`` is the record produced by THIS click (None when generation failed). Without
+        it nothing is checked or regenerated and the tab keeps its current state: an older
+        selected record must never be treated as the new result.
+        """
+        if not record_id:
+            return ["", *[gr.update() for _ in self.outputs]]
+        record = self.quality.service.get(record_id)
         if not enabled or record is None or record.get("engine") == "mock":
             return ["", *self.record_view(record_id)]
         try:

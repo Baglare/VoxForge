@@ -111,7 +111,22 @@ class PlaygroundQuality:
         )
         report["record_id"] = record_id
         write_json_atomic(self.report_path(record_id), report)
+        self._sync_original_take(record_id, report)
         return report
+
+    def _sync_original_take(self, record_id: str, report: dict[str, Any]) -> None:
+        """A fresh report replaces the original take's report/similarity in an existing group.
+
+        Only those two fields change and the recommendation is recomputed; the selection, its
+        history and every WAV stay as they are.
+        """
+        group_id = self.group_id(record_id)
+        if not self.store.exists(group_id):
+            return
+        group = self.store.load(group_id)
+        original = next((t for t in group["takes"] if t.get("origin") == "original" and t.get("record_id") == record_id), None)
+        if original is not None:
+            self.store.update_take(group_id, original["take_id"], quality=report, similarity=report["metrics"].get("similarity"))
 
     # -- take groups ---------------------------------------------------------------------
     @staticmethod
