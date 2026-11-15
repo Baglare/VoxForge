@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 import shutil
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import unicodedata
 import uuid
@@ -33,6 +35,7 @@ from voxforge.playground.prosody import ControlError, VoxControls
 from voxforge.playground.service import VARIANTS
 from voxforge.playground.workers import EngineManager
 from voxforge.quality.director import QualityDirector
+from voxforge.studio.book import read_book
 from voxforge.studio.project import ProjectSettings, StudioProject, file_sha256
 from voxforge.studio.queue import StudioWorker
 from voxforge.studio.store import DB_FILENAME
@@ -68,6 +71,7 @@ def slugify(name: str) -> str:
 def parse_lexicon(text: str) -> list[LexiconEntry]:
     """One entry per line: ``kelime = okunuş``. Lines starting with ``#`` are ignored."""
     entries: list[LexiconEntry] = []
+    seen: set[tuple[str, bool]] = set()
     for number, raw in enumerate((text or "").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -75,9 +79,18 @@ def parse_lexicon(text: str) -> list[LexiconEntry]:
         if "=" not in line:
             raise StudioError(f"Sözlük satırı {number}: 'kelime = okunuş' biçiminde olmalı.")
         word, spoken = (part.strip() for part in line.split("=", 1))
+        mode = word[:1]
+        if mode in ("!", "~"):
+            word = word[1:].strip()
+        word, spoken = " ".join(word.split()), " ".join(spoken.split())
         if not word or not spoken:
             raise StudioError(f"Sözlük satırı {number}: kelime ve okunuş boş olamaz.")
-        entries.append(LexiconEntry(word=word, spoken=spoken, case_sensitive=word != word.lower()))
+        exact = mode == "!" or (mode != "~" and word != word.lower())
+        key = (word if exact else word.casefold(), exact)
+        if key in seen:
+            raise StudioError(f"Sözlük satırı {number}: yinelenen giriş: {word}")
+        seen.add(key)
+        entries.append(LexiconEntry(word=word, spoken=spoken, case_sensitive=exact))
     return entries
 
 
@@ -152,16 +165,23 @@ class StudioService:
         lexicon_text: str = "",
         *,
         engine_id: str | None = None,
+        document: Path | None = None,
     ) -> str:
         name = (name or "").strip()
         if not name:
             raise StudioError("Proje adı gerekli.")
-        if not (text or "").strip():
+        if document is not None and (text or "").strip():
+            raise StudioError("Bir kaynak seçin: metin alanı veya dosya.")
+        if document is None and not (text or "").strip():
             raise StudioError("Metin boş olamaz.")
         spec = self._engine_spec(engine_id)
         if spec["needs_reference"] and (reference is None or not Path(reference).is_file()):
             raise StudioError(f"{spec['engine_id']} motoru referans ses gerektirir; profil seçin veya ses yükleyin.")
         entries = parse_lexicon(lexicon_text)
+        try:
+            book = read_book(document) if document is not None else None
+        except (OSError, ValueError) as exc:
+            raise StudioError(str(exc)) from exc
 
         base = slugify(name)
         slug, counter = base, 2
@@ -181,7 +201,12 @@ class StudioService:
                 preset=dict(preset or {}) if spec["supports_presets"] else {},
                 max_chars=VARIANTS[spec["engine_id"]].max_chars,
             )
-            project = StudioProject.create(folder, name, text, settings, entries)
+            if book:
+                (folder / f"source{book.extension}").write_bytes(book.original)
+            project = StudioProject.create(
+                folder, name, text, settings, entries,
+                chapters=book.chapters if book else None, source_format=book.extension if book else None,
+            )
         except Exception:
             shutil.rmtree(folder, ignore_errors=True)  # yalnız bu çağrının az önce açtığı boş proje klasörü
             raise
@@ -195,6 +220,23 @@ class StudioService:
     # ---- segments ----------------------------------------------------
     def segments(self, slug: str) -> list[dict[str, Any]]:
         return self.open(slug).segments()
+
+    def chapters(self, slug: str) -> list[tuple[int, str]]:
+        return self.open(slug).chapters()
+
+    def lexicon_text(self, slug: str) -> str:
+        return "\n".join(
+            f"{'!' if entry.case_sensitive else '~'} {entry.word} = {entry.spoken}"
+            for entry in self.open(slug).settings.lexicon_entries()
+        )
+
+    def update_lexicon(self, slug: str, text: str) -> int:
+        project = self.open(slug)
+        entries = parse_lexicon(text)
+        with self._lock:
+            if self.is_running(slug):
+                raise StudioError("Sözlüğü kaydetmek için üretimi durdurun.")
+            return project.update_lexicon(entries)
 
     def segment(self, slug: str, segment_id: int) -> dict[str, Any]:
         items = self.open(slug).segments(segment_id)
@@ -236,7 +278,10 @@ class StudioService:
     def update_source(self, slug: str, segment_id: int, text: str) -> None:
         if not (text or "").strip():
             raise StudioError("Orijinal metin boş olamaz.")
-        self.open(slug).update_segment_text(segment_id, text)
+        try:
+            self.open(slug).update_segment_text(segment_id, text)
+        except ValueError as exc:
+            raise StudioError(str(exc)) from exc
 
     def set_spoken(self, slug: str, segment_id: int, spoken: str) -> None:
         try:
@@ -364,7 +409,7 @@ class StudioService:
         worker = self._workers.get(slug)
         return bool(worker and worker.running)
 
-    def start(self, slug: str) -> int:
+    def start(self, slug: str, *, chapter_id: int | None = None) -> int:
         """Queue segments missing audio for their current key and start the worker.
 
         Returns the number of jobs waiting in the queue. Jobs queued earlier but never
@@ -372,14 +417,15 @@ class StudioService:
         nothing new was queued.
         """
         project = self.open(slug)
+        self._validate_chapter(project, chapter_id)
         with self._lock:
             if self.is_running(slug):
                 raise StudioError("Üretim zaten devam ediyor.")
             self._validate_engine(project)
-            project.enqueue_missing()
+            project.enqueue_missing(chapter_id=chapter_id)
             if self.manager is not None:
-                project.resume_takes()
-            return self._start_worker(slug, project)
+                project.resume_takes(chapter_id=chapter_id)
+            return self._start_worker(slug, project, chapter_id=chapter_id)
 
     def start_take(self, slug: str, segment_id: int, cache_key: str) -> None:
         project = self.open(slug)
@@ -393,7 +439,13 @@ class StudioService:
                 project.enqueue_take(segment_id, cache_key)
             except ValueError as exc:
                 raise StudioError(str(exc)) from exc
-            self._start_worker(slug, project)
+            chapter_id = project.segments(segment_id)[0]["chapter_id"]
+            self._start_worker(slug, project, chapter_id=chapter_id)
+
+    @staticmethod
+    def _validate_chapter(project: StudioProject, chapter_id: int | None) -> None:
+        if chapter_id is not None and not any(key == chapter_id for key, _ in project.chapters()):
+            raise StudioError("Bölüm bulunamadı.")
 
     def _validate_engine(self, project: StudioProject) -> None:
         settings = project.settings
@@ -401,15 +453,15 @@ class StudioService:
         if spec["model_id"] != settings.model_id:
             raise StudioError(f"Bu proje {settings.model_id} ile oluşturuldu. Etkin model: {spec['model_id']}.")
 
-    def _start_worker(self, slug: str, project: StudioProject) -> int:
-        waiting = project.queued_job_count(include_takes=self.manager is not None)
+    def _start_worker(self, slug: str, project: StudioProject, *, chapter_id: int | None = None) -> int:
+        waiting = project.queued_job_count(include_takes=self.manager is not None, chapter_id=chapter_id)
         if waiting:
             if self.manager is not None:
                 engine = WorkerEngineAdapter(project.settings.engine_id, self.manager)
             else:
                 assert self.engine_provider is not None
                 engine = self.engine_provider()
-            worker = StudioWorker(project, engine, self.quality)
+            worker = StudioWorker(project, engine, self.quality, chapter_id=chapter_id)
             self._workers[slug] = worker
             worker.start()
         return waiting
@@ -421,6 +473,7 @@ class StudioService:
             worker = self._workers.get(slug)
             if worker:
                 worker.stop_event.set()
+                return project.cancel_queued(chapter_id=worker.chapter_id)
             return project.cancel_queued()
 
     def wait(self, slug: str, timeout: float | None = None) -> None:
@@ -457,10 +510,16 @@ class StudioService:
         info.pop("segments")
         return info
 
-    def build_preview(self, slug: str) -> Path:
-        """Concatenate all segments in order into ``exports/``; refuses if any segment is missing."""
+    def build_preview(self, slug: str, *, chapter_id: int | None = None) -> Path:
+        return self.export_audio(slug, chapter_id=chapter_id)
+
+    def export_audio(self, slug: str, *, chapter_id: int | None = None, audio_format: str = "wav") -> Path:
+        """Export active take PCM in chapter/segment order, optionally encoding the joined audio as MP3."""
+        if audio_format not in ("wav", "mp3"):
+            raise StudioError("Çıktı biçimi WAV veya MP3 olmalı.")
         project = self.open(slug)
-        segments = project.segments()
+        self._validate_chapter(project, chapter_id)
+        segments = project.segments(chapter_id=chapter_id)
         missing = [str(item["ord"] + 1) for item in segments if item["state"] != "done"]
         if missing:
             shown = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")
@@ -480,17 +539,46 @@ class StudioService:
                 except ControlError as exc:
                     raise StudioError(str(exc)) from exc
                 pauses.append(
-                    controls.sentence_pause if current["paragraph"] == following["paragraph"]
-                    else controls.paragraph_pause
+                    controls.paragraph_pause if (
+                        current["chapter_id"] != following["chapter_id"]
+                        or current["paragraph"] != following["paragraph"]
+                    ) else controls.sentence_pause
                 )
         exports = self.project_dir(slug) / EXPORTS_DIRNAME
         exports.mkdir(exist_ok=True)
-        target = exports / f"bolum_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.wav"
-        ok, message = concatenate_wavs([Path(item["audio_path"]) for item in segments], target, pauses=pauses)
+        prefix = f"bolum_{chapter_id:03d}" if chapter_id is not None else "kitap"
+        target = exports / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{audio_format}"
+        paths = [Path(item["audio_path"]) for item in segments]
+        if audio_format == "wav":
+            self._write_export_wav(paths, target, pauses)
+        else:
+            self._write_export_mp3(paths, target, pauses)
+        return target
+
+    @staticmethod
+    def _write_export_wav(paths: list[Path], target: Path, pauses: list[float] | None) -> None:
+        ok, message = concatenate_wavs(paths, target, pauses=pauses)
         if not ok:
             target.unlink(missing_ok=True)
             raise StudioError(f"Birleştirme başarısız: {message}")
-        return target
+
+    def _write_export_mp3(self, paths: list[Path], target: Path, pauses: list[float] | None) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise StudioError("MP3 dışa aktarmak için FFmpeg gerekli.")
+        with tempfile.TemporaryDirectory(prefix=".mp3-", dir=target.parent) as temporary:
+            wav, mp3 = Path(temporary) / "book.wav", Path(temporary) / "book.mp3"
+            self._write_export_wav(paths, wav, pauses)
+            try:
+                result = subprocess.run(
+                    [ffmpeg, "-nostdin", "-v", "error", "-i", str(wav), "-c:a", "libmp3lame", "-q:a", "2", str(mp3)],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode != 0 or not mp3.is_file() or not mp3.stat().st_size:
+                    raise StudioError(f"MP3 kodlanamadı: {result.stderr.strip()}")
+                mp3.replace(target)
+            except OSError as exc:
+                raise StudioError(f"MP3 dışa aktarılamadı: {exc}") from exc
 
     @staticmethod
     def preview_seconds(path: Path) -> float:

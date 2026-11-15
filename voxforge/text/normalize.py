@@ -69,6 +69,11 @@ class LexiconEntry:
     spoken: str
     case_sensitive: bool = False
 
+    def pattern(self) -> re.Pattern[str]:
+        name = r"\s+".join(re.escape(part) for part in self.word.split())
+        flags = 0 if self.case_sensitive else re.IGNORECASE
+        return re.compile(rf"(?<!\w){name}(?!\w)", flags)
+
 
 def _three_digits(value: int) -> list[str]:
     hundreds, rest = divmod(value, 100)
@@ -161,11 +166,30 @@ class _Collector:
 
 
 def _apply_lexicon(collector: _Collector, entries: Iterable[LexiconEntry]) -> None:
-    for entry in sorted(entries, key=lambda item: len(item.word), reverse=True):
-        flags = 0 if entry.case_sensitive else re.IGNORECASE
-        pattern = re.compile(rf"(?<!\w){re.escape(entry.word)}(?!\w)", flags)
-        for match in pattern.finditer(collector.text):
+    for entry in sorted(entries, key=lambda item: (-len(item.word), not item.case_sensitive)):
+        if not entry.word.strip():
+            continue
+        for match in entry.pattern().finditer(collector.text):
             collector.add(match.start(), match.end(), entry.spoken, "lexicon", keep_suffix=False)
+
+
+def lexicon_spans(text: str, entries: Iterable[LexiconEntry]) -> list[tuple[int, int]]:
+    """Ranges that should stay together when splitting a long book sentence."""
+    spans = []
+    for entry in entries:
+        if not entry.word.strip():
+            continue
+        for match in entry.pattern().finditer(text):
+            suffix = _SUFFIX.match(text, match.end())
+            spans.append((match.start(), suffix.end() if suffix else match.end()))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            left, right = merged[-1]
+            merged[-1] = (left, max(right, end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def normalize_text(text: str, lexicon: Iterable[LexiconEntry] = ()) -> NormalizationResult:

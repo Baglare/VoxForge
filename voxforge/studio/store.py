@@ -99,6 +99,18 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX take_selection_stack ON take_selection(artifact_id, id);
     """,
+    5: """
+    CREATE TABLE chapter (
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL,
+        source_text TEXT NOT NULL
+    );
+    INSERT INTO chapter (id, title, source_text) SELECT 1, name, '' FROM project;
+    ALTER TABLE project ADD COLUMN source_format TEXT;
+    ALTER TABLE segment ADD COLUMN chapter_id INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE segment ADD COLUMN pronunciation_source TEXT;
+    CREATE INDEX segment_chapter ON segment(chapter_id, ord);
+    """,
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

@@ -22,6 +22,7 @@ from typing import Any, Iterable
 from voxforge.playground.service import DEFAULT_SEED
 from voxforge.quality.takes import derive_seeds
 from voxforge.runs import utc_now_iso
+from voxforge.studio.book import Chapter
 from voxforge.studio.store import ProjectStore
 from voxforge.text import NORMALIZER_VERSION, LexiconEntry, normalize_text, prepare_segments
 
@@ -88,6 +89,9 @@ class StudioProject:
         text: str,
         settings: ProjectSettings,
         lexicon: Iterable[LexiconEntry] = (),
+        *,
+        chapters: tuple[Chapter, ...] | None = None,
+        source_format: str | None = None,
     ) -> "StudioProject":
         store = ProjectStore(folder)
         entries = list(lexicon)
@@ -97,22 +101,28 @@ class StudioProject:
             if db.execute("SELECT 1 FROM project").fetchone():
                 raise FileExistsError(f"Proje zaten var: {folder}")
             db.execute(
-                "INSERT INTO project (id, name, created_at, settings_json) VALUES (1, ?, ?, ?)",
-                (name, now, json.dumps(asdict(settings), ensure_ascii=False)),
+                "INSERT INTO project (id, name, created_at, settings_json, source_format) VALUES (1, ?, ?, ?, ?)",
+                (name, now, json.dumps(asdict(settings), ensure_ascii=False), source_format),
             )
-            for order, item in enumerate(prepare_segments(text, settings.max_chars, entries)):
+            order = 0
+            for chapter_id, chapter in enumerate(chapters or (Chapter(name, text),), start=1):
                 db.execute(
-                    "INSERT INTO segment (ord, paragraph, source_text, spoken_text, transformations_json, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        order,
-                        item.segment.paragraph,
-                        item.segment.text,
-                        item.spoken,
-                        _transformations_json(item.normalization),
-                        now,
-                    ),
+                    "INSERT INTO chapter (id, title, source_text) VALUES (?, ?, ?)",
+                    (chapter_id, chapter.title, chapter.text),
                 )
+                body = chapter.text
+                if chapter.has_heading:
+                    body = chapter.title + "\n\n" + body
+                for item in prepare_segments(body, settings.max_chars, entries, protect_names=bool(source_format)):
+                    segment = item.segment
+                    source = body[segment.start:segment.end] if source_format else segment.text
+                    db.execute(
+                        """INSERT INTO segment (ord, paragraph, source_text, spoken_text, transformations_json,
+                                                updated_at, chapter_id) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (order, segment.paragraph, source, item.spoken,
+                         _transformations_json(item.normalization), now, chapter_id),
+                    )
+                    order += 1
         return cls(store)
 
     @classmethod
@@ -138,8 +148,21 @@ class StudioProject:
     @property
     def settings(self) -> ProjectSettings:
         with self.store.connect() as db:
-            row = db.execute("SELECT settings_json FROM project WHERE id = 1").fetchone()
+            return self._read_settings(db)
+
+    @staticmethod
+    def _read_settings(db) -> ProjectSettings:
+        row = db.execute("SELECT settings_json FROM project WHERE id = 1").fetchone()
         return ProjectSettings(**json.loads(row["settings_json"]))
+
+    @property
+    def source_format(self) -> str | None:
+        with self.store.connect() as db:
+            return db.execute("SELECT source_format FROM project WHERE id = 1").fetchone()[0]
+
+    def chapters(self) -> list[tuple[int, str]]:
+        with self.store.connect() as db:
+            return [(row["id"], row["title"]) for row in db.execute("SELECT id, title FROM chapter ORDER BY id")]
 
     def reference_hash(self, reference: str | None = None, *, use_project_default: bool = True) -> str | None:
         """Content hash of a reference WAV, re-read whenever its size or mtime changes."""
@@ -244,15 +267,26 @@ class StudioProject:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     # ---- segments --------------------------------------------------
-    def segments(self, segment_id: int | None = None) -> list[dict[str, Any]]:
+    def segments(self, segment_id: int | None = None, *, chapter_id: int | None = None) -> list[dict[str, Any]]:
         """Segments in order with derived state: done / queued / running / failed / cancelled / pending."""
-        settings = self.settings
+        query = (
+            "SELECT segment.*, chapter.title AS chapter_title FROM segment"
+            " JOIN chapter ON chapter.id = segment.chapter_id"
+        )
+        filters, params = [], []
+        if segment_id is not None:
+            filters.append("segment.id = ?")
+            params.append(segment_id)
+        if chapter_id is not None:
+            filters.append("segment.chapter_id = ?")
+            params.append(chapter_id)
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
         with self.store.connect() as db:
             db.execute("BEGIN")
+            settings = self._read_settings(db)
             voices = self.voices(db)
-            rows = db.execute(
-                "SELECT * FROM segment WHERE id = ? ORDER BY ord", (segment_id,)
-            ) if segment_id is not None else db.execute("SELECT * FROM segment ORDER BY ord")
+            rows = db.execute(query + " ORDER BY segment.ord", params)
             result = []
             for row in rows:
                 key = self.cache_key(row["spoken_text"], settings, row["voice_id"], voices)
@@ -288,6 +322,8 @@ class StudioProject:
                         "id": row["id"],
                         "ord": row["ord"],
                         "paragraph": row["paragraph"],
+                        "chapter_id": row["chapter_id"],
+                        "chapter_title": row["chapter_title"],
                         "source_text": row["source_text"],
                         "spoken_text": row["spoken_text"],
                         "transformations": json.loads(row["transformations_json"]),
@@ -384,11 +420,13 @@ class StudioProject:
 
     def update_segment_text(self, segment_id: int, source_text: str) -> str:
         """Change one segment's source text; returns its new spoken text. Other segments are untouched."""
-        settings = self.settings
-        normalization = normalize_text(" ".join(source_text.split()), settings.lexicon_entries())
         with self.store.transaction() as db:
+            if db.execute("SELECT source_format FROM project WHERE id = 1").fetchone()[0]:
+                raise ValueError("İçe aktarılan kaynak metin sabittir. Okunacak metni düzenleyin.")
+            normalization = normalize_text(" ".join(source_text.split()), self._read_settings(db).lexicon_entries())
             updated = db.execute(
-                "UPDATE segment SET source_text = ?, spoken_text = ?, transformations_json = ?, updated_at = ?"
+                "UPDATE segment SET source_text = ?, spoken_text = ?, transformations_json = ?, updated_at = ?,"
+                " pronunciation_source = NULL"
                 " WHERE id = ?",
                 (
                     normalization.original,
@@ -424,14 +462,46 @@ class StudioProject:
                 (utc_now_iso(), segment_id),
             )
 
+    def update_lexicon(self, entries: list[LexiconEntry]) -> int:
+        """Re-normalise dictionary-driven readings, keeping manual readings and cached takes."""
+        changed = 0
+        with self.store.transaction() as db:
+            settings = self._read_settings(db)
+            previous = settings.lexicon_entries()
+            settings.lexicon = [asdict(entry) for entry in entries]
+            now = utc_now_iso()
+            rows = db.execute(
+                "SELECT id, source_text, spoken_text, transformations_json, pronunciation_source FROM segment"
+            )
+            for segment in rows:
+                if any(item.get("rule") == "manual" for item in json.loads(segment["transformations_json"])):
+                    continue
+                text = " ".join((segment["pronunciation_source"] or segment["source_text"]).split())
+                if normalize_text(text, previous).spoken != segment["spoken_text"]:
+                    continue  # legacy projects can have overridden readings without provenance
+                result = normalize_text(text, entries)
+                if result.spoken != segment["spoken_text"]:
+                    changed += 1
+                    db.execute(
+                        "UPDATE job SET status = 'cancelled', finished_at = ? WHERE segment_id = ? AND status = 'queued'",
+                        (now, segment["id"]),
+                    )
+                db.execute(
+                    "UPDATE segment SET spoken_text = ?, transformations_json = ?, updated_at = ? WHERE id = ?",
+                    (result.spoken, _transformations_json(result), now, segment["id"]),
+                )
+            db.execute("UPDATE project SET settings_json = ? WHERE id = 1",
+                       (json.dumps(asdict(settings), ensure_ascii=False),))
+        return changed
+
     # ---- jobs ------------------------------------------------------
-    def enqueue_missing(self, segment_ids: Iterable[int] | None = None) -> int:
+    def enqueue_missing(self, segment_ids: Iterable[int] | None = None, *, chapter_id: int | None = None) -> int:
         """Queue segments whose current key has no artifact and no queued/running job (failed ones are retried)."""
         wanted = set(segment_ids) if segment_ids is not None else None
         now = utc_now_iso()
         rows = [
             (segment["id"], segment["cache_key"], now)
-            for segment in self.segments()
+            for segment in self.segments(chapter_id=chapter_id)
             if (wanted is None or segment["id"] in wanted)
             and segment["state"] not in ("done", "queued", "running")
             and not segment["selected_take"]
@@ -474,40 +544,45 @@ class StudioProject:
                 (segment_id, key, utc_now_iso(), seed),
             )
 
-    def queued_job_count(self, *, include_takes: bool = True) -> int:
+    def queued_job_count(self, *, include_takes: bool = True, chapter_id: int | None = None) -> int:
         """Jobs waiting for a worker, after requeueing abandoned (stale-lease) running jobs."""
         with self.store.transaction() as db:
             _recover_stale_jobs(db)
             return int(db.execute(
-                "SELECT COUNT(*) FROM job WHERE status = 'queued' AND (? OR seed IS NULL)", (include_takes,)
+                """SELECT COUNT(*) FROM job JOIN segment ON segment.id = job.segment_id
+                   WHERE status = 'queued' AND (? OR seed IS NULL) AND (? IS NULL OR chapter_id = ?)""",
+                (include_takes, chapter_id, chapter_id),
             ).fetchone()[0])
 
-    def cancel_queued(self) -> int:
+    def cancel_queued(self, *, chapter_id: int | None = None) -> int:
         with self.store.transaction() as db:
             return db.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = ?,
                                   error = CASE WHEN seed IS NOT NULL THEN ? ELSE NULL END
-                   WHERE status = 'queued'""",
-                (utc_now_iso(), PAUSED_TAKE),
+                   WHERE status = 'queued' AND (? IS NULL OR
+                         segment_id IN (SELECT id FROM segment WHERE chapter_id = ?))""",
+                (utc_now_iso(), PAUSED_TAKE, chapter_id, chapter_id),
             ).rowcount
 
-    def resume_takes(self) -> None:
+    def resume_takes(self, *, chapter_id: int | None = None) -> None:
         with self.store.transaction() as db:
             db.execute(
                 """UPDATE job SET status = 'queued', finished_at = NULL, error = NULL
-                   WHERE status = 'cancelled' AND seed IS NOT NULL AND error = ?""",
-                (PAUSED_TAKE,),
+                   WHERE status = 'cancelled' AND seed IS NOT NULL AND error = ? AND
+                         (? IS NULL OR segment_id IN (SELECT id FROM segment WHERE chapter_id = ?))""",
+                (PAUSED_TAKE, chapter_id, chapter_id),
             )
 
-    def claim_next_job(self, *, include_takes: bool = True) -> dict[str, Any] | None:
+    def claim_next_job(self, *, include_takes: bool = True, chapter_id: int | None = None) -> dict[str, Any] | None:
         """Atomically move the oldest queued job to ``running`` under this worker's lease."""
         with self.store.transaction() as db:
             _recover_stale_jobs(db)
             row = db.execute(
                 "SELECT job.id, job.segment_id, job.cache_key, job.attempts, job.seed, segment.spoken_text, segment.voice_id"
                 " FROM job JOIN segment ON segment.id = job.segment_id"
-                " WHERE job.status = 'queued' AND (? OR job.seed IS NULL) ORDER BY segment.ord, job.id LIMIT 1",
-                (include_takes,),
+                " WHERE job.status = 'queued' AND (? OR job.seed IS NULL) AND (? IS NULL OR segment.chapter_id = ?)"
+                " ORDER BY segment.ord, job.id LIMIT 1",
+                (include_takes, chapter_id, chapter_id),
             ).fetchone()
             if row is None:
                 return None
@@ -597,14 +672,16 @@ class StudioProject:
 
     def set_spoken_from_text(self, segment_id: int, text: str) -> str:
         """Normalise ``text`` into the segment's spoken text, keeping the original source (e.g. drop a speaker label)."""
-        settings = self.settings
-        normalization = normalize_text(" ".join(text.split()), settings.lexicon_entries())
-        if not normalization.spoken:
+        source = " ".join(text.split())
+        if not source:
             raise ValueError("Okunacak metin bos olamaz.")
         with self.store.transaction() as db:
+            normalization = normalize_text(source, self._read_settings(db).lexicon_entries())
             if not db.execute(
-                "UPDATE segment SET spoken_text = ?, transformations_json = ?, updated_at = ? WHERE id = ?",
-                (normalization.spoken, _transformations_json(normalization), utc_now_iso(), segment_id),
+                """UPDATE segment SET spoken_text = ?, transformations_json = ?, updated_at = ?,
+                                      pronunciation_source = ? WHERE id = ?""",
+                (normalization.spoken, _transformations_json(normalization), utc_now_iso(),
+                 normalization.original, segment_id),
             ).rowcount:
                 raise KeyError(f"Segment yok: {segment_id}")
             db.execute(
