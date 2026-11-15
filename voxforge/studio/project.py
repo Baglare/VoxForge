@@ -193,17 +193,22 @@ class StudioProject:
                 "name": row["name"],
                 "reference_path": row["reference_path"],
                 "preset": json.loads(row["preset_json"]),
+                "design_version": row["design_version"],
             }
             for row in rows
         }
 
-    def add_voice(self, key: str, name: str, reference_path: str | None, preset: dict[str, Any]) -> None:
+    def add_voice(
+        self, key: str, name: str, reference_path: str | None, preset: dict[str, Any],
+        *, design_version: str | None = None,
+    ) -> None:
         with self.store.transaction() as db:
             if db.execute("SELECT 1 FROM voice WHERE key = ? OR lower(name) = lower(?)", (key, name)).fetchone():
                 raise ValueError(f"Bu adla bir ses zaten var: {name}")
             db.execute(
-                "INSERT INTO voice (key, name, reference_path, preset_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (key, name, reference_path, json.dumps(preset, ensure_ascii=False), utc_now_iso()),
+                """INSERT INTO voice (key, name, reference_path, preset_json, created_at, design_version)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (key, name, reference_path, json.dumps(preset, ensure_ascii=False), utc_now_iso(), design_version),
             )
 
     def update_voice_preset(self, key: str, preset: dict[str, Any]) -> None:
