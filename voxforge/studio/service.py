@@ -28,15 +28,18 @@ from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, Callable
+from zipfile import BadZipFile
 
 from scripts.audio_concat_utils import concatenate_wavs
 from voxforge.engines import TTSEngine, engine_spec
 from voxforge.playground.adapter import WorkerEngineAdapter, worker_engine_spec
+from voxforge.playground.audio_join import read_part, render_gain
 from voxforge.playground.prosody import ControlError, VoxControls
 from voxforge.playground.service import DEFAULT_SEED, VARIANTS
 from voxforge.playground.workers import EngineManager, WorkerError
 from voxforge.quality.director import QualityDirector
 from voxforge.runs import utc_now_iso
+from voxforge.studio.backup import backup_project, restore_project
 from voxforge.studio.book import read_book
 from voxforge.studio.design import DesignLibrary
 from voxforge.studio.project import ProjectSettings, StudioProject, file_sha256
@@ -219,6 +222,32 @@ class StudioService:
             raise StudioError("Metinden segment çıkarılamadı.")
         with self._lock:
             self._projects[slug] = project
+        return slug
+
+    def backup(self, slug: str) -> Path:
+        folder = self.project_dir(slug)
+        database = folder / DB_FILENAME
+        if database.resolve() != database:
+            raise StudioError("Yedek veritabanı proje içinde olmalı.")
+        project = self.open(slug)
+        exports = folder / EXPORTS_DIRNAME
+        try:
+            exports.mkdir(exist_ok=True)
+            if exports.resolve() != exports:
+                raise StudioError("Yedek dizini proje içinde olmalı.")
+            return backup_project(project.store, exports / f"yedek_{uuid.uuid4().hex}.zip")
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise StudioError(f"Yedek oluşturulamadı: {exc}") from exc
+
+    def restore(self, bundle: Path, name: str) -> str:
+        if not (name or "").strip():
+            raise StudioError("Geri yükleme için yeni bir proje adı girin.")
+        slug = slugify(name)
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            restore_project(bundle, self.project_dir(slug), name.strip())
+        except (OSError, ValueError, sqlite3.Error, BadZipFile, RuntimeError, TypeError, AttributeError) as exc:
+            raise StudioError(f"Yedek geri yüklenemedi: {exc}") from exc
         return slug
 
     # ---- segments ----------------------------------------------------
@@ -497,6 +526,25 @@ class StudioService:
                 project.resume_takes(chapter_id=chapter_id)
             return self._start_worker(slug, project, chapter_id=chapter_id)
 
+    def start_segment(self, slug: str, segment_id: int) -> int:
+        """Queue a missing or changed selected sentence without draining other jobs."""
+        project = self.open(slug)
+        with self._lock:
+            if self.is_running(slug):
+                raise StudioError("Tek segment üretmek için kuyruk durana kadar bekleyin.")
+            self._validate_engine(project)
+            rows = project.segments(segment_id)
+            if not rows:
+                raise StudioError("Segment bulunamadı.")
+            item = rows[0]
+            if item["state"] == "done":
+                raise StudioError("Segment hazır. Yeni bir okuma için alternatif take üretin.")
+            if item["selected_take"]:
+                raise StudioError("Seçili take eksik. Önce mevcut bir take seçin.")
+            project.enqueue_missing([segment_id])
+            job_id = project.unfinished_base_job(segment_id, item["cache_key"])
+            return self._start_worker(slug, project, job_id=job_id) if job_id is not None else 0
+
     def start_take(self, slug: str, segment_id: int, cache_key: str) -> None:
         project = self.open(slug)
         with self._lock:
@@ -506,11 +554,10 @@ class StudioService:
                 raise StudioError("Alternatif üretmek için kuyruk durana kadar bekleyin.")
             self._validate_engine(project)
             try:
-                project.enqueue_take(segment_id, cache_key)
+                job_id = project.enqueue_take(segment_id, cache_key)
             except ValueError as exc:
                 raise StudioError(str(exc)) from exc
-            chapter_id = project.segments(segment_id)[0]["chapter_id"]
-            self._start_worker(slug, project, chapter_id=chapter_id)
+            self._start_worker(slug, project, job_id=job_id)
 
     @staticmethod
     def _validate_chapter(project: StudioProject, chapter_id: int | None) -> None:
@@ -523,15 +570,21 @@ class StudioService:
         if spec["model_id"] != settings.model_id:
             raise StudioError(f"Bu proje {settings.model_id} ile oluşturuldu. Etkin model: {spec['model_id']}.")
 
-    def _start_worker(self, slug: str, project: StudioProject, *, chapter_id: int | None = None) -> int:
-        waiting = project.queued_job_count(include_takes=self.manager is not None, chapter_id=chapter_id)
+    def _start_worker(
+        self, slug: str, project: StudioProject, *, chapter_id: int | None = None, job_id: int | None = None,
+    ) -> int:
+        waiting = project.queued_job_count(
+            include_takes=self.manager is not None, chapter_id=chapter_id, job_id=job_id,
+        )
         if waiting:
             if self.manager is not None:
                 engine = WorkerEngineAdapter(project.settings.engine_id, self.manager)
             else:
                 assert self.engine_provider is not None
                 engine = self.engine_provider()
-            worker = StudioWorker(project, engine, self.quality, chapter_id=chapter_id)
+            worker = StudioWorker(
+                project, engine, self.quality, chapter_id=chapter_id, job_id=job_id,
+            )
             self._workers[slug] = worker
             worker.start()
         return waiting
@@ -543,13 +596,34 @@ class StudioService:
             worker = self._workers.get(slug)
             if worker:
                 worker.stop_event.set()
-                return project.cancel_queued(chapter_id=worker.chapter_id)
+                return project.cancel_queued(chapter_id=worker.chapter_id, job_id=worker.job_id)
             return project.cancel_queued()
 
     def wait(self, slug: str, timeout: float | None = None) -> None:
         worker = self._workers.get(slug)
         if worker and worker.thread:
             worker.thread.join(timeout)
+
+    def change_mix(self, slug: str, segment_id: int, mix: tuple[float, float | None] | None) -> None:
+        try:
+            self.open(slug).change_mix(segment_id, mix)
+        except ValueError as exc:
+            raise StudioError(str(exc)) from exc
+
+    @staticmethod
+    def _pause_after(engine_id: str, current: dict[str, Any], following: dict[str, Any]) -> float:
+        if current["pause_s"] is not None:
+            return current["pause_s"]
+        preset = current["preset"]
+        if engine_id != "voxcpm2" or preset.get("pacing") != "narration":
+            return 0.0
+        try:
+            controls = VoxControls.from_dict(preset)
+        except ControlError as exc:
+            raise StudioError(str(exc)) from exc
+        if (current["chapter_id"], current["paragraph"]) != (following["chapter_id"], following["paragraph"]):
+            return controls.paragraph_pause
+        return controls.sentence_pause
 
     def snapshot(self, slug: str) -> dict[str, Any]:
         """Consistent view for the UI: worker state first, then segments.
@@ -562,9 +636,19 @@ class StudioService:
         """
         running = self.is_running(slug)
         worker = self._workers.get(slug)
-        segments = self.segments(slug)
+        project = self.open(slug)
+        segments = project.segments()
+        engine_id = project.settings.engine_id
+        cursor: float | None = 0.0
         counts: dict[str, int] = {}
-        for item in segments:
+        for index, item in enumerate(segments):
+            item["timeline_start_s"] = cursor
+            following = segments[index + 1] if index + 1 < len(segments) else None
+            pause = self._pause_after(engine_id, item, following) if following is not None else None
+            item["timeline_pause_s"] = pause
+            if cursor is not None:
+                duration = item["duration_s"]
+                cursor = None if duration is None else cursor + duration + (pause or 0.0)
             counts[item["state"]] = counts.get(item["state"], 0) + 1
         return {
             "segments": segments,
@@ -584,7 +668,13 @@ class StudioService:
         return self.export_audio(slug, chapter_id=chapter_id)
 
     def export_audio(self, slug: str, *, chapter_id: int | None = None, audio_format: str = "wav") -> Path:
-        """Export active take PCM in chapter/segment order, optionally encoding the joined audio as MP3."""
+        path, _ = self.export_audio_with_report(slug, chapter_id=chapter_id, audio_format=audio_format)
+        return path
+
+    def export_audio_with_report(
+        self, slug: str, *, chapter_id: int | None = None, audio_format: str = "wav",
+    ) -> tuple[Path, list[str]]:
+        """Export active takes and report any boost limited by peak protection."""
         if audio_format not in ("wav", "mp3"):
             raise StudioError("Çıktı biçimi WAV veya MP3 olmalı.")
         project = self.open(slug)
@@ -596,34 +686,43 @@ class StudioService:
             raise StudioError(f"Önce tüm segmentler üretilmeli. Eksik segment: {shown}")
         if not segments:
             raise StudioError("Projede segment yok.")
-        pauses = None
-        if project.settings.engine_id == "voxcpm2":
-            pauses = []
-            for current, following in pairwise(segments):
-                preset = current["preset"]
-                if preset.get("pacing") != "narration":
-                    pauses.append(0.0)
-                    continue
-                try:
-                    controls = VoxControls.from_dict(preset)
-                except ControlError as exc:
-                    raise StudioError(str(exc)) from exc
-                pauses.append(
-                    controls.paragraph_pause if (
-                        current["chapter_id"] != following["chapter_id"]
-                        or current["paragraph"] != following["paragraph"]
-                    ) else controls.sentence_pause
-                )
+        engine_id = project.settings.engine_id
+        pauses = [self._pause_after(engine_id, current, following) for current, following in pairwise(segments)]
         exports = self.project_dir(slug) / EXPORTS_DIRNAME
         exports.mkdir(exist_ok=True)
         prefix = f"bolum_{chapter_id:03d}" if chapter_id is not None else "kitap"
         target = exports / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{audio_format}"
         paths = [Path(item["audio_path"]) for item in segments]
-        if audio_format == "wav":
-            self._write_export_wav(paths, target, pauses)
+        write = self._write_export_wav if audio_format == "wav" else self._write_export_mp3
+        warnings: list[str] = []
+        if any(item["gain_db"] for item in segments):
+            with tempfile.TemporaryDirectory(prefix=".mix-", dir=exports) as temporary:
+                for index, item in enumerate(segments):
+                    requested = item["gain_db"]
+                    if requested:
+                        paths[index], applied = self._render_gain(paths[index], Path(temporary) / f"{index}.wav", requested)
+                        if requested > 0 and applied < requested:
+                            warnings.append(
+                                f"Segment {item['ord'] + 1}: tepe koruması nedeniyle "
+                                f"istenen +{requested:.2f} dB artışın +{applied:.2f} dB kadarı uygulandı."
+                            )
+                write(paths, target, pauses)
         else:
-            self._write_export_mp3(paths, target, pauses)
-        return target
+            write(paths, target, pauses)
+        return target, warnings
+
+    @staticmethod
+    def _render_gain(source: Path, target: Path, gain_db: float) -> tuple[Path, float]:
+        try:
+            part, applied = render_gain(read_part(source), gain_db, clamp_boost=True)
+            if applied == 0.0:
+                return source, applied
+            with wave.open(str(target), "wb") as destination:
+                destination.setparams((part.channels, 2, part.rate, 0, "NONE", "not compressed"))
+                destination.writeframes(part.samples.tobytes())
+        except (ValueError, wave.Error, EOFError) as exc:
+            raise StudioError(f"Segment seviyesi uygulanamadı: {exc}") from exc
+        return target, applied
 
     @staticmethod
     def _write_export_wav(paths: list[Path], target: Path, pauses: list[float] | None) -> None:
