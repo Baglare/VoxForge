@@ -114,6 +114,15 @@ MIGRATIONS: dict[int, str] = {
     6: """
     ALTER TABLE voice ADD COLUMN design_version TEXT;
     """,
+    7: """
+    CREATE TABLE segment_mix (
+        id INTEGER PRIMARY KEY,
+        segment_id INTEGER NOT NULL REFERENCES segment(id) ON DELETE CASCADE,
+        gain_db REAL NOT NULL CHECK (gain_db BETWEEN -24 AND 12),
+        pause_s REAL CHECK (pause_s BETWEEN 0 AND 5)
+    );
+    CREATE INDEX segment_mix_stack ON segment_mix(segment_id, id);
+    """,
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

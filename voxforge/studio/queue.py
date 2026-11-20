@@ -153,6 +153,7 @@ def run_pending(
     on_progress: Callable[[dict[str, Any], str], None] | None = None,
     quality: QualityDirector | None = None,
     chapter_id: int | None = None,
+    job_id: int | None = None,
 ) -> dict[str, int]:
     """Process queued jobs until the queue is empty, ``stop_event`` is set or ``max_jobs`` is reached."""
     _check_engine(project, engine)
@@ -163,6 +164,7 @@ def run_pending(
             break
         job = project.claim_next_job(
             include_takes=isinstance(engine, WorkerEngineAdapter), chapter_id=chapter_id,
+            job_id=job_id,
         )
         if job is None:
             break
@@ -179,12 +181,13 @@ class StudioWorker:
 
     def __init__(
         self, project: StudioProject, engine: TTSEngine, quality: QualityDirector | None = None,
-        *, chapter_id: int | None = None,
+        *, chapter_id: int | None = None, job_id: int | None = None,
     ) -> None:
         self.project = project
         self.engine = engine
         self.quality = quality
         self.chapter_id = chapter_id
+        self.job_id = job_id
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.last_counts: dict[str, int] | None = None
@@ -201,6 +204,7 @@ class StudioWorker:
         try:
             self.last_counts = run_pending(
                 self.project, self.engine, stop_event=self.stop_event, quality=self.quality, chapter_id=self.chapter_id,
+                job_id=self.job_id,
             )
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"{type(exc).__name__}: {exc}"

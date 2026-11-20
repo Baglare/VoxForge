@@ -16,7 +16,10 @@ import gradio as gr
 from voxforge.quality.checks import describe_report, summarize
 from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
 
-TABLE_HEADERS = ["#", "Bölüm", "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Süre (sn)", "Hata"]
+TABLE_HEADERS = [
+    "#", "Bölüm", "Başlangıç (sn)", "Süre (sn)", "Seviye (dB)", "Sonraki duraklama (sn)",
+    "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Hata",
+]
 REFRESH_SECONDS = 2.0
 NO_SELECTION = "Bir segment seçmek için tablodaki satıra tıklayın."
 
@@ -94,11 +97,14 @@ def build_studio(
                 [
                     item["ord"] + 1,
                     item["chapter_title"],
+                    round(item["timeline_start_s"], 2) if item["timeline_start_s"] is not None else None,
+                    round(item["duration_s"], 2) if item["duration_s"] is not None else None,
+                    item["gain_db"],
+                    item["timeline_pause_s"],
                     STATE_LABELS[item["state"]],
                     item["voice_name"] or NARRATOR_LABEL,
                     _short(item["source_text"]),
                     _short(item["spoken_text"]),
-                    round(item["duration_s"], 2) if item["duration_s"] else "",
                     _short(item["error"], 60) if item["error"] else "",
                 ]
             )
@@ -127,6 +133,20 @@ def build_studio(
             item["spoken_text"],
             _format_transformations(item["transformations"]),
             item["audio_path"],
+        )
+
+    def mix_panel(slug, segment_id):
+        if not slug or segment_id is None:
+            return (
+                gr.update(value=0, interactive=False), gr.update(value=None, interactive=False),
+                gr.update(interactive=False), gr.update(interactive=False),
+            )
+        item = service.segment(slug, segment_id)
+        return (
+            gr.update(value=item["gain_db"], interactive=True),
+            gr.update(value=item["pause_s"], interactive=True),
+            gr.update(interactive=True),
+            gr.update(interactive=item["can_undo_mix"]),
         )
 
     def take_panel(slug, segment_id, token=None):
@@ -183,6 +203,14 @@ def build_studio(
             project_dropdown = gr.Dropdown(label="Proje", choices=project_choices(), value=None, scale=4)
             refresh_projects = gr.Button("Listeyi yenile", scale=1)
 
+        with gr.Accordion("Proje yedeği", open=False):
+            backup_button = gr.Button("Seçili projeyi ZIP olarak yedekle")
+            backup_file = gr.File(label="Proje yedeği", interactive=False)
+            restore_file = gr.File(label="Geri yüklenecek VoxForge ZIP", type="filepath", file_types=[".zip"])
+            restore_name = gr.Textbox(label="Geri yüklenen projenin adı")
+            restore_button = gr.Button("Yeni proje olarak geri yükle")
+            backup_status = gr.Markdown()
+
         with gr.Accordion("Yeni proje", open=False):
             new_name = gr.Textbox(label="Proje adı")
             new_text = gr.Textbox(label="Metin", lines=10, placeholder="Seslendirilecek Türkçe metni yapıştırın.")
@@ -232,20 +260,30 @@ def build_studio(
 
         segment_table = gr.Dataframe(
             headers=TABLE_HEADERS,
-            datatype=["number", "str", "str", "str", "str", "str", "number", "str"],
+            datatype=["number", "str", "number", "number", "number", "number", "str", "str", "str", "str", "str"],
             interactive=False,
             wrap=True,
-            label="Segmentler",
+            label="Kitap zaman çizelgesi",
         )
 
         with gr.Group():
             segment_header = gr.Markdown(NO_SELECTION)
+            segment_audio = gr.Audio(label="Aktif take · kaynak WAV", type="filepath", interactive=False)
+            with gr.Row():
+                gain_slider = gr.Slider(-24, 12, value=0, step=0.5, label="Dışa aktarma seviyesi (dB)", interactive=False)
+                pause_box = gr.Number(
+                    label="Sonraki duraklama (sn, boşsa üretim modu)", minimum=0, maximum=5, interactive=False,
+                    info="Dışa aktarılan bölümde veya kitapta bir sonraki segment varsa uygulanır.",
+                )
+            with gr.Row():
+                save_mix = gr.Button("Ses ayarını kaydet", interactive=False)
+                undo_mix = gr.Button("Ses ayarını geri al", interactive=False)
+            mix_status = gr.Markdown()
             source_box = gr.Textbox(label="Orijinal metin", lines=3)
             save_source = gr.Button("Orijinali kaydet (okunuş yeniden hesaplanır)")
             spoken_box = gr.Textbox(label="Okunacak metin", lines=3)
             save_spoken = gr.Button("Okunuşu elle kaydet")
             transformations_md = gr.Markdown()
-            segment_audio = gr.Audio(label="Segment sesi", type="filepath", interactive=False)
             segment_status = gr.Markdown()
 
         with gr.Accordion("Segment kalitesi ve take'ler", open=True):
@@ -253,7 +291,8 @@ def build_studio(
             take_quality = gr.Markdown()
             take_audio = gr.Audio(label="Alternatif take sesi", type="filepath", interactive=False)
             with gr.Row():
-                take_generate = gr.Button("Bir alternatif üret", visible=bool(vox_presets))
+                segment_generate = gr.Button("Eksik veya değişen bu segmenti üret")
+                take_generate = gr.Button("Bu segmenti alternatif take olarak üret", visible=bool(vox_presets))
                 take_check = gr.Button("Kaliteyi denetle")
                 take_select = gr.Button("Take'i kullan", interactive=False)
                 take_undo = gr.Button("Take seçimini geri al", interactive=False)
@@ -310,6 +349,7 @@ def build_studio(
         view_outputs = [progress_md, segment_table, ids_state, running_state]
         segment_outputs = [segment_header, source_box, spoken_box, transformations_md, segment_audio]
         take_outputs = [take_choice, take_quality, take_audio, take_select, take_undo]
+        mix_outputs = [gain_slider, pause_box, save_mix, undo_mix]
 
         def on_project_change(slug):
             if not slug:
@@ -326,11 +366,33 @@ def build_studio(
             outputs=[slug_state, *view_outputs, selected_state, *segment_outputs],
         )
         project_dropdown.change(
-            lambda: (*take_panel(None, None), gr.update(value=None, visible=False)),
-            outputs=[*take_outputs, preview_audio],
+            lambda: (*take_panel(None, None), *mix_panel(None, None), "", gr.update(value=None, visible=False)),
+            outputs=[*take_outputs, *mix_outputs, mix_status, preview_audio],
         )
         refresh_projects.click(lambda: gr.update(choices=project_choices()), outputs=project_dropdown)
         new_engine.change(preset_update, inputs=new_engine, outputs=new_preset)
+
+        def on_backup(slug):
+            if not slug:
+                return "⚠️ Önce bir proje seçin.", None
+            try:
+                return "Proje yedeği hazır.", str(service.backup(slug))
+            except StudioError as exc:
+                return f"⚠️ {exc}", None
+
+        def on_restore(bundle, name):
+            if not bundle:
+                return "⚠️ Bir VoxForge ZIP yedeği seçin.", gr.skip(), gr.skip()
+            try:
+                slug = service.restore(Path(bundle), name)
+                return "Yedek yeni proje olarak açıldı.", gr.update(choices=project_choices(), value=slug), None
+            except StudioError as exc:
+                return f"⚠️ {exc}", gr.skip(), gr.skip()
+
+        backup_button.click(on_backup, inputs=slug_state, outputs=[backup_status, backup_file])
+        restore_button.click(
+            on_restore, inputs=[restore_file, restore_name], outputs=[backup_status, project_dropdown, restore_file],
+        )
 
         def on_book_controls(slug):
             if not slug:
@@ -429,13 +491,34 @@ def build_studio(
 
         def on_select(slug, ids, evt: gr.SelectData):
             row = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-            if not slug or row is None or row >= len(ids):
-                return None, *segment_view(None, None), *take_panel(None, None)
+            if not slug or row is None or not 0 <= row < len(ids):
+                return None, *segment_view(None, None), *take_panel(None, None), *mix_panel(None, None), ""
             segment_id = ids[row]
-            return segment_id, *segment_view(slug, segment_id), *take_panel(slug, segment_id)
+            return segment_id, *segment_view(slug, segment_id), *take_panel(slug, segment_id), *mix_panel(slug, segment_id), ""
 
         segment_table.select(
-            on_select, inputs=[slug_state, ids_state], outputs=[selected_state, *segment_outputs, *take_outputs]
+            on_select, inputs=[slug_state, ids_state],
+            outputs=[selected_state, *segment_outputs, *take_outputs, *mix_outputs, mix_status],
+        )
+
+        def on_mix(slug, segment_id, mix):
+            if not slug or segment_id is None:
+                return "⚠️ Önce bir segment seçin.", *view(slug), *mix_panel(None, None), gr.skip()
+            try:
+                service.change_mix(slug, segment_id, mix)
+            except StudioError as exc:
+                return f"⚠️ {exc}", *view(slug), *mix_panel(slug, segment_id), gr.skip()
+            message = "Son ses düzenlemesi geri alındı." if mix is None else "Ses ayarı kaydedildi."
+            return message, *view(slug), *mix_panel(slug, segment_id), gr.update(value=None, visible=False)
+
+        save_mix.click(
+            lambda slug, segment_id, gain, pause: on_mix(slug, segment_id, (gain, pause)),
+            inputs=[slug_state, selected_state, gain_slider, pause_box],
+            outputs=[mix_status, *view_outputs, *mix_outputs, preview_audio],
+        )
+        undo_mix.click(
+            lambda slug, segment_id: on_mix(slug, segment_id, None),
+            inputs=[slug_state, selected_state], outputs=[mix_status, *view_outputs, *mix_outputs, preview_audio],
         )
         take_choice.input(take_panel, inputs=[slug_state, selected_state, take_choice], outputs=take_outputs)
 
@@ -445,7 +528,10 @@ def build_studio(
             try:
                 item = service.segment(slug, segment_id)
                 key, take_id = token.split(":") if token else (item["cache_key"], "0")
-                if action == "generate":
+                if action == "segment":
+                    queued = service.start_segment(slug, segment_id)
+                    message = "Seçili segment kuyruğa alındı." if queued else "Seçili segment için yeni iş başlatılmadı."
+                elif action == "generate":
                     service.start_take(slug, segment_id, key)
                     message = "Alternatif take kuyruğa alındı."
                 elif action == "check":
@@ -463,7 +549,8 @@ def build_studio(
             )
 
         for button, action in (
-            (take_generate, "generate"), (take_check, "check"), (take_select, "select"), (take_undo, "undo"),
+            (segment_generate, "segment"), (take_generate, "generate"), (take_check, "check"),
+            (take_select, "select"), (take_undo, "undo"),
         ):
             button.click(
                 lambda slug, segment_id, token, action=action: on_take(slug, segment_id, token, action),
@@ -484,7 +571,7 @@ def build_studio(
                         message = "Okunacak metin elle kaydedildi."
                 except StudioError as exc:
                     return f"⚠️ {exc}", *view(slug), *segment_view(slug, segment_id), *take_panel(slug, segment_id)
-                message += " Yalnız bu segment yeniden üretilecek; **Eksikleri üret** ile başlatın."
+                message += " Bu repliği tek başına üretmek için **Eksik veya değişen bu segmenti üret** düğmesini kullanın."
                 return message, *view(slug), *segment_view(slug, segment_id), *take_panel(slug, segment_id)
 
             return handler

@@ -61,12 +61,13 @@ def engine_supports_presets(engine_id: str) -> bool:
     return engine_id == "voxcpm2" or bool(ENGINE_SPECS.get(engine_id, {}).get("supports_presets", False))
 
 
-def _recover_stale_jobs(db) -> int:
+def _recover_stale_jobs(db, job_id: int | None = None) -> int:
     """Requeue running jobs without a live lease (no heartbeat, or older than LEASE_SECONDS)."""
     return db.execute(
         "UPDATE job SET status = 'queued', started_at = NULL, worker_id = NULL, heartbeat_at = NULL"
-        " WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)",
-        (time.time() - LEASE_SECONDS,),
+        " WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)"
+        " AND (? IS NULL OR id = ?)",
+        (time.time() - LEASE_SECONDS, job_id, job_id),
     ).rowcount
 
 
@@ -275,8 +276,11 @@ class StudioProject:
     def segments(self, segment_id: int | None = None, *, chapter_id: int | None = None) -> list[dict[str, Any]]:
         """Segments in order with derived state: done / queued / running / failed / cancelled / pending."""
         query = (
-            "SELECT segment.*, chapter.title AS chapter_title FROM segment"
+            "SELECT segment.*, chapter.title AS chapter_title, mix.id AS mix_id,"
+            " COALESCE(mix.gain_db, 0) AS gain_db, mix.pause_s FROM segment"
             " JOIN chapter ON chapter.id = segment.chapter_id"
+            " LEFT JOIN segment_mix mix ON mix.id = ("
+            " SELECT id FROM segment_mix WHERE segment_id = segment.id ORDER BY id DESC LIMIT 1)"
         )
         filters, params = [], []
         if segment_id is not None:
@@ -327,6 +331,9 @@ class StudioProject:
                         "id": row["id"],
                         "ord": row["ord"],
                         "paragraph": row["paragraph"],
+                        "gain_db": row["gain_db"],
+                        "pause_s": row["pause_s"],
+                        "can_undo_mix": row["mix_id"] is not None,
                         "chapter_id": row["chapter_id"],
                         "chapter_title": row["chapter_title"],
                         "source_text": row["source_text"],
@@ -345,6 +352,28 @@ class StudioProject:
                     }
                 )
         return result
+
+    def change_mix(self, segment_id: int, mix: tuple[float, float | None] | None) -> None:
+        """Push an export edit, or undo the latest edit for this segment only."""
+        if mix is not None:
+            gain, pause = mix
+            if not -24 <= gain <= 12 or (pause is not None and not 0 <= pause <= 5):
+                raise ValueError("Seviye −24 ile +12 dB, duraklama 0 ile 5 sn arasında olmalı.")
+        with self.store.transaction() as db:
+            if db.execute("SELECT 1 FROM segment WHERE id = ?", (segment_id,)).fetchone() is None:
+                raise ValueError("Segment bulunamadı.")
+            previous = db.execute(
+                "SELECT id, gain_db, pause_s FROM segment_mix WHERE segment_id = ? ORDER BY id DESC LIMIT 1",
+                (segment_id,),
+            ).fetchone()
+            if mix is None:
+                if previous is None:
+                    raise ValueError("Geri alınacak ses düzenlemesi yok.")
+                db.execute("DELETE FROM segment_mix WHERE id = ?", (previous["id"],))
+            else:
+                current = (previous["gain_db"], previous["pause_s"]) if previous else (0, None)
+                if mix != current:
+                    db.execute("INSERT INTO segment_mix(segment_id, gain_db, pause_s) VALUES (?, ?, ?)", (segment_id, *mix))
 
     def take_details(self, segment: dict[str, Any]) -> dict[str, Any]:
         artifact_id = segment["artifact_id"]
@@ -523,7 +552,7 @@ class StudioProject:
                    )""", rows,
             ).rowcount
 
-    def enqueue_take(self, segment_id: int, cache_key: str) -> None:
+    def enqueue_take(self, segment_id: int, cache_key: str) -> int:
         """Queue a new seed for the segment's current recipe, keeping its active WAV."""
         with self.store.transaction() as db:
             key = self.current_key_for(segment_id)
@@ -544,29 +573,43 @@ class StudioProject:
             base_seed = json.loads(artifact["synthesis_json"] or "{}").get("seed", DEFAULT_SEED)
             seeds = {base_seed, *(row["seed"] for row in previous)}
             seed, = derive_seeds(base_seed, seeds, 1)
-            db.execute(
+            cursor = db.execute(
                 "INSERT INTO job (segment_id, cache_key, status, queued_at, seed) VALUES (?, ?, 'queued', ?, ?)",
                 (segment_id, key, utc_now_iso(), seed),
             )
+            return int(cursor.lastrowid)
 
-    def queued_job_count(self, *, include_takes: bool = True, chapter_id: int | None = None) -> int:
+    def unfinished_base_job(self, segment_id: int, cache_key: str) -> int | None:
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT id FROM job WHERE segment_id = ? AND cache_key = ?"
+                " AND seed IS NULL AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
+                (segment_id, cache_key),
+            ).fetchone()
+            return row["id"] if row else None
+
+    def queued_job_count(
+        self, *, include_takes: bool = True, chapter_id: int | None = None, job_id: int | None = None,
+    ) -> int:
         """Jobs waiting for a worker, after requeueing abandoned (stale-lease) running jobs."""
         with self.store.transaction() as db:
-            _recover_stale_jobs(db)
+            _recover_stale_jobs(db, job_id)
             return int(db.execute(
                 """SELECT COUNT(*) FROM job JOIN segment ON segment.id = job.segment_id
-                   WHERE status = 'queued' AND (? OR seed IS NULL) AND (? IS NULL OR chapter_id = ?)""",
-                (include_takes, chapter_id, chapter_id),
+                   WHERE status = 'queued' AND (? OR seed IS NULL) AND (? IS NULL OR chapter_id = ?)
+                     AND (? IS NULL OR job.id = ?)""",
+                (include_takes, chapter_id, chapter_id, job_id, job_id),
             ).fetchone()[0])
 
-    def cancel_queued(self, *, chapter_id: int | None = None) -> int:
+    def cancel_queued(self, *, chapter_id: int | None = None, job_id: int | None = None) -> int:
         with self.store.transaction() as db:
             return db.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = ?,
                                   error = CASE WHEN seed IS NOT NULL THEN ? ELSE NULL END
                    WHERE status = 'queued' AND (? IS NULL OR
-                         segment_id IN (SELECT id FROM segment WHERE chapter_id = ?))""",
-                (utc_now_iso(), PAUSED_TAKE, chapter_id, chapter_id),
+                         segment_id IN (SELECT id FROM segment WHERE chapter_id = ?))
+                     AND (? IS NULL OR id = ?)""",
+                (utc_now_iso(), PAUSED_TAKE, chapter_id, chapter_id, job_id, job_id),
             ).rowcount
 
     def resume_takes(self, *, chapter_id: int | None = None) -> None:
@@ -578,16 +621,19 @@ class StudioProject:
                 (PAUSED_TAKE, chapter_id, chapter_id),
             )
 
-    def claim_next_job(self, *, include_takes: bool = True, chapter_id: int | None = None) -> dict[str, Any] | None:
+    def claim_next_job(
+        self, *, include_takes: bool = True, chapter_id: int | None = None, job_id: int | None = None,
+    ) -> dict[str, Any] | None:
         """Atomically move the oldest queued job to ``running`` under this worker's lease."""
         with self.store.transaction() as db:
-            _recover_stale_jobs(db)
+            _recover_stale_jobs(db, job_id)
             row = db.execute(
                 "SELECT job.id, job.segment_id, job.cache_key, job.attempts, job.seed, segment.spoken_text, segment.voice_id"
                 " FROM job JOIN segment ON segment.id = job.segment_id"
                 " WHERE job.status = 'queued' AND (? OR job.seed IS NULL) AND (? IS NULL OR segment.chapter_id = ?)"
+                " AND (? IS NULL OR job.id = ?)"
                 " ORDER BY segment.ord, job.id LIMIT 1",
-                (include_takes, chapter_id, chapter_id),
+                (include_takes, chapter_id, chapter_id, job_id, job_id),
             ).fetchone()
             if row is None:
                 return None
