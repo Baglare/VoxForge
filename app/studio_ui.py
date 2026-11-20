@@ -462,13 +462,15 @@ def build_studio(
                 return "⚠️ Önce bir proje seçin.", gr.update(visible=False)
             audio_format = audio_format or "WAV"
             try:
-                path = service.export_audio(slug, chapter_id=chapter_id or None, audio_format=audio_format.lower())
+                path, warnings = service.export_audio_with_report(
+                    slug, chapter_id=chapter_id or None, audio_format=audio_format.lower(),
+                )
             except (StudioError, OSError) as exc:
                 return f"⚠️ {exc}", gr.update(value=None, visible=False)
-            return (
-                f"{audio_format} hazır · `{path.name}`",
-                gr.update(value=str(path), visible=True),
-            )
+            status = f"{audio_format} hazır · `{path.name}`"
+            if warnings:
+                status += "\n\n" + "\n".join(f"- {warning}" for warning in warnings)
+            return status, gr.update(value=str(path), visible=True)
 
         preview_button.click(
             on_preview, inputs=[slug_state, chapter_scope, export_format], outputs=[action_status, preview_audio],

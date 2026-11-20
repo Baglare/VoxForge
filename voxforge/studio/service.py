@@ -33,7 +33,7 @@ from zipfile import BadZipFile
 from scripts.audio_concat_utils import concatenate_wavs
 from voxforge.engines import TTSEngine, engine_spec
 from voxforge.playground.adapter import WorkerEngineAdapter, worker_engine_spec
-from voxforge.playground.audio_join import apply_gain, read_part
+from voxforge.playground.audio_join import read_part, render_gain
 from voxforge.playground.prosody import ControlError, VoxControls
 from voxforge.playground.service import DEFAULT_SEED, VARIANTS
 from voxforge.playground.workers import EngineManager, WorkerError
@@ -668,7 +668,13 @@ class StudioService:
         return self.export_audio(slug, chapter_id=chapter_id)
 
     def export_audio(self, slug: str, *, chapter_id: int | None = None, audio_format: str = "wav") -> Path:
-        """Export active take PCM in chapter/segment order, optionally encoding the joined audio as MP3."""
+        path, _ = self.export_audio_with_report(slug, chapter_id=chapter_id, audio_format=audio_format)
+        return path
+
+    def export_audio_with_report(
+        self, slug: str, *, chapter_id: int | None = None, audio_format: str = "wav",
+    ) -> tuple[Path, list[str]]:
+        """Export active takes and report any boost limited by peak protection."""
         if audio_format not in ("wav", "mp3"):
             raise StudioError("Çıktı biçimi WAV veya MP3 olmalı.")
         project = self.open(slug)
@@ -688,26 +694,35 @@ class StudioService:
         target = exports / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{audio_format}"
         paths = [Path(item["audio_path"]) for item in segments]
         write = self._write_export_wav if audio_format == "wav" else self._write_export_mp3
+        warnings: list[str] = []
         if any(item["gain_db"] for item in segments):
             with tempfile.TemporaryDirectory(prefix=".mix-", dir=exports) as temporary:
                 for index, item in enumerate(segments):
-                    if item["gain_db"]:
-                        paths[index] = self._render_gain(paths[index], Path(temporary) / f"{index}.wav", item["gain_db"])
+                    requested = item["gain_db"]
+                    if requested:
+                        paths[index], applied = self._render_gain(paths[index], Path(temporary) / f"{index}.wav", requested)
+                        if requested > 0 and applied < requested:
+                            warnings.append(
+                                f"Segment {item['ord'] + 1}: tepe koruması nedeniyle "
+                                f"istenen +{requested:.2f} dB artışın +{applied:.2f} dB kadarı uygulandı."
+                            )
                 write(paths, target, pauses)
         else:
             write(paths, target, pauses)
-        return target
+        return target, warnings
 
     @staticmethod
-    def _render_gain(source: Path, target: Path, gain_db: float) -> Path:
+    def _render_gain(source: Path, target: Path, gain_db: float) -> tuple[Path, float]:
         try:
-            part = apply_gain(read_part(source), gain_db)
+            part, applied = render_gain(read_part(source), gain_db, clamp_boost=True)
+            if applied == 0.0:
+                return source, applied
             with wave.open(str(target), "wb") as destination:
                 destination.setparams((part.channels, 2, part.rate, 0, "NONE", "not compressed"))
                 destination.writeframes(part.samples.tobytes())
         except (ValueError, wave.Error, EOFError) as exc:
             raise StudioError(f"Segment seviyesi uygulanamadı: {exc}") from exc
-        return target
+        return target, applied
 
     @staticmethod
     def _write_export_wav(paths: list[Path], target: Path, pauses: list[float] | None) -> None:

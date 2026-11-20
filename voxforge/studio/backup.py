@@ -15,7 +15,7 @@ from typing import Callable
 from zipfile import ZIP_STORED, ZipFile
 
 from voxforge.studio.project import ProjectSettings, file_sha256
-from voxforge.studio.store import DB_FILENAME, SCHEMA_VERSION, ProjectStore
+from voxforge.studio.store import DB_FILENAME, MIGRATIONS, SCHEMA_VERSION, ProjectStore
 
 SOURCE_EXTENSIONS = {".txt", ".docx", ".epub"}
 AUDIO_MEMBER = re.compile(r"(?:audio|voices)/[a-zA-Z0-9][a-zA-Z0-9_-]*\.wav")
@@ -26,6 +26,23 @@ def _valid_member(name: str) -> bool:
     return name in {DB_FILENAME, "reference.wav", *(f"source{ext}" for ext in SOURCE_EXTENSIONS)} or (
         AUDIO_MEMBER.fullmatch(name) is not None and not WINDOWS_DEVICE.fullmatch(name.rsplit("/", 1)[-1])
     )
+
+
+def _validate_schema(db: sqlite3.Connection, version: int) -> None:
+    """Compare required tables and columns with the schema built by Studio migrations."""
+    table_query = "SELECT name FROM sqlite_schema WHERE type = 'table' AND sql LIKE 'CREATE TABLE %' ORDER BY name"
+    column_query = "SELECT name FROM pragma_table_info(?) ORDER BY cid"
+    actual_tables = {row[0] for row in db.execute(table_query)}
+    with closing(sqlite3.connect(":memory:")) as expected:
+        for migration in range(1, version + 1):
+            expected.executescript(MIGRATIONS[migration])
+        for (table,) in expected.execute(table_query):
+            if table not in actual_tables:
+                raise ValueError(f"Yedek Studio şeması eksik: {table} tablosu bulunamadı.")
+            actual_columns = {row[0] for row in db.execute(column_query, (table,))}
+            missing = [column for (column,) in expected.execute(column_query, (table,)) if column not in actual_columns]
+            if missing:
+                raise ValueError(f"Yedek Studio şeması eksik: {table} tablosunda {', '.join(missing)} sütunu eksik.")
 
 
 def _rewrite_paths(
@@ -48,6 +65,7 @@ def _rewrite_paths(
             raise ValueError("Yedek veritabanı sürümü desteklenmiyor.")
         if db.execute("SELECT 1 FROM sqlite_schema WHERE type IN ('trigger', 'view')").fetchone():
             raise ValueError("Yedek veritabanında beklenmeyen şema öğesi var.")
+        _validate_schema(db, version)
         if db.execute("PRAGMA quick_check").fetchall() != [("ok",)] or db.execute("PRAGMA foreign_key_check").fetchone():
             raise ValueError("Yedek veritabanı bütünlük denetiminden geçmedi.")
         db.execute("PRAGMA journal_mode = DELETE")

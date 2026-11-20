@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import stat
 import struct
 import subprocess
 import tempfile
 import unittest
 import wave
+from contextlib import closing
 from pathlib import Path
 from zipfile import ZipFile, ZipInfo
 
 from test_studio_takes import FakeSynthesisManager, pcm, write_wav
 
+from voxforge.playground.audio_join import PEAK_LIMIT
 from voxforge.quality.director import QualityDirector
 from voxforge.studio.project import file_sha256
 from voxforge.studio.service import StudioError, StudioService
+from voxforge.studio.store import DB_FILENAME
 
 RATE = 24000
 
@@ -198,6 +202,64 @@ class StudioAudioEditorTests(unittest.TestCase):
         self.assertFalse((service.root / "escape.wav").exists())
         self.assertFalse(any(service.root.glob(".restore-*")))
         self.assertEqual(pcm(service.export_audio(slug)), original)
+
+    def test_restore_rejects_incomplete_v7_schema_before_publishing(self) -> None:
+        service, slug = self.service, self.slug
+        first = service.segments(slug)[0]
+        service.change_mix(slug, first["id"], (-6, 0.5))
+        bundle = service.backup(slug)
+        previous = service.list_projects()
+        for name, sql, message in (
+            ("tablo", "DROP TABLE segment_mix", "segment_mix tablosu bulunamadı"),
+            ("sütun", "ALTER TABLE segment_mix DROP COLUMN pause_s", "segment_mix tablosunda pause_s sütunu eksik"),
+        ):
+            with self.subTest(name=name):
+                database = self.root / "incomplete.sqlite"
+                broken = self.root / "incomplete.zip"
+                with ZipFile(bundle) as archive, ZipFile(broken, "w") as output:
+                    database.write_bytes(archive.read(DB_FILENAME))
+                    with closing(sqlite3.connect(database)) as db, db:
+                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
+                        db.execute(sql)
+                    for member in archive.namelist():
+                        data = database.read_bytes() if member == DB_FILENAME else archive.read(member)
+                        output.writestr(member, data)
+                with self.assertRaisesRegex(StudioError, message):
+                    service.restore(broken, "Eksik şema")
+                self.assertEqual(service.list_projects(), previous)
+                self.assertFalse(service.project_dir("eksik-sema").exists())
+                self.assertFalse(any(service.root.glob(".restore-*")))
+
+    def test_peak_limited_boost_preserves_source_and_reports_applied_gain(self) -> None:
+        service, slug = self.service, self.slug
+        project = service.open(slug)
+        chapter_id = project.chapters()[0][0]
+        first, second, _ = project.segments(chapter_id=chapter_id)
+        first_path, second_path = Path(first["audio_path"]), Path(second["audio_path"])
+        write_wav(first_path, 32760)  # Already above the guard threshold.
+        write_wav(second_path, 30000)  # Has room for a partial boost.
+        source_hashes = {path: file_sha256(path) for path in project.store.audio_dir.glob("*.wav")}
+        original = pcm(service.export_audio(slug))
+        gap = len(pcm(first_path)) + len(silence(0.85))
+        second_size = len(pcm(second_path))
+        safe_peak = int(PEAK_LIMIT * 32767)
+        expected = original[:gap] + struct.pack("<hh", safe_peak, -safe_peak) * 6000 + original[gap + second_size:]
+        for item in (first, second):
+            service.change_mix(slug, item["id"], (6, None))
+
+        exported, warnings = service.export_audio_with_report(slug)
+        self.assertEqual(pcm(exported), expected)
+        self.assertEqual(len(warnings), 2)
+        self.assertRegex(warnings[0], r"Segment 1:.*tepe koruması.*\+6\.00 dB.*\+0\.00 dB")
+        self.assertRegex(warnings[1], r"Segment 2:.*tepe koruması.*\+6\.00 dB.*\+0\.50 dB")
+        self.assertEqual({path: file_sha256(path) for path in source_hashes}, source_hashes)
+
+        for item in (first, second):
+            service.change_mix(slug, item["id"], None)
+        undone, warnings = service.export_audio_with_report(slug)
+        self.assertEqual(pcm(undone), original)
+        self.assertEqual(warnings, [])
+        self.assertEqual({path: file_sha256(path) for path in source_hashes}, source_hashes)
 
     def test_backup_does_not_carry_a_live_worker_lease_into_restored_project(self) -> None:
         service, slug = self.service, self.slug

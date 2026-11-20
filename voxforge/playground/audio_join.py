@@ -103,14 +103,28 @@ def voiced_rms_db(part: Part, threshold_db: float = TRIM_THRESHOLD_DB + 15) -> f
 
 
 def apply_gain(part: Part, gain_db: float) -> Part:
-    if abs(gain_db) < 0.05:
-        return part
+    return render_gain(part, gain_db)[0]
+
+
+def render_gain(part: Part, gain_db: float, *, clamp_boost: bool = False) -> tuple[Part, float]:
+    """Render gain and report the applied dB. A clamped boost never attenuates the source."""
+    boost = clamp_boost and gain_db > 0
+    if not boost and abs(gain_db) < 0.05:
+        return part, 0.0
     peak = max((abs(value) for value in part.samples), default=0)
     factor = 10 ** (gain_db / 20)
-    if peak and peak * factor > PEAK_LIMIT * 32767:
-        factor = PEAK_LIMIT * 32767 / peak  # tepe koruması: kırpma yerine kazancı sınırla
+    limit = PEAK_LIMIT * 32767
+    if boost:
+        limit = int(limit)
+    if peak and peak * factor > limit:
+        factor = limit / peak
+        if boost:
+            factor = max(1.0, factor)
+        gain_db = 20 * math.log10(factor)
+    if factor == 1.0:
+        return part, gain_db
     data = array.array("h", (max(-32768, min(32767, int(round(value * factor)))) for value in part.samples))
-    return Part(data, part.channels, part.rate)
+    return Part(data, part.channels, part.rate), gain_db
 
 
 def peak_db(part: Part) -> float | None:
