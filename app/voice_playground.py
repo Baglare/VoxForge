@@ -256,7 +256,8 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                                 "Yalnız **VoxCPM2 varsayılan** ve **Ultimate Cloning** için geçerlidir; *Hızlı (6 adım)* sabit "
                                 "karşılaştırma varyantıdır ve bu paneli kullanmaz. Stil yönergesi seslendirilen metinden ayrı "
                                 "tutulur ve modele `(yönerge)metin` biçiminde verilir (model kartındaki *controllable cloning*). "
-                                "Model sayısal hız/duygu parametresi sunmaz; sonuçlar üretimden üretime değişebilir.  \n"
+                                "Model sayısal hız/duygu parametresi sunmaz. Duygu yönergeleri deneyseldir ve ses "
+                                "kimliği kayabilir.  \n"
                                 + ULTIMATE_NOTE
                             )
                             with gr.Row():
