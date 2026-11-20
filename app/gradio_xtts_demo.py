@@ -84,6 +84,7 @@ from voxforge.runs import SCHEMA_VERSION, write_json_atomic
 from voxforge.studio import studio_root
 from voxforge.studio.service import StudioError, StudioService
 from studio_ui import build_studio
+from ui_theme import CSS, THEME, hero, lead, section
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -1756,150 +1757,168 @@ def build_demo() -> gr.Blocks:
     initial_dataset_scan = scan_finetune_datasets()
 
     with gr.Blocks(title="VoxForge XTTS Demo") as demo:
-        gr.Markdown("# VoxForge Türkçe TTS Demo")
-        gr.Markdown("Varsayılan: XTTS-v2. Ortam değişkeni `VOXFORGE_TTS_ENGINE=mock` "
-                    "ile kayıt ve model gerektirmeyen sentetik test modu açılır.")
-
-        profile_dropdown = gr.Dropdown(
-            label="Yerel ses profili",
-            choices=build_profile_dropdown_choices(initial_profile_scan),
-            value=NO_PROFILE_VALUE,
-            interactive=True,
-        )
-        refresh_profiles_button = gr.Button("Profilleri yenile")
-        profile_refresh_status = gr.Markdown(
-            value=build_profile_refresh_message(initial_profile_scan)
-        )
-        selected_profile_info = gr.Markdown(value=NO_PROFILE_INFO_TEXT)
-        gr.Markdown(
-            "Profil seçerseniz yüklenen ses dosyası yerine profilin ön işlenmiş referansı kullanılır."
-        )
-        gr.Markdown("## Seçili profil yönetimi")
-        recreate_selected_profile_button = gr.Button("Seçili profili yenile")
-        delete_profile_confirm_checkbox = gr.Checkbox(
-            label="Seçili profili silmeyi onaylıyorum",
-            value=False,
-        )
-        delete_selected_profile_button = gr.Button("Seçili profili sil")
-        profile_management_status = gr.Markdown(
-            value="Profil yönetimi sonucu burada görünecek."
+        lead(
+            "XTTS-v2 ile tek seferlik üretim, yerel ses profilleri ve fine-tuning hazırlığı. "
+            "Ortam değişkeni `VOXFORGE_TTS_ENGINE=mock` ile kayıt ve model gerektirmeyen sentetik test modu açılır."
         )
 
-        gr.Markdown("## Yeni yerel ses profili oluştur")
-        new_profile_name_input = gr.Textbox(
-            label="Profil adı",
-            placeholder="Örnek: baglare",
-        )
-        new_profile_audio_input = gr.Audio(
-            label="Profil referans ses dosyası",
-            type="filepath",
-        )
-        new_profile_permission_checkbox = gr.Checkbox(
-            label="Bu ses bana ait veya kullanma iznim var",
-            value=False,
-        )
-        create_profile_button = gr.Button("Profil oluştur")
-        create_profile_status = gr.Markdown(
-            value="Profil oluşturma sonucu burada görünecek."
-        )
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=3):
+                with gr.Group(elem_classes="vf-card"):
+                    section("Metin")
+                    text_input = gr.Textbox(
+                        label="Türkçe metin",
+                        show_label=False,
+                        lines=4,
+                        placeholder="Seslendirmek istediğiniz Türkçe metni yazın.",
+                    )
+                with gr.Group(elem_classes="vf-card"):
+                    section(
+                        "Ses",
+                        "Profil seçerseniz yüklenen ses dosyası yerine profilin ön işlenmiş referansı kullanılır.",
+                    )
+                    with gr.Row(equal_height=True):
+                        profile_dropdown = gr.Dropdown(
+                            label="Yerel ses profili",
+                            choices=build_profile_dropdown_choices(initial_profile_scan),
+                            value=NO_PROFILE_VALUE,
+                            interactive=True,
+                            scale=4,
+                        )
+                        refresh_profiles_button = gr.Button("Profilleri yenile", size="sm", scale=1, min_width=120)
+                    profile_refresh_status = gr.Markdown(
+                        value=build_profile_refresh_message(initial_profile_scan), elem_classes="vf-status"
+                    )
+                    selected_profile_info = gr.Markdown(value=NO_PROFILE_INFO_TEXT, elem_classes="vf-status")
+                    reference_audio_input = gr.Audio(
+                        label="Referans ses dosyası",
+                        type="filepath",
+                    )
+                with gr.Group(elem_classes="vf-card"):
+                    section("Üretim")
+                    inference_preset_dropdown = gr.Dropdown(
+                        label="Üretim modu",
+                        choices=INFERENCE_PRESET_CHOICES,
+                        value=INFERENCE_PRESET_DEFAULT,
+                        interactive=True,
+                    )
+                    with gr.Row():
+                        post_processing_checkbox = gr.Checkbox(
+                            label="Çıktı sesini normalize et",
+                            value=True,
+                        )
+                        ab_test_checkbox = gr.Checkbox(
+                            label="A/B karşılaştırma üret",
+                            value=False,
+                        )
+                    permission_checkbox = gr.Checkbox(
+                        label="Bu ses bana ait veya kullanma iznim var",
+                        value=False,
+                    )
+                generate_button = gr.Button("Ses üret", variant="primary", size="lg", elem_classes="vf-go")
+            with gr.Column(scale=2, elem_classes="vf-rail"):
+                with gr.Group(elem_classes="vf-card"):
+                    section("Sonuç")
+                    audio_output = gr.Audio(
+                        label="Üretilen ses",
+                        type="filepath",
+                    )
+                    comparison_audio_output = gr.Audio(
+                        label="Karşılaştırma çıktısı",
+                        type="filepath",
+                    )
+                    status_output = gr.Textbox(
+                        label="Durum",
+                        interactive=False,
+                    )
+                quality_report_output = gr.Markdown(
+                    value="Kalite raporu ses uretiminden sonra burada gorunecek.",
+                    elem_classes="vf-hint",
+                )
 
-        text_input = gr.Textbox(
-            label="Türkçe metin",
-            lines=4,
-            placeholder="Seslendirmek istediğiniz Türkçe metni yazın.",
-        )
-        reference_audio_input = gr.Audio(
-            label="Referans ses dosyası",
-            type="filepath",
-        )
-        inference_preset_dropdown = gr.Dropdown(
-            label="Üretim modu",
-            choices=INFERENCE_PRESET_CHOICES,
-            value=INFERENCE_PRESET_DEFAULT,
-            interactive=True,
-        )
-        post_processing_checkbox = gr.Checkbox(
-            label="Çıktı sesini normalize et",
-            value=True,
-        )
-        ab_test_checkbox = gr.Checkbox(
-            label="A/B karşılaştırma üret",
-            value=False,
-        )
-        permission_checkbox = gr.Checkbox(
-            label="Bu ses bana ait veya kullanma iznim var",
-            value=False,
-        )
-        generate_button = gr.Button("Ses üret")
+        with gr.Accordion("Seçili profil yönetimi", open=False):
+            recreate_selected_profile_button = gr.Button("Seçili profili yenile")
+            delete_profile_confirm_checkbox = gr.Checkbox(
+                label="Seçili profili silmeyi onaylıyorum",
+                value=False,
+            )
+            delete_selected_profile_button = gr.Button("Seçili profili sil", variant="stop")
+            profile_management_status = gr.Markdown(
+                value="Profil yönetimi sonucu burada görünecek."
+            )
 
-        audio_output = gr.Audio(
-            label="Üretilen ses",
-            type="filepath",
-        )
-        comparison_audio_output = gr.Audio(
-            label="Karşılaştırma çıktısı",
-            type="filepath",
-        )
-        status_output = gr.Textbox(
-            label="Durum",
-            interactive=False,
-        )
-        quality_report_output = gr.Markdown(
-            value="Kalite raporu ses uretiminden sonra burada gorunecek."
-        )
+        with gr.Accordion("Yeni yerel ses profili oluştur", open=False):
+            new_profile_name_input = gr.Textbox(
+                label="Profil adı",
+                placeholder="Örnek: baglare",
+            )
+            new_profile_audio_input = gr.Audio(
+                label="Profil referans ses dosyası",
+                type="filepath",
+            )
+            new_profile_permission_checkbox = gr.Checkbox(
+                label="Bu ses bana ait veya kullanma iznim var",
+                value=False,
+            )
+            create_profile_button = gr.Button("Profil oluştur", variant="primary")
+            create_profile_status = gr.Markdown(
+                value="Profil oluşturma sonucu burada görünecek."
+            )
 
-        gr.Markdown("## Experimental Fine-tuning Hazırlığı")
-        gr.Markdown(
-            "Bu bölüm model eğitimi çalıştırmaz; readiness, export ve dry-run kontrolleri içindir. "
-            "`datasets/` ve `experiments/` yerel klasörlerdir; GitHub'a eklenmez."
-        )
-        finetune_dataset_dropdown = gr.Dropdown(
-            label="Fine-tuning dataset",
-            choices=build_dataset_dropdown_choices(initial_dataset_scan),
-            value=NO_DATASET_VALUE,
-            interactive=True,
-        )
-        finetune_dataset_status = gr.Markdown(
-            value=build_dataset_scan_status(initial_dataset_scan)
-        )
-        finetune_run_name_input = gr.Textbox(
-            label="Run name",
-            placeholder="Örnek: baglare_xtts_exp01",
-        )
-        with gr.Row():
-            finetune_max_steps_input = gr.Number(
-                label="Max steps",
-                value=300,
+        with gr.Accordion("Experimental Fine-tuning Hazırlığı", open=False):
+            gr.Markdown(
+                "Bu bölüm model eğitimi çalıştırmaz; readiness, export ve dry-run kontrolleri içindir. "
+                "`datasets/` ve `experiments/` yerel klasörlerdir; GitHub'a eklenmez.",
+                elem_classes="vf-hint",
             )
-            finetune_epochs_input = gr.Number(
-                label="Epochs",
-                value=1,
+            finetune_dataset_dropdown = gr.Dropdown(
+                label="Fine-tuning dataset",
+                choices=build_dataset_dropdown_choices(initial_dataset_scan),
+                value=NO_DATASET_VALUE,
+                interactive=True,
             )
-            finetune_batch_size_input = gr.Number(
-                label="Batch size",
-                value=1,
+            finetune_dataset_status = gr.Markdown(
+                value=build_dataset_scan_status(initial_dataset_scan)
             )
-        with gr.Row():
-            finetune_grad_accum_input = gr.Number(
-                label="Grad accumulation",
-                value=16,
+            finetune_run_name_input = gr.Textbox(
+                label="Run name",
+                placeholder="Örnek: baglare_xtts_exp01",
             )
-            finetune_save_step_input = gr.Number(
-                label="Save step",
-                value=1,
+            with gr.Row():
+                finetune_max_steps_input = gr.Number(
+                    label="Max steps",
+                    value=300,
+                )
+                finetune_epochs_input = gr.Number(
+                    label="Epochs",
+                    value=1,
+                )
+                finetune_batch_size_input = gr.Number(
+                    label="Batch size",
+                    value=1,
+                )
+            with gr.Row():
+                finetune_grad_accum_input = gr.Number(
+                    label="Grad accumulation",
+                    value=16,
+                )
+                finetune_save_step_input = gr.Number(
+                    label="Save step",
+                    value=1,
+                )
+            with gr.Row():
+                readiness_button = gr.Button("Readiness raporu çalıştır")
+                export_button = gr.Button("Experiment export et")
+                dry_run_button = gr.Button("Training dry-run çalıştır")
+            readiness_status = gr.Markdown(
+                value="Readiness sonucu burada görünecek."
             )
-        readiness_button = gr.Button("Readiness raporu çalıştır")
-        readiness_status = gr.Markdown(
-            value="Readiness sonucu burada görünecek."
-        )
-        export_button = gr.Button("Experiment export et")
-        export_status = gr.Markdown(
-            value="Export sonucu burada görünecek."
-        )
-        dry_run_button = gr.Button("Training dry-run çalıştır")
-        dry_run_status = gr.Markdown(
-            value="Dry-run sonucu burada görünecek. Bu işlem eğitim başlatmaz."
-        )
+            export_status = gr.Markdown(
+                value="Export sonucu burada görünecek."
+            )
+            dry_run_status = gr.Markdown(
+                value="Dry-run sonucu burada görünecek. Bu işlem eğitim başlatmaz."
+            )
 
         refresh_profiles_button.click(
             fn=refresh_profile_choices,
@@ -2035,7 +2054,20 @@ def build_app() -> gr.Blocks:
         preset_kwargs=INFERENCE_PRESET_KWARGS,
         default_preset=INFERENCE_PRESET_DEFAULT,
     )
-    return gr.TabbedInterface([build_demo(), studio], ["XTTS Demo", "Studio"], title="VoxForge")
+    demo = build_demo()
+    with gr.Blocks(title="VoxForge", theme=THEME, css=CSS) as app:
+        hero(
+            "VoxForge",
+            "XTTS Demo",
+            "Türkçe metni yerel ses profilinle XTTS-v2 üzerinden seslendir; uzun metinleri Studio'da proje olarak üret.",
+            ["yerel", selected_tts_engine_name()],
+        )
+        with gr.Tabs(elem_classes="vf-tabs"):
+            with gr.Tab("XTTS Demo"):
+                demo.render()
+            with gr.Tab("Studio"):
+                studio.render()
+    return app
 
 
 if __name__ == "__main__":

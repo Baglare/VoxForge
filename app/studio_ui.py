@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import gradio as gr
 
+from app.ui_theme import lead, section
 from voxforge.quality.checks import describe_report, summarize
 from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
 
@@ -187,29 +188,22 @@ def build_studio(
         return gr.update(choices=preset_choices, value=default_preset, visible=engine_id != "mock")
 
     with gr.Blocks(title="VoxForge Studio") as studio:
-        gr.Markdown("# VoxForge Studio")
-        gr.Markdown(
-            "Metni projeye dönüştürün, segmentleri inceleyin ve yalnız eksik ya da değişen parçaları üretin. "
-            "Kaynak belgeler, projeler ve WAV/MP3 çıktıları yerelde tutulur."
+        lead(
+            "Metni ya da kitabı projeye dönüştür, segmentleri incele ve yalnız eksik ya da değişen parçaları üret. "
+            "Kaynak belgeler, projeler ve WAV/MP3 çıktıları yerelde kalır."
         )
         if not vox_presets:
-            gr.Markdown("VoxCPM2 üretimi için Voice Playground uygulamasında **Studio** sekmesini açın.")
+            gr.Markdown("VoxCPM2 üretimi için Voice Playground uygulamasında **Studio** sekmesini açın.", elem_classes="vf-hint")
         slug_state = gr.State(None)
         ids_state = gr.State([])
         selected_state = gr.State(None)
         running_state = gr.State(False)
 
-        with gr.Row():
-            project_dropdown = gr.Dropdown(label="Proje", choices=project_choices(), value=None, scale=4)
-            refresh_projects = gr.Button("Listeyi yenile", scale=1)
-
-        with gr.Accordion("Proje yedeği", open=False):
-            backup_button = gr.Button("Seçili projeyi ZIP olarak yedekle")
-            backup_file = gr.File(label="Proje yedeği", interactive=False)
-            restore_file = gr.File(label="Geri yüklenecek VoxForge ZIP", type="filepath", file_types=[".zip"])
-            restore_name = gr.Textbox(label="Geri yüklenen projenin adı")
-            restore_button = gr.Button("Yeni proje olarak geri yükle")
-            backup_status = gr.Markdown()
+        with gr.Group(elem_classes="vf-card"):
+            section("Proje", "Mevcut bir projeyi aç ya da aşağıdan yeni proje oluştur.")
+            with gr.Row(equal_height=True):
+                project_dropdown = gr.Dropdown(label="Proje", show_label=False, choices=project_choices(), value=None, scale=4)
+                refresh_projects = gr.Button("Listeyi yenile", size="sm", scale=1, min_width=120)
 
         with gr.Accordion("Yeni proje", open=False):
             new_name = gr.Textbox(label="Proje adı")
@@ -217,7 +211,10 @@ def build_studio(
             new_document = gr.File(
                 label="veya kitap dosyası (TXT, DOCX, EPUB)", type="filepath", file_types=[".txt", ".docx", ".epub"],
             )
-            gr.Markdown("TXT’de `Bölüm 1: Başlık` veya `# Başlık` kullanın. Paragrafları boş satırla ayırın.")
+            gr.Markdown(
+                "TXT’de `Bölüm 1: Başlık` veya `# Başlık` kullanın. Paragrafları boş satırla ayırın.",
+                elem_classes="vf-hint",
+            )
             new_engine = gr.Dropdown(
                 label="Studio motoru", choices=[("VoxCPM2 (CUDA)", "voxcpm2"), ("XTTS-v2 (CUDA)", "xtts"), ("Mock", "mock")],
                 value="voxcpm2" if vox_presets else None, visible=bool(vox_presets),
@@ -237,19 +234,38 @@ def build_studio(
             )
             gr.Markdown(
                 "Referans önceliği demo ile aynıdır: profil, sonra yüklenen ses, sonra varsayılan referans. "
-                "Seçilen referans proje klasörüne kopyalanır; profil sonradan değişse de proje etkilenmez."
+                "Seçilen referans proje klasörüne kopyalanır; profil sonradan değişse de proje etkilenmez.",
+                elem_classes="vf-hint",
             )
             create_button = gr.Button("Projeyi oluştur", variant="primary")
             create_status = gr.Markdown()
 
-        progress_md = gr.Markdown("Proje seçilmedi.")
-        with gr.Row():
-            chapter_scope = gr.Dropdown(label="Üretim ve dışa aktarma kapsamı", choices=[], scale=2)
-            start_button = gr.Button("Eksikleri ve hatalıları üret / devam et", variant="primary")
-            stop_button = gr.Button("Durdur")
-        with gr.Row():
-            export_format = gr.Dropdown(label="Ses biçimi", choices=["WAV", "MP3"], value="WAV")
-            preview_button = gr.Button("Dışa aktar")
+        with gr.Accordion("Proje yedeği", open=False):
+            with gr.Row(equal_height=False):
+                with gr.Column():
+                    backup_button = gr.Button("Seçili projeyi ZIP olarak yedekle")
+                    backup_file = gr.File(label="Proje yedeği", interactive=False, height=72, elem_classes="vf-file")
+                with gr.Column():
+                    restore_file = gr.File(label="Geri yüklenecek VoxForge ZIP", type="filepath", file_types=[".zip"])
+                    restore_name = gr.Textbox(label="Geri yüklenen projenin adı")
+                    restore_button = gr.Button("Yeni proje olarak geri yükle")
+            backup_status = gr.Markdown()
+
+        progress_md = gr.Markdown("Proje seçilmedi.", elem_classes="vf-progress")
+        with gr.Group(elem_classes="vf-card"):
+            section(
+                "Üret ve dışa aktar",
+                "Kapsam tüm kitap ya da tek bölüm olabilir. Yalnız eksik, değişen ve hatalı segmentler üretilir.",
+            )
+            with gr.Row(equal_height=True):
+                chapter_scope = gr.Dropdown(label="Üretim ve dışa aktarma kapsamı", choices=[], scale=3)
+                start_button = gr.Button(
+                    "Eksikleri ve hatalıları üret / devam et", variant="primary", scale=2, elem_classes="vf-go",
+                )
+                stop_button = gr.Button("Durdur", variant="stop", scale=1)
+            with gr.Row(equal_height=True):
+                export_format = gr.Dropdown(label="Ses biçimi", choices=["WAV", "MP3"], value="WAV", scale=3)
+                preview_button = gr.Button("Dışa aktar", scale=3)
         action_status = gr.Markdown()
         preview_audio = gr.Audio(label="Ses çıktısı", type="filepath", interactive=False, visible=False)
 
@@ -263,40 +279,47 @@ def build_studio(
             datatype=["number", "str", "number", "number", "number", "number", "str", "str", "str", "str", "str"],
             interactive=False,
             wrap=True,
-            label="Kitap zaman çizelgesi",
+            label="Kitap zaman çizelgesi · düzenlemek için bir satır seçin",
+            max_height=520,
         )
 
-        with gr.Group():
-            segment_header = gr.Markdown(NO_SELECTION)
-            segment_audio = gr.Audio(label="Aktif take · kaynak WAV", type="filepath", interactive=False)
-            with gr.Row():
-                gain_slider = gr.Slider(-24, 12, value=0, step=0.5, label="Dışa aktarma seviyesi (dB)", interactive=False)
-                pause_box = gr.Number(
-                    label="Sonraki duraklama (sn, boşsa üretim modu)", minimum=0, maximum=5, interactive=False,
-                    info="Dışa aktarılan bölümde veya kitapta bir sonraki segment varsa uygulanır.",
-                )
-            with gr.Row():
-                save_mix = gr.Button("Ses ayarını kaydet", interactive=False)
-                undo_mix = gr.Button("Ses ayarını geri al", interactive=False)
-            mix_status = gr.Markdown()
-            source_box = gr.Textbox(label="Orijinal metin", lines=3)
-            save_source = gr.Button("Orijinali kaydet (okunuş yeniden hesaplanır)")
-            spoken_box = gr.Textbox(label="Okunacak metin", lines=3)
-            save_spoken = gr.Button("Okunuşu elle kaydet")
-            transformations_md = gr.Markdown()
-            segment_status = gr.Markdown()
-
-        with gr.Accordion("Segment kalitesi ve take'ler", open=True):
-            take_choice = gr.Dropdown(label="Take", choices=[])
-            take_quality = gr.Markdown()
-            take_audio = gr.Audio(label="Alternatif take sesi", type="filepath", interactive=False)
-            with gr.Row():
-                segment_generate = gr.Button("Eksik veya değişen bu segmenti üret")
-                take_generate = gr.Button("Bu segmenti alternatif take olarak üret", visible=bool(vox_presets))
-                take_check = gr.Button("Kaliteyi denetle")
-                take_select = gr.Button("Take'i kullan", interactive=False)
-                take_undo = gr.Button("Take seçimini geri al", interactive=False)
-            take_status = gr.Markdown()
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=3):
+                with gr.Group(elem_classes="vf-card"):
+                    segment_header = gr.Markdown(NO_SELECTION, elem_classes="vf-section")
+                    segment_audio = gr.Audio(label="Aktif take · kaynak WAV", type="filepath", interactive=False)
+                    source_box = gr.Textbox(label="Orijinal metin", lines=3)
+                    save_source = gr.Button("Orijinali kaydet (okunuş yeniden hesaplanır)", size="sm")
+                    spoken_box = gr.Textbox(label="Okunacak metin", lines=3)
+                    save_spoken = gr.Button("Okunuşu elle kaydet", size="sm")
+                    transformations_md = gr.Markdown()
+                    segment_status = gr.Markdown()
+            with gr.Column(scale=2):
+                with gr.Group(elem_classes="vf-card"):
+                    section("Dışa aktarma sesi")
+                    gain_slider = gr.Slider(-24, 12, value=0, step=0.5, label="Dışa aktarma seviyesi (dB)", interactive=False)
+                    pause_box = gr.Number(
+                        label="Sonraki duraklama (sn)", minimum=0, maximum=5, interactive=False,
+                        info="Boşsa üretim modu kullanılır. Dışa aktarılan bölümde veya kitapta bir sonraki segment varsa uygulanır.",
+                    )
+                    with gr.Row():
+                        save_mix = gr.Button("Ses ayarını kaydet", interactive=False, size="sm")
+                        undo_mix = gr.Button("Ses ayarını geri al", interactive=False, size="sm")
+                    mix_status = gr.Markdown()
+                with gr.Group(elem_classes="vf-card"):
+                    section("Segment kalitesi ve take'ler")
+                    take_choice = gr.Dropdown(label="Take", choices=[])
+                    take_quality = gr.Markdown()
+                    take_audio = gr.Audio(label="Alternatif take sesi", type="filepath", interactive=False)
+                    segment_generate = gr.Button("Eksik veya değişen bu segmenti üret", variant="primary", size="sm")
+                    take_generate = gr.Button(
+                        "Bu segmenti alternatif take olarak üret", visible=bool(vox_presets), size="sm",
+                    )
+                    with gr.Row():
+                        take_check = gr.Button("Kaliteyi denetle", size="sm")
+                        take_select = gr.Button("Take'i kullan", interactive=False, size="sm")
+                        take_undo = gr.Button("Take seçimini geri al", interactive=False, size="sm")
+                    take_status = gr.Markdown()
 
         with gr.Accordion("Karakterler ve sesler", open=False):
             gr.Markdown(
