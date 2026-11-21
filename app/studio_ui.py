@@ -13,13 +13,11 @@ from typing import Any, Callable
 
 import gradio as gr
 
+from app.ui_theme import section
 from voxforge.quality.checks import describe_report, summarize
 from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
 
-TABLE_HEADERS = [
-    "#", "Bölüm", "Başlangıç (sn)", "Süre (sn)", "Seviye (dB)", "Sonraki duraklama (sn)",
-    "Durum", "Ses", "Orijinal metin", "Okunacak metin", "Hata",
-]
+TABLE_HEADERS = ["Parça", "Metin", "Karakter", "Durum", "Süre (sn)"]
 REFRESH_SECONDS = 2.0
 NO_SELECTION = "Bir segment seçmek için tablodaki satıra tıklayın."
 
@@ -96,16 +94,10 @@ def build_studio(
             rows.append(
                 [
                     item["ord"] + 1,
-                    item["chapter_title"],
-                    round(item["timeline_start_s"], 2) if item["timeline_start_s"] is not None else None,
-                    round(item["duration_s"], 2) if item["duration_s"] is not None else None,
-                    item["gain_db"],
-                    item["timeline_pause_s"],
-                    STATE_LABELS[item["state"]],
-                    item["voice_name"] or NARRATOR_LABEL,
                     _short(item["source_text"]),
-                    _short(item["spoken_text"]),
-                    _short(item["error"], 60) if item["error"] else "",
+                    item["voice_name"] or NARRATOR_LABEL,
+                    STATE_LABELS[item["state"]],
+                    round(item["duration_s"], 2) if item["duration_s"] is not None else None,
                 ]
             )
         return rows, ids
@@ -122,7 +114,7 @@ def build_studio(
             return NO_SELECTION, "", "", "", None
         item = service.segment(slug, segment_id)
         header = (
-            f"**Segment {item['ord'] + 1}** · {STATE_LABELS[item['state']]}"
+            f"**Parça {item['ord'] + 1}** · {item['chapter_title'] or 'Metin'} · {STATE_LABELS[item['state']]}"
             f" · ses: {item['voice_name'] or NARRATOR_LABEL}"
         )
         if item["error"]:
@@ -176,173 +168,208 @@ def build_studio(
         )
 
     def preset_for(engine_id, label):
+        if engine_id == "mock":
+            return {}
         if engine_id == "voxcpm2":
             return (vox_presets or {}).get(label, ("", {}))[1]
         return preset_kwargs.get(label, {})
 
     def preset_update(engine_id):
+        if engine_id == "mock":
+            return gr.update(visible=False)
         if engine_id == "voxcpm2" and vox_presets:
             choices = [(name, key) for key, (name, _) in vox_presets.items()]
             return gr.update(choices=choices, value="normal", visible=True)
-        return gr.update(choices=preset_choices, value=default_preset, visible=engine_id != "mock")
+        return gr.update(choices=preset_choices, value=default_preset, visible=True)
 
     with gr.Blocks(title="VoxForge Studio") as studio:
-        gr.Markdown("# VoxForge Studio")
-        gr.Markdown(
-            "Metni projeye dönüştürün, segmentleri inceleyin ve yalnız eksik ya da değişen parçaları üretin. "
-            "Kaynak belgeler, projeler ve WAV/MP3 çıktıları yerelde tutulur."
-        )
         if not vox_presets:
-            gr.Markdown("VoxCPM2 üretimi için Voice Playground uygulamasında **Studio** sekmesini açın.")
+            gr.Markdown("VoxCPM2 üretimi için Voice Playground uygulamasında **Projeler → Sesli kitap** bölümünü açın.", elem_classes="vf-hint")
         slug_state = gr.State(None)
         ids_state = gr.State([])
         selected_state = gr.State(None)
         running_state = gr.State(False)
 
-        with gr.Row():
-            project_dropdown = gr.Dropdown(label="Proje", choices=project_choices(), value=None, scale=4)
-            refresh_projects = gr.Button("Listeyi yenile", scale=1)
+        with gr.Group(elem_classes="vf-card"):
+            section("Sesli kitap")
+            with gr.Row(equal_height=True):
+                project_dropdown = gr.Dropdown(label="Kayıtlı kitabı aç", choices=project_choices(), value=None, scale=4)
+                refresh_projects = gr.Button("Listeyi yenile", size="sm", scale=1, min_width=120)
 
-        with gr.Accordion("Proje yedeği", open=False):
-            backup_button = gr.Button("Seçili projeyi ZIP olarak yedekle")
-            backup_file = gr.File(label="Proje yedeği", interactive=False)
-            restore_file = gr.File(label="Geri yüklenecek VoxForge ZIP", type="filepath", file_types=[".zip"])
-            restore_name = gr.Textbox(label="Geri yüklenen projenin adı")
-            restore_button = gr.Button("Yeni proje olarak geri yükle")
-            backup_status = gr.Markdown()
+        with gr.Tabs(elem_classes="vf-steps") as book_steps:
+            with gr.Tab("1. Kitap", id="book"):
+                with gr.Group(elem_classes="vf-card"):
+                    section("Yeni kitap", "Bir metin yapıştır veya kitap dosyanı yükle.")
+                    new_name = gr.Textbox(label="Proje adı")
+                    new_text = gr.Textbox(label="Kitap metni", lines=4, placeholder="Seslendirilecek Türkçe metni yapıştırın.")
+                    new_document = gr.File(
+                        label="veya kitap dosyası (TXT, DOCX, EPUB)", type="filepath", file_types=[".txt", ".docx", ".epub"],
+                    )
+                    gr.Markdown(
+                        "TXT’de `Bölüm 1: Başlık` veya `# Başlık` kullanın. Paragrafları boş satırla ayırın.",
+                        elem_classes="vf-hint",
+                    )
+                    with gr.Accordion("Anlatıcı sesi ve okuma ayarları", open=False):
+                        new_engine = gr.Dropdown(
+                            label="Studio motoru", choices=[("VoxCPM2 (CUDA)", "voxcpm2"), ("XTTS-v2 (CUDA)", "xtts"), ("Mock", "mock")],
+                            value="voxcpm2" if vox_presets else None, visible=bool(vox_presets),
+                        )
+                        with gr.Row():
+                            new_profile = gr.Dropdown(label="Ses profili", choices=profile_choices(), value="")
+                            new_upload = gr.Audio(label="veya referans ses yükle", type="filepath")
+                        new_preset = gr.Dropdown(
+                            label="Üretim modu",
+                            choices=[(name, key) for key, (name, _) in vox_presets.items()] if vox_presets else preset_choices,
+                            value="normal" if vox_presets else default_preset,
+                        )
+                        new_lexicon = gr.Textbox(
+                            label="Telaffuz sözlüğü (isteğe bağlı)",
+                            lines=3,
+                            placeholder="! New York = Niyu York   (~ ile harf büyüklüğünden bağımsız eşleştir)",
+                        )
+                        gr.Markdown(
+                            "Referans önceliği demo ile aynıdır: profil, sonra yüklenen ses, sonra varsayılan referans. "
+                            "Seçilen referans proje klasörüne kopyalanır; profil sonradan değişse de proje etkilenmez.",
+                            elem_classes="vf-hint",
+                        )
+                    create_button = gr.Button("Projeyi oluştur", variant="primary")
+                    create_status = gr.Markdown()
+                    to_voices = gr.Button("Karakter seslerini seç", visible=False)
 
-        with gr.Accordion("Yeni proje", open=False):
-            new_name = gr.Textbox(label="Proje adı")
-            new_text = gr.Textbox(label="Metin", lines=10, placeholder="Seslendirilecek Türkçe metni yapıştırın.")
-            new_document = gr.File(
-                label="veya kitap dosyası (TXT, DOCX, EPUB)", type="filepath", file_types=[".txt", ".docx", ".epub"],
-            )
-            gr.Markdown("TXT’de `Bölüm 1: Başlık` veya `# Başlık` kullanın. Paragrafları boş satırla ayırın.")
-            new_engine = gr.Dropdown(
-                label="Studio motoru", choices=[("VoxCPM2 (CUDA)", "voxcpm2"), ("XTTS-v2 (CUDA)", "xtts"), ("Mock", "mock")],
-                value="voxcpm2" if vox_presets else None, visible=bool(vox_presets),
-            )
-            with gr.Row():
-                new_profile = gr.Dropdown(label="Ses profili", choices=profile_choices(), value="")
-                new_upload = gr.Audio(label="veya referans ses yükle", type="filepath")
-            new_preset = gr.Dropdown(
-                label="Üretim modu",
-                choices=[(name, key) for key, (name, _) in vox_presets.items()] if vox_presets else preset_choices,
-                value="normal" if vox_presets else default_preset,
-            )
-            new_lexicon = gr.Textbox(
-                label="Telaffuz sözlüğü (isteğe bağlı)",
-                lines=3,
-                placeholder="! New York = Niyu York   (~ ile harf büyüklüğünden bağımsız eşleştir)",
-            )
-            gr.Markdown(
-                "Referans önceliği demo ile aynıdır: profil, sonra yüklenen ses, sonra varsayılan referans. "
-                "Seçilen referans proje klasörüne kopyalanır; profil sonradan değişse de proje etkilenmez."
-            )
-            create_button = gr.Button("Projeyi oluştur", variant="primary")
-            create_status = gr.Markdown()
+                with gr.Accordion("Proje yedeği", open=False):
+                    with gr.Row(equal_height=False):
+                        with gr.Column():
+                            backup_button = gr.Button("Seçili projeyi ZIP olarak yedekle")
+                            backup_file = gr.File(label="Proje yedeği", interactive=False, height=72, elem_classes="vf-file")
+                        with gr.Column():
+                            restore_file = gr.File(label="Geri yüklenecek VoxForge ZIP", type="filepath", file_types=[".zip"])
+                            restore_name = gr.Textbox(label="Geri yüklenen projenin adı")
+                            restore_button = gr.Button("Yeni proje olarak geri yükle")
+                    backup_status = gr.Markdown()
 
-        progress_md = gr.Markdown("Proje seçilmedi.")
-        with gr.Row():
-            chapter_scope = gr.Dropdown(label="Üretim ve dışa aktarma kapsamı", choices=[], scale=2)
-            start_button = gr.Button("Eksikleri ve hatalıları üret / devam et", variant="primary")
-            stop_button = gr.Button("Durdur")
-        with gr.Row():
-            export_format = gr.Dropdown(label="Ses biçimi", choices=["WAV", "MP3"], value="WAV")
-            preview_button = gr.Button("Dışa aktar")
-        action_status = gr.Markdown()
-        preview_audio = gr.Audio(label="Ses çıktısı", type="filepath", interactive=False, visible=False)
+            with gr.Tab("2. Sesler", id="voices"):
+                with gr.Group(elem_classes="vf-card"):
+                    section("Kim konuşuyor?")
+                    gr.Markdown(
+                        "Kitabın tamamını anlatıcı okuyacaksa doğrudan **Üretime geç**. "
+                        "Diyaloglar için önce karakteri ekle, sonra okuyacağı parçaları seç."
+                    )
+                    voices_md = gr.Markdown()
+                    with gr.Row():
+                        voice_name = gr.Textbox(label="Karakter adı", scale=2)
+                        voice_profile = gr.Dropdown(label="Klonlama için ses profili", choices=profile_choices(), value="", scale=2)
+                        voice_upload = gr.Audio(label="veya klonlama için referans ses", type="filepath", scale=2)
+                        voice_preset = gr.Dropdown(label="Üretim modu", choices=preset_choices, value=default_preset, scale=1)
+                    add_voice_button = gr.Button("Karakter ekle")
+                    with gr.Row():
+                        assign_numbers = gr.Dropdown(label="Ses verilecek parçalar", choices=[], multiselect=True, scale=3)
+                        assign_voice = gr.Dropdown(label="Ses", choices=[(NARRATOR_LABEL, "")], value="", scale=2)
+                        assign_button = gr.Button("Sesi parçalara ata", scale=1)
+                    with gr.Row():
+                        suggest_button = gr.Button("Diyalog önerilerini göster")
+                        strip_labels = gr.Checkbox(label="'Ad:' etiketini okunuştan çıkar", value=True)
+                        apply_button = gr.Button("Eşleşen önerileri uygula")
+                    suggestions_md = gr.Markdown()
+                    voice_status = gr.Markdown()
 
-        with gr.Accordion("Proje telaffuz sözlüğü", open=False):
-            lexicon_box = gr.Textbox(label="Girişler", lines=5, placeholder="! Özel İsim = okunuş")
-            save_lexicon = gr.Button("Sözlüğü kaydet")
-            lexicon_status = gr.Markdown()
+                if vox_presets:
+                    with gr.Accordion("Ses tasarımı (VoxCPM2)", open=False):
+                        gr.Markdown(
+                            "Ses tanımından referanssız bir örnek üretin. Studio, tasarımın ses kimliğini "
+                            "sürdürmek için kaydedilen örneği karakter sesi olarak kullanır."
+                        )
+                        design_token = gr.State(None)
+                        design_description = gr.Textbox(label="Ses tanımı", placeholder="Yetişkin, sıcak, sakin ve tok bir ses")
+                        design_text = gr.Textbox(label="Önizleme repliği", lines=2)
+                        design_seed = gr.Number(label="Tohum", value=1234, precision=0)
+                        design_preview_button = gr.Button("Referanssız örnek üret", variant="primary")
+                        design_audio = gr.Audio(label="Tasarım önizlemesi", type="filepath", interactive=False)
+                        with gr.Row():
+                            design_name = gr.Textbox(label="Kütüphane adı")
+                            design_save = gr.Button("Yeni sürüm kaydet", interactive=False)
+                        design_choice = gr.Dropdown(
+                            label="Kaydedilmiş tasarım sürümü", choices=design_choices(),
+                        )
+                        saved_design_audio = gr.Audio(label="Kaydedilmiş örnek", type="filepath", interactive=False)
+                        design_character = gr.Textbox(label="Studio karakter adı (boşsa kütüphane adı)")
+                        design_add = gr.Button("Tasarımı projeye karakter olarak ekle")
+                        design_status = gr.Markdown()
 
-        segment_table = gr.Dataframe(
-            headers=TABLE_HEADERS,
-            datatype=["number", "str", "number", "number", "number", "number", "str", "str", "str", "str", "str"],
-            interactive=False,
-            wrap=True,
-            label="Kitap zaman çizelgesi",
-        )
+                to_production = gr.Button("Üretime geç", variant="primary")
+            with gr.Tab("3. Üretim", id="production"):
+                progress_md = gr.Markdown("Proje seçilmedi.", elem_classes="vf-progress")
+                with gr.Group(elem_classes="vf-card"):
+                    section(
+                        "Üret ve dışa aktar",
+                        "Kapsam tüm kitap ya da tek bölüm olabilir. Yalnız eksik, değişen ve hatalı segmentler üretilir.",
+                    )
+                    with gr.Row(equal_height=True):
+                        chapter_scope = gr.Dropdown(label="Üretim ve dışa aktarma kapsamı", choices=[], scale=3)
+                        start_button = gr.Button(
+                            "Eksikleri ve hatalıları üret / devam et", variant="primary", scale=2, elem_classes="vf-go",
+                        )
+                        stop_button = gr.Button("Durdur", variant="stop", scale=1)
+                    with gr.Row(equal_height=True):
+                        export_format = gr.Dropdown(label="Ses biçimi", choices=["WAV", "MP3"], value="WAV", scale=3)
+                        preview_button = gr.Button("Dışa aktar", scale=3)
+                action_status = gr.Markdown()
+                preview_audio = gr.Audio(label="Ses çıktısı", type="filepath", interactive=False, visible=False)
 
-        with gr.Group():
-            segment_header = gr.Markdown(NO_SELECTION)
-            segment_audio = gr.Audio(label="Aktif take · kaynak WAV", type="filepath", interactive=False)
-            with gr.Row():
-                gain_slider = gr.Slider(-24, 12, value=0, step=0.5, label="Dışa aktarma seviyesi (dB)", interactive=False)
-                pause_box = gr.Number(
-                    label="Sonraki duraklama (sn, boşsa üretim modu)", minimum=0, maximum=5, interactive=False,
-                    info="Dışa aktarılan bölümde veya kitapta bir sonraki segment varsa uygulanır.",
+                with gr.Accordion("Proje telaffuz sözlüğü", open=False):
+                    lexicon_box = gr.Textbox(label="Girişler", lines=5, placeholder="! Özel İsim = okunuş")
+                    save_lexicon = gr.Button("Sözlüğü kaydet")
+                    lexicon_status = gr.Markdown()
+
+                segment_table = gr.Dataframe(
+                    headers=TABLE_HEADERS,
+                    datatype=["number", "str", "str", "str", "number"],
+                    interactive=False,
+                    wrap=True,
+                    label="Kitabın parçaları · dinlemek veya düzenlemek için bir satır seç",
+                    max_height=520,
                 )
-            with gr.Row():
-                save_mix = gr.Button("Ses ayarını kaydet", interactive=False)
-                undo_mix = gr.Button("Ses ayarını geri al", interactive=False)
-            mix_status = gr.Markdown()
-            source_box = gr.Textbox(label="Orijinal metin", lines=3)
-            save_source = gr.Button("Orijinali kaydet (okunuş yeniden hesaplanır)")
-            spoken_box = gr.Textbox(label="Okunacak metin", lines=3)
-            save_spoken = gr.Button("Okunuşu elle kaydet")
-            transformations_md = gr.Markdown()
-            segment_status = gr.Markdown()
 
-        with gr.Accordion("Segment kalitesi ve take'ler", open=True):
-            take_choice = gr.Dropdown(label="Take", choices=[])
-            take_quality = gr.Markdown()
-            take_audio = gr.Audio(label="Alternatif take sesi", type="filepath", interactive=False)
-            with gr.Row():
-                segment_generate = gr.Button("Eksik veya değişen bu segmenti üret")
-                take_generate = gr.Button("Bu segmenti alternatif take olarak üret", visible=bool(vox_presets))
-                take_check = gr.Button("Kaliteyi denetle")
-                take_select = gr.Button("Take'i kullan", interactive=False)
-                take_undo = gr.Button("Take seçimini geri al", interactive=False)
-            take_status = gr.Markdown()
+                with gr.Row(equal_height=False, visible=False) as part_editor:
+                    with gr.Column(scale=3):
+                        with gr.Group(elem_classes="vf-card"):
+                            segment_header = gr.Markdown(NO_SELECTION, elem_classes="vf-section")
+                            segment_audio = gr.Audio(label="Aktif take · kaynak WAV", type="filepath", interactive=False)
+                            source_box = gr.Textbox(label="Orijinal metin", lines=3)
+                            save_source = gr.Button("Orijinali kaydet (okunuş yeniden hesaplanır)", size="sm")
+                            spoken_box = gr.Textbox(label="Okunacak metin", lines=3)
+                            save_spoken = gr.Button("Okunuşu elle kaydet", size="sm")
+                            transformations_md = gr.Markdown()
+                            segment_status = gr.Markdown()
+                    with gr.Column(scale=2):
+                        with gr.Accordion("Dışa aktarma sesi", open=False):
+                            gain_slider = gr.Slider(-24, 12, value=0, step=0.5, label="Dışa aktarma seviyesi (dB)", interactive=False)
+                            pause_box = gr.Number(
+                                label="Sonraki duraklama (sn)", minimum=0, maximum=5, interactive=False,
+                                info="Boşsa üretim modu kullanılır. Dışa aktarılan bölümde veya kitapta bir sonraki segment varsa uygulanır.",
+                            )
+                            with gr.Row():
+                                save_mix = gr.Button("Ses ayarını kaydet", interactive=False, size="sm")
+                                undo_mix = gr.Button("Ses ayarını geri al", interactive=False, size="sm")
+                            mix_status = gr.Markdown()
+                        with gr.Group(elem_classes="vf-card"):
+                            section("Segment kalitesi ve take'ler")
+                            take_choice = gr.Dropdown(label="Take", choices=[])
+                            take_quality = gr.Markdown()
+                            take_audio = gr.Audio(label="Alternatif take sesi", type="filepath", interactive=False)
+                            segment_generate = gr.Button("Eksik veya değişen bu segmenti üret", variant="primary", size="sm")
+                            take_generate = gr.Button(
+                                "Bu segmenti alternatif take olarak üret", visible=bool(vox_presets), size="sm",
+                            )
+                            with gr.Row():
+                                take_check = gr.Button("Kaliteyi denetle", size="sm")
+                                take_select = gr.Button("Take'i kullan", interactive=False, size="sm")
+                                take_undo = gr.Button("Take seçimini geri al", interactive=False, size="sm")
+                            take_status = gr.Markdown()
 
-        with gr.Accordion("Karakterler ve sesler", open=False):
-            gr.Markdown(
-                "Atanmamış segmentler **Anlatıcı** (projenin referans sesi) ile üretilir. "
-                "Karakter ekleyip segmentlere atayın; ses değişen segmentler yeniden üretilir."
-            )
-            voices_md = gr.Markdown()
-            with gr.Row():
-                voice_name = gr.Textbox(label="Karakter adı", scale=2)
-                voice_profile = gr.Dropdown(label="Klonlama için ses profili", choices=profile_choices(), value="", scale=2)
-                voice_upload = gr.Audio(label="veya klonlama için referans ses", type="filepath", scale=2)
-                voice_preset = gr.Dropdown(label="Üretim modu", choices=preset_choices, value=default_preset, scale=1)
-            add_voice_button = gr.Button("Karakter ekle")
-            with gr.Row():
-                assign_numbers = gr.Textbox(label="Segmentler", placeholder="3, 5-8", scale=2)
-                assign_voice = gr.Dropdown(label="Ses", choices=[(NARRATOR_LABEL, "")], value="", scale=2)
-                assign_button = gr.Button("Ata", scale=1)
-            with gr.Row():
-                suggest_button = gr.Button("Diyalog önerilerini göster")
-                strip_labels = gr.Checkbox(label="'Ad:' etiketini okunuştan çıkar", value=True)
-                apply_button = gr.Button("Eşleşen önerileri uygula")
-            suggestions_md = gr.Markdown()
-            voice_status = gr.Markdown()
-
-        if vox_presets:
-            with gr.Accordion("Ses tasarımı (VoxCPM2)", open=False):
-                gr.Markdown(
-                    "Ses tanımından referanssız bir örnek üretin. Studio, tasarımın ses kimliğini "
-                    "sürdürmek için kaydedilen örneği karakter sesi olarak kullanır."
-                )
-                design_token = gr.State(None)
-                design_description = gr.Textbox(label="Ses tanımı", placeholder="Yetişkin, sıcak, sakin ve tok bir ses")
-                design_text = gr.Textbox(label="Önizleme repliği", lines=2)
-                design_seed = gr.Number(label="Tohum", value=1234, precision=0)
-                design_preview_button = gr.Button("Referanssız örnek üret", variant="primary")
-                design_audio = gr.Audio(label="Tasarım önizlemesi", type="filepath", interactive=False)
-                with gr.Row():
-                    design_name = gr.Textbox(label="Kütüphane adı")
-                    design_save = gr.Button("Yeni sürüm kaydet", interactive=False)
-                design_choice = gr.Dropdown(
-                    label="Kaydedilmiş tasarım sürümü", choices=design_choices(),
-                )
-                saved_design_audio = gr.Audio(label="Kaydedilmiş örnek", type="filepath", interactive=False)
-                design_character = gr.Textbox(label="Studio karakter adı (boşsa kütüphane adı)")
-                design_add = gr.Button("Tasarımı projeye karakter olarak ekle")
-                design_status = gr.Markdown()
+        project_dropdown.change(lambda slug: gr.update(visible=bool(slug)), project_dropdown, to_voices)
+        to_voices.click(lambda: gr.update(selected="voices"), outputs=book_steps)
+        to_production.click(lambda: gr.update(selected="production"), outputs=book_steps)
+        selected_state.change(lambda part: gr.update(visible=part is not None), selected_state, part_editor)
 
         timer = gr.Timer(REFRESH_SECONDS)
 
@@ -421,7 +448,7 @@ def build_studio(
                 return f"⚠️ Proje oluşturulamadı: {exc}", gr.update()
             count = len(service.segments(slug))
             return (
-                f"Proje oluşturuldu: **{name}** ({count} segment).",
+                f"**{name}** hazır ({count} segment). Karakterlere ses vermek için **2. Sesler** adımını aç.",
                 gr.update(choices=project_choices(), value=slug),
             )
 
@@ -610,6 +637,12 @@ def build_studio(
             return "\n".join(lines), gr.update(choices=choices, value="")
 
         voice_outputs = [voices_md, assign_voice]
+        def assignment_choices(slug):
+            parts = service.segments(slug) if slug else []
+            choices = [(f"{part['ord'] + 1} · {_short(part['source_text'], 55)}", str(part["ord"] + 1)) for part in parts]
+            return gr.update(choices=choices, value=[])
+
+        project_dropdown.change(assignment_choices, project_dropdown, assign_numbers)
         project_dropdown.change(voice_panel, inputs=project_dropdown, outputs=voice_outputs)
         project_dropdown.change(
             lambda slug: preset_update(service.open(slug).settings.engine_id if slug else engine_label),
@@ -685,7 +718,7 @@ def build_studio(
             if not slug:
                 return "⚠️ Önce bir proje seçin.", *view(None), gr.skip()
             try:
-                ids = service.segment_ids_from_numbers(slug, numbers)
+                ids = service.segment_ids_from_numbers(slug, ", ".join(numbers or []))
                 changed = service.assign_voice(slug, ids, voice_key or None)
             except StudioError as exc:
                 return f"⚠️ {exc}", *view(slug), gr.skip()

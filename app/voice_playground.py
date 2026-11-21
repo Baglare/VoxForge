@@ -9,7 +9,7 @@ apart from the text, narration pacing), built-in and user presets, preset compar
 a "Sahne anlatımı" tab (scene-based narration merged into one WAV).
 
 VF-018: Quality Director after a generation (CPU Whisper + audio checks) and a
-"Kalite ve take'ler" tab (app/playground_quality_tab.py): alternatives with new seeds,
+"Kalite" tab (app/playground_quality_tab.py): alternatives with new seeds,
 side-by-side listening, selection and undo. Alternatives start automatically only on a
 high-confidence problem.
 """
@@ -47,6 +47,7 @@ from app.gradio_xtts_demo import (  # noqa: E402
     resolve_studio_reference,
 )
 from app.studio_ui import build_studio  # noqa: E402
+from app.ui_theme import CSS, THEME, hero, lead, section  # noqa: E402
 from voxforge.playground.quality import PlaygroundQuality  # noqa: E402
 from voxforge.playground.scenes import SCENE_KINDS, SceneNarrator, SceneProject, slugify, split_scenes  # noqa: E402
 from voxforge.playground.service import (  # noqa: E402
@@ -221,160 +222,181 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
     )
     default = VoxControls()
 
-    with gr.Blocks(title="VoxForge Voice Playground") as app:
-        gr.Markdown(
-            "# VoxForge Voice Playground\n"
-            "Türkçe metni seçtiğin motor ve kayıtlı ses profiliyle üret, dinle, indir ve karşılaştır. "
-            "GPU'da aynı anda tek motor çalışır; motor değişince önceki kapatılır (ilk üretimde model yüklemesi sürer). "
-            "8 GB VRAM'de VoxCPM2 için GPU kullanan diğer uygulamaları (canlı duvar kağıdı, tarayıcı, oyun istemcisi) kapatmak "
-            "hızı belirgin artırır; her üretimin altında cihaz, süre, RTF, VRAM ve darboğaz notu görünür."
-        )
-        with gr.Tabs():
-            # ================================ Playground ================================
-            with gr.Tab("Playground"):
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        text = gr.Textbox(label=f"Metin (en fazla {MAX_TEXT_CHARS} karakter)", value=SAMPLE_TEXT, lines=5, max_lines=14)
+    with gr.Blocks(title="VoxForge Voice Playground", theme=THEME, css=CSS) as app:
+        hero("VoxForge", "Ses atölyesi")
+        with gr.Tabs(elem_classes="vf-tabs"):
+            with gr.Tab("Hızlı ses"):
+                with gr.Column(elem_classes="vf-sheet"):
+                    section("Metni seslendir")
+                    text = gr.Textbox(
+                        label="Seslendirilecek metin", value=SAMPLE_TEXT, lines=5, max_lines=14,
+                        info=f"En fazla {MAX_TEXT_CHARS} karakter.", elem_classes="vf-manuscript",
+                    )
+                    with gr.Row(equal_height=True):
+                        profile = gr.Dropdown(
+                            profile_choices(), label="Ses profili", value=None, allow_custom_value=False,
+                            filterable=False, scale=4, min_width=180,
+                            info="İlk üretim için kayıtlı bir ses profili seç. Yalnız Mock motoru profilsiz çalışır.",
+                        )
+                        generate = gr.Button("Seslendir", interactive=False, variant="primary", size="lg", elem_classes="vf-go", scale=1, min_width=120)
+                    message = gr.Markdown()
+                with gr.Accordion("Ses ve üretim ayarları", open=False):
+                    refresh_profiles = gr.Button("Profilleri yenile", size="sm")
+                    engine = gr.Radio(ENGINE_CHOICES, value="voxcpm2", label="Seslendirme motoru")
+                    chatterbox_setting = gr.Radio(CHATTERBOX_CHOICES, value="chatterbox-default", label="Chatterbox ayarı", visible=False)
+                    voxcpm_setting = gr.Radio(VOXCPM_CHOICES, value="voxcpm2", label="VoxCPM2 ayarı")
+                    reference_text = gr.Textbox(
+                        label="Referansın birebir transkripti",
+                        info="Yalnız VoxCPM2 Ultimate Cloning; profil başına hatırlanır.",
+                        lines=3,
+                        max_lines=8,
+                        visible=False,
+                        placeholder="Referans kayıtta ne söyleniyorsa aynen yazın; yanlış transkript benzerliği düşürür.",
+                    )
+                    with gr.Accordion("VoxCPM2 gelişmiş kontroller", open=False) as advanced:
+                        gr.Markdown(
+                            "Yalnız **VoxCPM2 varsayılan** ve **Ultimate Cloning** için geçerlidir; *Hızlı (6 adım)* sabit "
+                            "karşılaştırma varyantıdır ve bu paneli kullanmaz. Stil yönergesi seslendirilen metinden ayrı "
+                            "tutulur ve modele `(yönerge)metin` biçiminde verilir (model kartındaki *controllable cloning*). "
+                            "Model sayısal hız/duygu parametresi sunmaz. Duygu yönergeleri deneyseldir ve ses "
+                            "kimliği kayabilir.  \n"
+                            + ULTIMATE_NOTE
+                        )
                         with gr.Row():
-                            engine = gr.Radio(ENGINE_CHOICES, value="xtts", label="Motor")
-                            chatterbox_setting = gr.Radio(CHATTERBOX_CHOICES, value="chatterbox-default", label="Chatterbox ayarı", visible=False)
-                            voxcpm_setting = gr.Radio(VOXCPM_CHOICES, value="voxcpm2", label="VoxCPM2 ayarı", visible=False)
+                            preset = gr.Dropdown(preset_choices(service), value="normal", label="Preset")
+                            preset_delete = gr.Button("Kullanıcı preset'ini sil", size="sm")
+                        preset_text = gr.Markdown(preset_info(service, "normal"))
+                        with gr.Row():
+                            cfg = gr.Slider(CFG_RANGE[0], CFG_RANGE[1], value=default.cfg, step=0.1, label="CFG", info="Varsayılan 2.0")
+                            steps = gr.Slider(STEPS_RANGE[0], STEPS_RANGE[1], value=default.steps, step=1, label="Difüzyon adımı", info="Varsayılan 10; 8'in altı telaffuzu bozabilir")
+                        style = gr.Textbox(label="Stil yönergesi", info="Boş bırakılırsa yönerge yok.", placeholder="yavaş, sakin bir anlatım", value="", max_lines=2)
+                        pacing = gr.Radio(PACING_CHOICES, value=default.pacing, label="Anlatım ritmi")
+                        with gr.Row():
+                            sentence_pause = gr.Slider(PAUSE_RANGE[0], PAUSE_RANGE[1], value=default.sentence_pause, step=0.05, label="Cümle arası duraklama (sn)", info="Yalnız anlatım ritminde")
+                            paragraph_pause = gr.Slider(PAUSE_RANGE[0], PAUSE_RANGE[1], value=default.paragraph_pause, step=0.05, label="Paragraf arası duraklama (sn)")
+                        with gr.Row(equal_height=True):
+                            preset_name = gr.Textbox(label="Yeni preset adı", max_lines=1, scale=3)
+                            preset_save = gr.Button("Bu ayarları preset olarak kaydet", size="sm", scale=1)
+                    with gr.Accordion("Üretim ayarları: cihaz, tohum, kalite denetimi", open=False):
                         device = gr.Radio(
                             DEVICE_CHOICES,
                             value="cuda",
-                            label="Cihaz (GPU varsayılan; CUDA yoksa üretim durur, CPU'ya kendiliğinden geçmez)",
+                            label="Cihaz",
+                            info="GPU varsayılan. CUDA yoksa üretim durur, CPU'ya kendiliğinden geçmez.",
                         )
-                        reference_text = gr.Textbox(
-                            label="Referansın birebir transkripti (yalnız VoxCPM2 Ultimate Cloning; profil başına hatırlanır)",
-                            lines=3,
-                            max_lines=8,
-                            visible=False,
-                            placeholder="Referans kayıtta ne söyleniyorsa aynen yazın; yanlış transkript benzerliği düşürür.",
-                        )
-                        with gr.Accordion("VoxCPM2 gelişmiş kontroller", open=False, visible=False) as advanced:
-                            gr.Markdown(
-                                "Yalnız **VoxCPM2 varsayılan** ve **Ultimate Cloning** için geçerlidir; *Hızlı (6 adım)* sabit "
-                                "karşılaştırma varyantıdır ve bu paneli kullanmaz. Stil yönergesi seslendirilen metinden ayrı "
-                                "tutulur ve modele `(yönerge)metin` biçiminde verilir (model kartındaki *controllable cloning*). "
-                                "Model sayısal hız/duygu parametresi sunmaz. Duygu yönergeleri deneyseldir ve ses "
-                                "kimliği kayabilir.  \n"
-                                + ULTIMATE_NOTE
-                            )
-                            with gr.Row():
-                                preset = gr.Dropdown(preset_choices(service), value="normal", label="Preset")
-                                preset_delete = gr.Button("Kullanıcı preset'ini sil", size="sm")
-                            preset_text = gr.Markdown(preset_info(service, "normal"))
-                            with gr.Row():
-                                cfg = gr.Slider(CFG_RANGE[0], CFG_RANGE[1], value=default.cfg, step=0.1, label="CFG (varsayılan 2.0)")
-                                steps = gr.Slider(STEPS_RANGE[0], STEPS_RANGE[1], value=default.steps, step=1, label="Difüzyon adımı (varsayılan 10; <8 telaffuzu bozabilir)")
-                            style = gr.Textbox(label="Stil yönergesi (boş = yok; ör. 'yavaş, sakin bir anlatım')", value="", max_lines=2)
-                            pacing = gr.Radio(PACING_CHOICES, value=default.pacing, label="Anlatım ritmi")
-                            with gr.Row():
-                                sentence_pause = gr.Slider(PAUSE_RANGE[0], PAUSE_RANGE[1], value=default.sentence_pause, step=0.05, label="Cümle arası duraklama (sn, yalnız anlatım ritmi)")
-                                paragraph_pause = gr.Slider(PAUSE_RANGE[0], PAUSE_RANGE[1], value=default.paragraph_pause, step=0.05, label="Paragraf arası duraklama (sn)")
-                            with gr.Row():
-                                preset_name = gr.Textbox(label="Yeni preset adı", max_lines=1, scale=3)
-                                preset_save = gr.Button("Bu ayarları preset olarak kaydet", size="sm", scale=1)
                         with gr.Row():
-                            profile = gr.Dropdown(profile_choices(), label="Ses profili", value=None, allow_custom_value=False)
-                            refresh_profiles = gr.Button("Profilleri yenile", size="sm")
-                        with gr.Row():
-                            seed = gr.Number(value=DEFAULT_SEED, precision=0, label="Tohum / seed (varsayılan 1234; -1 = rastgele)")
+                            seed = gr.Number(value=DEFAULT_SEED, precision=0, label="Tohum", info="Varsayılan 1234; -1 rastgele")
                             normalize = gr.Checkbox(value=True, label="Türkçe okunuş normalizasyonu (sayı, tarih, saat)")
                         with gr.Row():
                             auto_check = gr.Checkbox(value=True, label="Üretimden sonra kalite denetimi (Whisper CPU'da, VRAM kullanmaz)")
                             auto_retake = gr.Checkbox(value=True, label="Yalnız yüksek güvenli sorunda otomatik alternatif üret")
-                            auto_count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı")
-                        generate = gr.Button("Üret", variant="primary")
-                    with gr.Column(scale=2):
-                        result_audio = gr.Audio(label="Son üretim", type="filepath", interactive=False)
-                        result_file = gr.File(label="WAV indir", interactive=False)
-                        result_info = gr.Markdown()
-                        result_quality = gr.Markdown()
-                        generated_id = gr.State(None)  # bu tıklamada üretilen kayıt (VF-018 kalite zinciri)
-                        status = gr.Markdown(status_line(service))
+                        auto_count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı")
+                    with gr.Accordion("Motor durumu", open=False):
+                        status = gr.Markdown(status_line(service), elem_classes="vf-status")
                         unload = gr.Button("Motoru ve kalite denetleyicisini kapat", size="sm")
+                generated_id = gr.State(None)
+                result_audio = gr.Audio(label="Son üretim", type="filepath", interactive=False, visible=False)
+                result_quality = gr.Markdown()
+                result_file = gr.File(label="WAV indir", interactive=False, visible=False, elem_classes="vf-file")
+                result_info = gr.Markdown(elem_classes="vf-status")
 
-                with gr.Accordion("Toplu karşılaştırma: aynı metin, aynı tohum, birden çok motor/ayar", open=False):
-                    compare_variants = gr.CheckboxGroup(
-                        COMPARE_CHOICES,
-                        value=["xtts", "chatterbox-default", "chatterbox-minp"],
-                        label="Varyantlar (motor sırasına göre üretilir, her model bir kez yüklenir; VoxCPM2 varsayılan/Ultimate panel ayarlarını kullanır)",
-                    )
-                    generate_many = gr.Button("Seçilenlerin hepsini üret")
-                with gr.Accordion("Preset karşılaştırması (VoxCPM2): aynı metin, aynı ses, aynı tohum", open=False):
-                    compare_presets = gr.CheckboxGroup(preset_choices(service), value=["normal", "yavas-anlatici"], label="Preset'ler")
-                    generate_presets = gr.Button("Seçilen preset'leri üret")
+            with gr.Tab("Projeler"):
+                with gr.Tabs(elem_classes="vf-modes"):
+                    with gr.Tab("Sesli kitap"):
+                        studio.render()
 
-                gr.Markdown("## Yan yana dinle")
-                selected = gr.Dropdown(
-                    history_choices(service),
-                    value=[r["id"] for r in service.history()[:SLOTS]],
-                    multiselect=True,
-                    max_choices=SLOTS,
-                    label=f"Karşılaştırılacak üretimler (en fazla {SLOTS}; yeni üretimler başa eklenir)",
-                )
-                slot_components: list[Any] = []
-                with gr.Row(equal_height=False):
-                    for _ in range(SLOTS):
-                        with gr.Column(min_width=240):
-                            audio = gr.Audio(type="filepath", interactive=False, visible=False)
-                            info = gr.Markdown(visible=False)
-                            slot_components += [audio, info]
-                message = gr.Markdown()
+                    with gr.Tab("Sahneli anlatım"):
+                        lead(
+                            "Kısa bir anlatıyı sahnelere böl, her sahneye tür ve preset ver, hepsini tek WAV'da birleştir. "
+                            "Tüm sahneler aynı ses ve tohumla üretilir; yalnız stil, ritim ve duraklama değişir."
+                        )
+                        with gr.Accordion("Nasıl çalışır?", open=False):
+                            gr.Markdown(
+                                "Metni sahnelere ayır (`## Başlık`, `---` ya da `[sahne: Başlık]` işaretleri; işaret yoksa boş satırla "
+                                "ayrılmış paragraflar). Her sahneye tür ve preset ata; tür yalnız bir kısayoldur ve varsayılan preset'i "
+                                "seçer. Türler yerel anahtar kelimelerle *önerilir*, tablodan düzenlenebilir. Tüm sahneler **aynı profil, "
+                                "aynı VoxCPM2 varyantı ve aynı tohumla** üretilir; yalnız stil, ritim ve duraklama değişir. Birleştirmede "
+                                "kenar sessizlikleri kırpılır, sahneler arasına sabit duraklama konur ve ses seviyeleri ±6 dB içinde eşlenir.  \n"
+                                "Türler/preset'ler: " + ", ".join(f"`{kind}` → `{preset}`" for kind, (_label, preset) in SCENE_KINDS.items())
+                            )
+                        with gr.Group(elem_classes="vf-card"):
+                            section("Proje ve ses", "Yeni proje için ad verip metni sahnelere ayır ya da kayıtlı bir projeyi yükle.")
+                            with gr.Row(equal_height=True):
+                                scene_project_name = gr.Textbox(label="Proje adı", value="ilk-anlati", max_lines=1)
+                                scene_existing = gr.Dropdown(narrator.store.list(), label="Kayıtlı sahne projeleri", value=None)
+                                scene_load = gr.Button("Yükle", size="sm", min_width=100)
+                            with gr.Accordion("Sahne sesi ve duraklamalar", open=False):
+                                with gr.Row():
+                                    scene_profile = gr.Dropdown(profile_choices(), label="Ses profili", info="Tüm sahneler", value=None)
+                                    scene_variant = gr.Radio(
+                                        [("VoxCPM2 (stil destekli)", "voxcpm2"), ("VoxCPM2 Ultimate (stil yok)", "voxcpm2-ultimate")],
+                                        value="voxcpm2", label="Varyant",
+                                    )
+                                with gr.Row():
+                                    scene_seed = gr.Number(value=DEFAULT_SEED, precision=0, label="Tohum", info="Tüm sahneler")
+                                    scene_gap = gr.Slider(0.0, 2.0, value=0.8, step=0.05, label="Sahneler arası duraklama (sn)")
+                        with gr.Group(elem_classes="vf-card"):
+                            section("Anlatım metni")
+                            scene_text = gr.Textbox(label="Anlatım metni", show_label=False, value=SAMPLE_SCENES, lines=10, max_lines=30)
+                            with gr.Row(equal_height=True):
+                                scene_suggest = gr.Checkbox(value=True, label="Tür/preset öner (yerel, LLM yok)")
+                                scene_split = gr.Button("Sahnelere ayır", variant="secondary")
+                        scene_table = gr.Dataframe(
+                            headers=SCENE_HEADERS, datatype=["number", "str", "str", "str", "str", "str"], interactive=True,
+                            wrap=True, label="Sahneler · Başlık, Tür, Preset ve Metin düzenlenebilir", col_count=(len(SCENE_HEADERS), "fixed"),
+                        )
+                        gr.Markdown(
+                            "Geçerli türler: " + ", ".join(f"`{k}`" for k in SCENE_KINDS)
+                            + " · preset anahtarları için Hızlı ses ekranındaki gelişmiş ayarlara bakın (kullanıcı preset'leri `user-...`).",
+                            elem_classes="vf-hint",
+                        )
+                        with gr.Row(equal_height=True):
+                            scene_index = gr.Number(value=1, precision=0, label="Sahne no", min_width=110, scale=0)
+                            scene_generate_one = gr.Button("Bu sahneyi üret / yeniden üret")
+                            scene_merge = gr.Button("Tüm sahneleri tek WAV'da birleştir")
+                            scene_generate_all = gr.Button("Değişen/eksik sahneleri üret", variant="primary", elem_classes="vf-go")
+                        with gr.Row(equal_height=False):
+                            scene_audio = gr.Audio(label="Seçili sahne", type="filepath", interactive=False)
+                            scene_merged = gr.Audio(label="Birleşik anlatım", type="filepath", interactive=False)
+                            scene_file = gr.File(label="Birleşik WAV indir", interactive=False, height=72, elem_classes="vf-file")
+                        scene_message = gr.Markdown()
+                        scene_state = gr.State(None)
 
-            # =========================== Kalite ve take'ler (VF-018) ===========================
-            with gr.Tab("Kalite ve take'ler"):
-                quality_tab.build()
+            with gr.Tab("Kayıtlar"):
+                with gr.Tabs(elem_classes="vf-modes"):
+                    with gr.Tab("Yan yana dinle"):
+                        section("Karşılaştır", "Hızlı ses ekranındaki metni ve sesi kullanarak kayıtları yan yana dinle.")
+                        with gr.Accordion("Motorları karşılaştır", open=False):
+                            compare_variants = gr.CheckboxGroup(
+                                COMPARE_CHOICES,
+                                value=["xtts", "chatterbox-default", "chatterbox-minp"],
+                                label="Varyantlar",
+                                info="Motor sırasına göre üretilir, her model bir kez yüklenir. VoxCPM2 varsayılan/Ultimate panel ayarlarını kullanır.",
+                            )
+                            generate_many = gr.Button("Seçilenlerin hepsini üret")
+                        with gr.Accordion("VoxCPM2 preset’lerini karşılaştır", open=False):
+                            compare_presets = gr.CheckboxGroup(preset_choices(service), value=["normal", "yavas-anlatici"], label="Preset'ler")
+                            generate_presets = gr.Button("Seçilen preset'leri üret")
 
-            # ============================== Sahne anlatımı ==============================
-            with gr.Tab("Studio"):
-                studio.render()
+                        selected = gr.Dropdown(
+                            history_choices(service),
+                            value=[r["id"] for r in service.history()[:SLOTS]],
+                            multiselect=True,
+                            max_choices=SLOTS,
+                            label="Yan yana dinle",
+                            info=f"En fazla {SLOTS} üretim; yeni üretimler başa eklenir.",
+                        )
+                        slot_components: list[Any] = []
+                        with gr.Row(equal_height=False):
+                            for _ in range(SLOTS):
+                                with gr.Column(min_width=240):
+                                    audio = gr.Audio(type="filepath", interactive=False, visible=False)
+                                    info = gr.Markdown(visible=False, elem_classes="vf-slot")
+                                    slot_components += [audio, info]
+                        compare_message = gr.Markdown()
 
-            with gr.Tab("Sahne anlatımı"):
-                gr.Markdown(
-                    "Metni sahnelere ayır (`## Başlık`, `---` ya da `[sahne: Başlık]` işaretleri; işaret yoksa boş satırla "
-                    "ayrılmış paragraflar). Her sahneye tür ve preset ata; tür yalnız bir kısayoldur ve varsayılan preset'i "
-                    "seçer. Türler yerel anahtar kelimelerle *önerilir*, tablodan düzenlenebilir. Tüm sahneler **aynı profil, "
-                    "aynı VoxCPM2 varyantı ve aynı tohumla** üretilir; yalnız stil, ritim ve duraklama değişir. Birleştirmede "
-                    "kenar sessizlikleri kırpılır, sahneler arasına sabit duraklama konur ve ses seviyeleri ±6 dB içinde eşlenir.  \n"
-                    "Türler/preset'ler: " + ", ".join(f"`{kind}` → `{preset}`" for kind, (_label, preset) in SCENE_KINDS.items())
-                )
-                with gr.Row():
-                    scene_project_name = gr.Textbox(label="Proje adı", value="ilk-anlati", max_lines=1)
-                    scene_existing = gr.Dropdown(narrator.store.list(), label="Kayıtlı sahne projeleri", value=None)
-                    scene_load = gr.Button("Yükle", size="sm")
-                with gr.Row():
-                    scene_profile = gr.Dropdown(profile_choices(), label="Ses profili (tüm sahneler)", value=None)
-                    scene_variant = gr.Radio(
-                        [("VoxCPM2 (stil destekli)", "voxcpm2"), ("VoxCPM2 Ultimate (stil yok)", "voxcpm2-ultimate")],
-                        value="voxcpm2", label="Varyant",
-                    )
-                    scene_seed = gr.Number(value=DEFAULT_SEED, precision=0, label="Tohum (tüm sahneler)")
-                    scene_gap = gr.Slider(0.0, 2.0, value=0.8, step=0.05, label="Sahneler arası duraklama (sn)")
-                scene_text = gr.Textbox(label="Anlatım metni", value=SAMPLE_SCENES, lines=10, max_lines=30)
-                with gr.Row():
-                    scene_suggest = gr.Checkbox(value=True, label="Tür/preset öner (yerel, LLM yok)")
-                    scene_split = gr.Button("Sahnelere ayır", variant="secondary")
-                scene_table = gr.Dataframe(
-                    headers=SCENE_HEADERS, datatype=["number", "str", "str", "str", "str", "str"], interactive=True,
-                    wrap=True, label="Sahneler (Başlık, Tür, Preset ve Metin düzenlenebilir)", col_count=(len(SCENE_HEADERS), "fixed"),
-                )
-                gr.Markdown(
-                    "Geçerli türler: " + ", ".join(f"`{k}`" for k in SCENE_KINDS)
-                    + " · preset anahtarları için Playground'daki preset listesine bakın (kullanıcı preset'leri `user-...`)."
-                )
-                with gr.Row():
-                    scene_index = gr.Number(value=1, precision=0, label="Sahne no")
-                    scene_generate_one = gr.Button("Bu sahneyi üret / yeniden üret")
-                    scene_generate_all = gr.Button("Değişen/eksik sahneleri üret", variant="primary")
-                    scene_merge = gr.Button("Tüm sahneleri tek WAV'da birleştir")
-                with gr.Row():
-                    scene_audio = gr.Audio(label="Seçili sahne", type="filepath", interactive=False)
-                    scene_merged = gr.Audio(label="Birleşik anlatım", type="filepath", interactive=False)
-                    scene_file = gr.File(label="Birleşik WAV indir", interactive=False)
-                scene_message = gr.Markdown()
-                scene_state = gr.State(None)
+                    with gr.Tab("Kaliteyi denetle"):
+                        quality_tab.build()
 
         # -- Playground handlers -----------------------------------------------------------
         def on_engine(value: str, voxcpm_value: str) -> list[Any]:
@@ -423,8 +445,8 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
             last = records[-1] if records else None
             text_lines = [f"Hata — {e}" for e in errors]
             return [
-                last["wav"] if last else gr.update(),
-                last["wav"] if last else gr.update(),
+                gr.update(value=last["wav"], visible=True) if last else gr.update(),
+                gr.update(value=last["wav"], visible=True) if last else gr.update(),
                 describe(last) if last else gr.update(),
                 status_line(service),
                 gr.update(choices=history_choices(service), value=ids),
@@ -442,6 +464,8 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
             # Son çıktı: bu çağrıda üretilen kaydın kimliği (yoksa None). Otomatik kalite zinciri yalnız
             # bunu kullanır; üretim başarısızsa önceki seçim gösterilmeye devam eder ama denetlenmez.
             key = variant_for(engine_value, chatter_value, voxcpm_value)
+            if VARIANTS[key].needs_reference and not profile_value:
+                return [*after_records([], current, ["Seslendirmek için bir ses profili seçin."]), None]
             try:
                 controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
             except ControlError as exc:
@@ -488,6 +512,11 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
         panel = [cfg, steps, style, pacing, sentence_pause, paragraph_pause]
         engine.change(on_engine, [engine, voxcpm_setting], [chatterbox_setting, voxcpm_setting, reference_text, advanced])
         voxcpm_setting.change(on_voxcpm_setting, voxcpm_setting, reference_text)
+        def generation_button(engine_value, profile_value):
+            key = variant_for(engine_value, "chatterbox-default")
+            return gr.update(interactive=bool(profile_value) or not VARIANTS[key].needs_reference)
+
+        gr.on([engine.change, profile.change], generation_button, [engine, profile], generate)
         profile.change(on_profile, profile, reference_text)
         refresh_profiles.click(lambda: [gr.update(choices=profile_choices())] * 2, None, [profile, scene_profile])
         preset.change(on_preset, preset, [*panel, preset_text])
@@ -498,11 +527,12 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
             [text, engine, chatterbox_setting, voxcpm_setting, device, reference_text, profile, seed, normalize, preset, *panel, selected],
             [*outputs, generated_id],
         ).then(quality_tab.after_generation, [generated_id, auto_check, auto_retake, auto_count], [result_quality, *quality_tab.outputs])
+        comparison_outputs = [result_audio, result_file, result_info, status, selected, compare_message, *slot_components]
         generate_many.click(
-            on_generate_many, [text, compare_variants, device, reference_text, profile, seed, normalize, *panel, selected], outputs
+            on_generate_many, [text, compare_variants, device, reference_text, profile, seed, normalize, *panel, selected], comparison_outputs
         )
         generate_presets.click(
-            on_generate_presets, [text, compare_presets, device, profile, seed, normalize, selected], outputs
+            on_generate_presets, [text, compare_presets, device, profile, seed, normalize, selected], comparison_outputs
         )
         selected.change(lambda ids: slot_updates(service, list(ids or [])), selected, slot_components)
         unload.click(on_unload, None, [status, message])

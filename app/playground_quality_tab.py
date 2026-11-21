@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import gradio as gr
 
+from app.ui_theme import lead, section
 from voxforge.playground.quality import PlaygroundQuality
 from voxforge.quality.checks import describe_report, summarize
 from voxforge.quality.takes import DEFAULT_ALTERNATIVES, MAX_ALTERNATIVES, TakeError, rank_key, selection_stack
@@ -102,28 +103,38 @@ class QualityTab:
 
     # -- layout -------------------------------------------------------------------------
     def build(self) -> None:
-        gr.Markdown(INTRO)
-        with gr.Row():
-            self.record = gr.Dropdown(self.history_choices(), label="Üretim", value=None, scale=4)
-            refresh = gr.Button("Listeyi yenile", size="sm", scale=1)
-        with gr.Row():
-            force = gr.Checkbox(value=False, label="Önbelleği yok say, yeniden denetle")
-            check = gr.Button("Kalite denetimi yap", variant="secondary")
+        lead(
+            "Bir üretimi Whisper ve ses ölçümleriyle denetle, sorunlu bölüm için farklı tohumla alternatif take'ler üret "
+            "ve en iyisini seç. Hiçbir take silinmez, seçim her zaman sende."
+        )
+        with gr.Accordion("Nasıl çalışır?", open=False):
+            gr.Markdown(INTRO)
+        with gr.Group(elem_classes="vf-card"):
+            section("Kaydı denetle")
+            with gr.Row(equal_height=True):
+                self.record = gr.Dropdown(self.history_choices(), label="Üretim", value=None, scale=4)
+                refresh = gr.Button("Listeyi yenile", size="sm", scale=1, min_width=120)
+            with gr.Row(equal_height=True):
+                force = gr.Checkbox(value=False, label="Önbelleği yok say, yeniden denetle")
+                check = gr.Button("Kalite denetimi yap", variant="secondary")
         self.report = gr.Markdown()
-        with gr.Row():
-            self.sentence = gr.Dropdown([("Tüm metin", WHOLE_TEXT)], value=WHOLE_TEXT, label="Alternatif üretilecek bölüm (⚠️ = sorunlu cümle)", scale=3)
-            count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı (farklı tohum)", scale=2)
-            generate = gr.Button("Alternatif üret", variant="primary", scale=1)
+        with gr.Group(elem_classes="vf-card"):
+            section("Alternatif üret", "⚠️ işaretli cümleler sorunlu bulundu; yalnız onları yeniden üretebilirsin.")
+            with gr.Row(equal_height=True):
+                self.sentence = gr.Dropdown([("Tüm metin", WHOLE_TEXT)], value=WHOLE_TEXT, label="Alternatif üretilecek bölüm", scale=3)
+                count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı", info="Her biri farklı tohum", scale=2)
+                generate = gr.Button("Alternatif üret", variant="primary", scale=1)
+        section("Dinle ve seç")
         self.group = gr.Dropdown([], label="Take grubu", value=None)
         self.table = gr.Dataframe(headers=TAKE_HEADERS, interactive=False, wrap=True, label="Take'ler (hiçbiri silinmez)")
         with gr.Row(equal_height=False):
             for _ in range(TAKE_SLOTS):
                 with gr.Column(min_width=220):
-                    self.take_components += [gr.Audio(type="filepath", interactive=False, visible=False), gr.Markdown(visible=False)]
-        with gr.Row():
-            self.take = gr.Dropdown([], label="Take", value=None)
-            select = gr.Button("Bu take'i seç", variant="primary")
-            revert = gr.Button("Önceki seçime dön")
+                    self.take_components += [gr.Audio(type="filepath", interactive=False, visible=False), gr.Markdown(visible=False, elem_classes="vf-slot")]
+        with gr.Row(equal_height=True):
+            self.take = gr.Dropdown([], label="Take", value=None, scale=2)
+            select = gr.Button("Bu take'i seç", variant="primary", scale=1)
+            revert = gr.Button("Önceki seçime dön", scale=1)
         self.message = gr.Markdown()
 
         refresh.click(self.record_view, self.record, self.outputs)
