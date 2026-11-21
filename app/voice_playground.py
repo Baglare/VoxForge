@@ -43,10 +43,13 @@ from app.gradio_xtts_demo import (  # noqa: E402
     INFERENCE_PRESET_CHOICES,
     INFERENCE_PRESET_DEFAULT,
     INFERENCE_PRESET_KWARGS,
-    build_profile_dropdown_choices,
+    INFERENCE_PRESET_STABLE,
+    NO_PROFILE_VALUE,
     resolve_studio_reference,
 )
+from app.developer_tools_tab import build_developer_tools  # noqa: E402
 from app.studio_ui import build_studio  # noqa: E402
+from app.voice_library_tab import VoiceLibraryTab  # noqa: E402
 from app.ui_theme import CSS, THEME, hero, lead, section  # noqa: E402
 from voxforge.playground.quality import PlaygroundQuality  # noqa: E402
 from voxforge.playground.scenes import SCENE_KINDS, SceneNarrator, SceneProject, slugify, split_scenes  # noqa: E402
@@ -57,13 +60,15 @@ from voxforge.playground.service import (  # noqa: E402
     ENGINE_LABELS,
     MAX_TEXT_CHARS,
     VARIANTS,
+    PlaygroundError,
     PlaygroundService,
     describe,
-    list_profiles,
+    prepare_uploaded_reference,
 )
 from voxforge.quality.takes import DEFAULT_ALTERNATIVES, MAX_ALTERNATIVES  # noqa: E402
 from voxforge.studio import studio_root  # noqa: E402
-from voxforge.studio.service import StudioService  # noqa: E402
+from voxforge.studio.service import StudioError, StudioService  # noqa: E402
+from voxforge.voices import VoiceLibrary, VoiceLibraryError, is_design_key  # noqa: E402
 
 SLOTS = 4
 ENGINE_CHOICES = [(label, engine) for engine, label in ENGINE_LABELS.items()]
@@ -96,8 +101,26 @@ def variant_for(engine: str, chatterbox_setting: str, voxcpm_setting: str = "vox
     return next(v.key for v in VARIANTS.values() if v.engine == engine)
 
 
-def profile_choices() -> list[tuple[str, str]]:
-    return [(f"{p['name']} ({p['slug']})", p["slug"]) for p in list_profiles()]
+VOICE_SOURCE_CHOICES = [("Kütüphaneden ses", "library"), ("Tek seferlik referans yükle", "upload")]
+
+
+def profile_choices(library: VoiceLibrary | None = None) -> list[tuple[str, str]]:
+    """Every library voice: saved profiles and VoxCPM2 designs (``design:<id>``)."""
+    return (library or VoiceLibrary()).choices()
+
+
+def ab_choices(service: PlaygroundService, engine: str) -> tuple[list[tuple[str, str]], str | None]:
+    """Options for the B side of an A/B pair; same text, voice and seed, one setting changed."""
+    if engine == "xtts":
+        return [(f"XTTS · {mode}", f"xtts:{mode}") for mode in INFERENCE_PRESET_CHOICES], f"xtts:{INFERENCE_PRESET_STABLE}"
+    if engine == "voxcpm2":
+        choices = [(f"VoxCPM2 preset · {p.name}", f"preset:{key}") for key, p in service.presets.all().items()]
+        choices.append(("VoxCPM2 · hızlı (6 adım)", "variant:voxcpm2-fast"))
+        keys = [value for _label, value in choices]
+        return choices, "preset:yavas-anlatici" if "preset:yavas-anlatici" in keys else keys[0]
+    if engine == "chatterbox-v3":
+        return [(label, f"variant:{key}") for label, key in CHATTERBOX_CHOICES], "variant:chatterbox-minp"
+    return [("Mock · aynı ayar", "variant:mock")], "variant:mock"
 
 
 def preset_choices(service: PlaygroundService) -> list[tuple[str, str]]:
@@ -205,16 +228,39 @@ def apply_rows(project: SceneProject, rows: Any, presets: dict[str, Any]) -> Sce
     return project
 
 
-def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuality | None = None) -> gr.Blocks:
+def build_app(
+    service: PlaygroundService | None = None,
+    quality: PlaygroundQuality | None = None,
+    library: VoiceLibrary | None = None,
+) -> gr.Blocks:
     service = service or PlaygroundService()
     narrator = SceneNarrator(service)
     quality = quality or PlaygroundQuality(service)
     quality_tab = QualityTab(quality, lambda: history_choices(service))
+    studio_service = StudioService(studio_root(), manager=service.manager, quality=quality.director)
+    library = library or VoiceLibrary(designs=studio_service.designs)
+    library_tab = VoiceLibraryTab(library)
+
+    def voice_choices() -> list[tuple[str, str]]:
+        return profile_choices(library)
+
+    def studio_voice_choices() -> list[tuple[str, str]]:
+        return [("Profil yok", NO_PROFILE_VALUE), *voice_choices()]
+
+    def resolve_library_reference(key: str | None, upload: Any) -> Path | None:
+        """Studio: tasarım anahtarı kütüphaneden; profil/yükleme/varsayılan önceliği aynı kalır."""
+        if is_design_key(key):
+            try:
+                return library.reference(str(key))
+            except VoiceLibraryError as exc:
+                raise StudioError(str(exc)) from exc
+        return resolve_studio_reference(key, upload)
+
     studio = build_studio(
-        StudioService(studio_root(), manager=service.manager, quality=quality.director),
+        studio_service,
         engine_label="voxcpm2",
-        profile_choices=build_profile_dropdown_choices,
-        resolve_reference=resolve_studio_reference,
+        profile_choices=studio_voice_choices,
+        resolve_reference=resolve_library_reference,
         preset_choices=INFERENCE_PRESET_CHOICES,
         preset_kwargs=INFERENCE_PRESET_KWARGS,
         default_preset=INFERENCE_PRESET_DEFAULT,
@@ -225,24 +271,38 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
     with gr.Blocks(title="VoxForge Voice Playground", theme=THEME, css=CSS) as app:
         hero("VoxForge", "Ses atölyesi")
         with gr.Tabs(elem_classes="vf-tabs"):
-            with gr.Tab("Hızlı ses"):
+            with gr.Tab("Hızlı ses") as quick_tab:
                 with gr.Column(elem_classes="vf-sheet"):
                     section("Metni seslendir")
                     text = gr.Textbox(
                         label="Seslendirilecek metin", value=SAMPLE_TEXT, lines=5, max_lines=14,
                         info=f"En fazla {MAX_TEXT_CHARS} karakter.", elem_classes="vf-manuscript",
                     )
+                    with gr.Group(visible=False) as upload_group:
+                        upload_audio = gr.Audio(label="Tek seferlik referans ses", type="filepath")
+                        upload_permission = gr.Checkbox(label="Bu ses bana ait veya kullanma iznim var", value=False)
+                        gr.Markdown(
+                            "Yüklenen kayıt profillerle aynı güvenli ön işlemeden geçer ve yalnız bu üretimde kullanılır; "
+                            "kütüphaneye eklemek için **Ses kütüphanesi** sekmesini kullanın.",
+                            elem_classes="vf-hint",
+                        )
                     with gr.Row(equal_height=True):
                         profile = gr.Dropdown(
-                            profile_choices(), label="Ses profili", value=None, allow_custom_value=False,
+                            voice_choices(), label="Ses", value=None, allow_custom_value=False,
                             filterable=False, scale=4, min_width=180,
-                            info="İlk üretim için kayıtlı bir ses profili seç. Yalnız Mock motoru profilsiz çalışır.",
+                            info="Ses kütüphanesinden bir profil veya VoxCPM2 tasarım sesi seç. Yalnız Mock motoru sessiz çalışır.",
                         )
                         generate = gr.Button("Seslendir", interactive=False, variant="primary", size="lg", elem_classes="vf-go", scale=1, min_width=120)
                     message = gr.Markdown()
                 with gr.Accordion("Ses ve üretim ayarları", open=False):
-                    refresh_profiles = gr.Button("Profilleri yenile", size="sm")
+                    with gr.Row(equal_height=True):
+                        voice_source = gr.Radio(VOICE_SOURCE_CHOICES, value="library", label="Ses kaynağı", scale=3)
+                        refresh_profiles = gr.Button("Sesleri yenile", size="sm", scale=1, min_width=120)
                     engine = gr.Radio(ENGINE_CHOICES, value="voxcpm2", label="Seslendirme motoru")
+                    xtts_mode = gr.Dropdown(
+                        INFERENCE_PRESET_CHOICES, value=INFERENCE_PRESET_DEFAULT, label="XTTS üretim modu", visible=False,
+                        info="Eski XTTS demosundaki modlar; Dengeli motor varsayılanını kullanır.",
+                    )
                     chatterbox_setting = gr.Radio(CHATTERBOX_CHOICES, value="chatterbox-default", label="Chatterbox ayarı", visible=False)
                     voxcpm_setting = gr.Radio(VOXCPM_CHOICES, value="voxcpm2", label="VoxCPM2 ayarı")
                     reference_text = gr.Textbox(
@@ -287,20 +347,31 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                         with gr.Row():
                             seed = gr.Number(value=DEFAULT_SEED, precision=0, label="Tohum", info="Varsayılan 1234; -1 rastgele")
                             normalize = gr.Checkbox(value=True, label="Türkçe okunuş normalizasyonu (sayı, tarih, saat)")
+                        post_process = gr.Checkbox(value=False, label="Çıktı sesini normalize et (FFmpeg loudnorm; ham WAV korunur)")
                         with gr.Row():
                             auto_check = gr.Checkbox(value=True, label="Üretimden sonra kalite denetimi (Whisper CPU'da, VRAM kullanmaz)")
                             auto_retake = gr.Checkbox(value=True, label="Yalnız yüksek güvenli sorunda otomatik alternatif üret")
                         auto_count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı")
+                    with gr.Accordion("A/B karşılaştırma", open=False):
+                        ab_enabled = gr.Checkbox(value=False, label="Aynı metin, ses ve tohumla ikinci (B) çıktı üret")
+                        initial_ab, initial_ab_value = ab_choices(service, "voxcpm2")
+                        ab_choice = gr.Dropdown(initial_ab, value=initial_ab_value, label="B ayarı", info="A, yukarıdaki ayarlardır.")
                     with gr.Accordion("Motor durumu", open=False):
                         status = gr.Markdown(status_line(service), elem_classes="vf-status")
                         unload = gr.Button("Motoru ve kalite denetleyicisini kapat", size="sm")
                 generated_id = gr.State(None)
-                result_audio = gr.Audio(label="Son üretim", type="filepath", interactive=False, visible=False)
+                with gr.Row(equal_height=False):
+                    result_audio = gr.Audio(label="Son üretim", type="filepath", interactive=False, visible=False)
+                    result_b_audio = gr.Audio(label="B çıktısı", type="filepath", interactive=False, visible=False)
                 result_quality = gr.Markdown()
                 result_file = gr.File(label="WAV indir", interactive=False, visible=False, elem_classes="vf-file")
                 result_info = gr.Markdown(elem_classes="vf-status")
+                result_b_info = gr.Markdown(visible=False, elem_classes="vf-status")
 
-            with gr.Tab("Projeler"):
+            with gr.Tab("Ses kütüphanesi") as library_tab_ui:
+                library_tab.build()
+
+            with gr.Tab("Projeler") as projects_tab:
                 with gr.Tabs(elem_classes="vf-modes"):
                     with gr.Tab("Sesli kitap"):
                         studio.render()
@@ -327,7 +398,7 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                                 scene_load = gr.Button("Yükle", size="sm", min_width=100)
                             with gr.Accordion("Sahne sesi ve duraklamalar", open=False):
                                 with gr.Row():
-                                    scene_profile = gr.Dropdown(profile_choices(), label="Ses profili", info="Tüm sahneler", value=None)
+                                    scene_profile = gr.Dropdown(voice_choices(), label="Ses", info="Tüm sahneler", value=None)
                                     scene_variant = gr.Radio(
                                         [("VoxCPM2 (stil destekli)", "voxcpm2"), ("VoxCPM2 Ultimate (stil yok)", "voxcpm2-ultimate")],
                                         value="voxcpm2", label="Varyant",
@@ -398,6 +469,9 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                     with gr.Tab("Kaliteyi denetle"):
                         quality_tab.build()
 
+            with gr.Tab("Geliştirici"):
+                build_developer_tools()
+
         # -- Playground handlers -----------------------------------------------------------
         def on_engine(value: str, voxcpm_value: str) -> list[Any]:
             is_vox = value == "voxcpm2"
@@ -439,11 +513,14 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
             choices = preset_choices(service)
             return gr.update(choices=choices, value="normal"), gr.update(choices=choices), f"Silindi: `{key}`."
 
-        def after_records(records: list[dict[str, Any]], current: list[str] | None, errors: list[str]) -> list[Any]:
+        def after_records(
+            records: list[dict[str, Any]], current: list[str] | None, errors: list[str],
+            primary: dict[str, Any] | None = None, notes: list[str] | None = None,
+        ) -> list[Any]:
             new_ids = [r["id"] for r in records]
             ids = list(dict.fromkeys(new_ids + list(current or [])))[:SLOTS]
-            last = records[-1] if records else None
-            text_lines = [f"Hata — {e}" for e in errors]
+            last = primary or (records[-1] if records else None)
+            text_lines = [*(notes or []), *(f"Hata — {e}" for e in errors)]
             return [
                 gr.update(value=last["wav"], visible=True) if last else gr.update(),
                 gr.update(value=last["wav"], visible=True) if last else gr.update(),
@@ -457,25 +534,83 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
         def panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) -> VoxControls:
             return controls_from(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v)
 
+        def quick_result(records, current, errors, primary=None, b_record=None, notes=None) -> list[Any]:
+            """Hızlı ses çıktıları: kayıt alanları, B çıktısı ve (en sonda) A kaydının kimliği."""
+            b_outputs = (
+                [gr.update(value=b_record["wav"], visible=True),
+                 gr.update(value="#### B çıktısı\n" + describe(b_record), visible=True)]
+                if b_record else [gr.update(value=None, visible=False), gr.update(value="", visible=False)]
+            )
+            return [*after_records(records, current, errors, primary=primary, notes=notes), *b_outputs,
+                    primary["id"] if primary else None]
+
+        def generate_b(choice, text_value, profile_value, reference, seed_value, normalize_value, device_value, transcript, post):
+            kind, _, value = (choice or "").partition(":")
+            common = {"seed": seed_value, "normalize": normalize_value, "device": device_value, "reference": reference, "post_process": post}
+            if kind == "xtts" and value in INFERENCE_PRESET_KWARGS:
+                return service.generate(text_value, "xtts", profile_value, engine_settings=INFERENCE_PRESET_KWARGS[value],
+                                        preset_key=f"xtts:{value}", **common)
+            if kind == "preset":
+                return service.generate(text_value, "voxcpm2", profile_value, controls=service.presets.get(value).controls,
+                                        preset_key=value, **common)
+            if kind == "variant" and value in VARIANTS:
+                return service.generate(text_value, value, profile_value, reference_text=transcript, **common)
+            raise PlaygroundError("B ayarı seçin.")
+
         def on_generate(
             text_value, engine_value, chatter_value, voxcpm_value, device_value, transcript, profile_value, seed_value,
             normalize_value, preset_value, cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v, current,
+            source_value="library", upload_value=None, permission_value=False, xtts_mode_value=INFERENCE_PRESET_DEFAULT,
+            post_value=False, ab_value=False, ab_choice_value=None,
         ):
-            # Son çıktı: bu çağrıda üretilen kaydın kimliği (yoksa None). Otomatik kalite zinciri yalnız
+            # Son çıktı: bu çağrıda üretilen A kaydının kimliği (yoksa None). Otomatik kalite zinciri yalnız
             # bunu kullanır; üretim başarısızsa önceki seçim gösterilmeye devam eder ama denetlenmez.
             key = variant_for(engine_value, chatter_value, voxcpm_value)
-            if VARIANTS[key].needs_reference and not profile_value:
-                return [*after_records([], current, ["Seslendirmek için bir ses profili seçin."]), None]
+            needs_reference = VARIANTS[key].needs_reference
+            reference, notes = None, []
+            use_upload = source_value == "upload" and needs_reference
+            if use_upload:
+                if not permission_value:
+                    return quick_result([], current, ["Tek seferlik referans için sesin size ait olduğunu veya izniniz olduğunu onaylayın."])
+                try:
+                    reference, info = prepare_uploaded_reference(upload_value, service.root / "references")
+                except PlaygroundError as exc:
+                    return quick_result([], current, [str(exc)])
+                profile_value = None  # kayıt tek seferlik referansı gösterir, profili değil
+                notes.append(
+                    f"Tek seferlik referans · ön işleme `{info.get('variant')}` · kalite {info.get('quality') or '—'}"
+                    + (f" · uyarı: {info['warning']}" if info.get("warning") else "")
+                )
+            elif needs_reference and not profile_value:
+                return quick_result([], current, ["Seslendirmek için kütüphaneden bir ses seçin."])
             try:
                 controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
             except ControlError as exc:
-                return [*after_records([], current, [str(exc)]), None]
+                return quick_result([], current, [str(exc)])
+            mode = xtts_mode_value if xtts_mode_value in INFERENCE_PRESET_KWARGS else INFERENCE_PRESET_DEFAULT
+            is_xtts = VARIANTS[key].engine == "xtts"
+            if is_xtts and mode != INFERENCE_PRESET_DEFAULT:
+                preset_key = f"xtts:{mode}"
+            else:
+                preset_key = preset_value if controls is not None and not controls.is_default() else None
             records, errors = service.generate_many(
                 text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value,
-                device=device_value or "cuda", reference_text=transcript, controls=controls,
-                preset_key=preset_value if controls is not None and not controls.is_default() else None,
+                device=device_value or "cuda", reference_text=transcript, controls=controls, preset_key=preset_key,
+                reference=reference, engine_settings=INFERENCE_PRESET_KWARGS[mode] if is_xtts else None,
+                post_process=bool(post_value),
             )
-            return [*after_records(records, current, errors), records[-1]["id"] if records else None]
+            primary = records[-1] if records else None
+            b_record = None
+            if ab_value and primary:
+                try:
+                    b_record = generate_b(
+                        ab_choice_value, text_value, profile_value, reference, (primary.get("settings") or {}).get("seed"),
+                        normalize_value, device_value or "cuda", transcript, bool(post_value),
+                    )
+                    records.append(b_record)
+                except Exception as exc:  # noqa: BLE001 - A korunur, B hatası gösterilir
+                    errors.append(f"B çıktısı: {exc}")
+            return quick_result(records, current, errors, primary=primary, b_record=b_record, notes=notes)
 
         def on_generate_many(
             text_value, keys, device_value, transcript, profile_value, seed_value, normalize_value,
@@ -512,20 +647,36 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
         panel = [cfg, steps, style, pacing, sentence_pause, paragraph_pause]
         engine.change(on_engine, [engine, voxcpm_setting], [chatterbox_setting, voxcpm_setting, reference_text, advanced])
         voxcpm_setting.change(on_voxcpm_setting, voxcpm_setting, reference_text)
-        def generation_button(engine_value, profile_value):
+        def generation_button(engine_value, profile_value, source_value="library", upload_value=None):
             key = variant_for(engine_value, "chatterbox-default")
-            return gr.update(interactive=bool(profile_value) or not VARIANTS[key].needs_reference)
+            if not VARIANTS[key].needs_reference:
+                return gr.update(interactive=True)
+            ready = bool(upload_value) if source_value == "upload" else bool(profile_value)
+            return gr.update(interactive=ready)
 
-        gr.on([engine.change, profile.change], generation_button, [engine, profile], generate)
+        def on_voice_source(value):
+            upload = value == "upload"
+            return gr.update(visible=not upload), gr.update(visible=upload)
+
+        def on_engine_extras(value):
+            choices, default_value = ab_choices(service, value)
+            return gr.update(visible=value == "xtts"), gr.update(choices=choices, value=default_value)
+
+        gr.on(
+            [engine.change, profile.change, voice_source.change, upload_audio.change],
+            generation_button, [engine, profile, voice_source, upload_audio], generate,
+        )
+        voice_source.change(on_voice_source, voice_source, [profile, upload_group])
+        engine.change(on_engine_extras, engine, [xtts_mode, ab_choice])
         profile.change(on_profile, profile, reference_text)
-        refresh_profiles.click(lambda: [gr.update(choices=profile_choices())] * 2, None, [profile, scene_profile])
         preset.change(on_preset, preset, [*panel, preset_text])
         preset_save.click(on_preset_save, [preset_name, *panel], [preset, compare_presets, preset_text])
         preset_delete.click(on_preset_delete, preset, [preset, compare_presets, preset_text])
         generate.click(
             on_generate,
-            [text, engine, chatterbox_setting, voxcpm_setting, device, reference_text, profile, seed, normalize, preset, *panel, selected],
-            [*outputs, generated_id],
+            [text, engine, chatterbox_setting, voxcpm_setting, device, reference_text, profile, seed, normalize, preset, *panel, selected,
+             voice_source, upload_audio, upload_permission, xtts_mode, post_process, ab_enabled, ab_choice],
+            [*outputs, result_b_audio, result_b_info, generated_id],
         ).then(quality_tab.after_generation, [generated_id, auto_check, auto_retake, auto_count], [result_quality, *quality_tab.outputs])
         comparison_outputs = [result_audio, result_file, result_info, status, selected, compare_message, *slot_components]
         generate_many.click(
@@ -649,6 +800,22 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
         scene_generate_all.click(on_scene_generate_all, [*scene_common, device], scene_out)
         scene_merge.click(on_scene_merge, [*scene_common, device], scene_out)
         scene_table.select(on_scene_select, scene_state, [scene_audio, scene_index])
+
+        # -- Ses kütüphanesi: tüm ses menüleri aynı kaynaktan ve otomatik güncellenir ------------
+        library_tab.refresh_targets = [(profile, voice_choices, None), (scene_profile, voice_choices, None)]
+        library_tab.refresh_targets += [(dropdown, studio_voice_choices, NO_PROFILE_VALUE) for dropdown in studio.voice_dropdowns]
+        if studio.design_dropdown is not None:
+            library_tab.refresh_targets.append((studio.design_dropdown, studio.design_choices, None))
+        library_tab.wire()
+        voice_targets = [component for component, _fn, _empty in library_tab.refresh_targets]
+
+        def refresh_voice_menus(*current):
+            return library_tab.target_updates(list(current))
+
+        refresh_profiles.click(refresh_voice_menus, voice_targets, voice_targets)
+        quick_tab.select(refresh_voice_menus, voice_targets, voice_targets)
+        projects_tab.select(refresh_voice_menus, voice_targets, voice_targets)
+        library_tab_ui.select(lambda key: library_tab.refreshed(key, "", []), library_tab.selector, library_tab.view_components())
 
     app.queue(default_concurrency_limit=1)
     return app
