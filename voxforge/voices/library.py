@@ -212,18 +212,39 @@ class VoiceLibrary:
         stamp = utc_now_iso().replace(":", "").replace("-", "").replace(".", "")
         return self.trash_root / group / f"{key}-{stamp}"
 
-    def replace_reference(self, key: str, audio: Any, permission: bool) -> None:
+    def replace_reference(self, key: str, audio: Any, permission: bool) -> str | None:
+        """Replace a profile reference; returns a warning if the old files stayed in the profile."""
         if is_design_key(key):
             raise VoiceLibraryError("Tasarım sesleri değiştirilemez; yeni sürüm kaydedin.")
         self._require_permission(permission)
-        self._profile_call(
+        result = self._profile_call(
             "replace_voice_profile_reference", key, self._audio_path(audio),
             keep_previous_dir=self._trash_slot("replaced-references", key),
+        )
+        return result.archive_warning
+
+    def pending_replacements(self) -> dict[str, int]:
+        """Profiles holding an unfinished or unarchived reference-replacement backup."""
+        utils = self._utils()
+        pending = {}
+        for item in self.entries():
+            if item["kind"] == "profile":
+                count = len(utils.pending_profile_replacements(item["key"]))
+                if count:
+                    pending[item["key"]] = count
+        return pending
+
+    def recover_replacements(self, key: str) -> list[str]:
+        if is_design_key(key):
+            return []
+        return self._profile_call(
+            "recover_profile_replacement", key, self._trash_slot("replaced-references", key),
         )
 
     def reprocess(self, key: str) -> None:
         if is_design_key(key):
             raise VoiceLibraryError("Tasarım sesleri yeniden işlenmez.")
+        self.recover_replacements(key)  # yarıda kalan değişim önce tamamlanır veya geri alınır
         self._profile_call("recreate_voice_profile", key)
 
     def delete(self, key: str, confirmation: str) -> Path:

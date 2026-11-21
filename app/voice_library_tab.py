@@ -70,11 +70,19 @@ class VoiceLibraryTab:
         ]
 
     def broken_text(self) -> str:
+        lines = []
         broken = self.library.broken_profiles()
-        if not broken:
-            return ""
-        names = ", ".join(f"`{item['profile_slug']}` ({'; '.join(item.get('issues') or [])})" for item in broken)
-        return f"Kullanılamayan profil klasörleri (listeye alınmadı): {names}"
+        if broken:
+            names = ", ".join(f"`{item['profile_slug']}` ({'; '.join(item.get('issues') or [])})" for item in broken)
+            lines.append(f"Kullanılamayan profil klasörleri (listeye alınmadı): {names}")
+        pending = self.library.pending_replacements()
+        if pending:
+            names = ", ".join(f"`{slug}`" for slug in pending)
+            lines.append(
+                f"Yarıda kalmış veya arşivlenmemiş referans yedeği: {names}. Eski dosyalar profil klasöründe korunuyor; "
+                "o profili yeniden işlemek veya referansını değiştirmek önce yedeği güvenle tamamlar."
+            )
+        return "  \n".join(lines)
 
     def _entry(self, key: str | None) -> dict[str, Any] | None:
         if not key:
@@ -212,8 +220,8 @@ class VoiceLibraryTab:
 
         def on_replace(key, audio, permission, *current):
             def action():
-                self.library.replace_reference(key, audio, bool(permission))
-                return key, "Referans değiştirildi ve yeniden işlendi."
+                warning = self.library.replace_reference(key, audio, bool(permission))
+                return key, "Referans değiştirildi ve yeniden işlendi." + (f" ⚠️ {warning}" if warning else "")
             return run(action, key, list(current))
 
         def on_reprocess(key, *current):

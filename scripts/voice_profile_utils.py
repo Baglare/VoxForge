@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -66,6 +68,7 @@ class VoiceProfileResult:
     selected_preprocessing_variant: str
     preprocessing_warning: str | None
     preprocessing_candidate_reports: dict[str, Any]
+    archive_warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -600,6 +603,121 @@ def rename_voice_profile(profile_slug: str, new_name: str) -> VoiceProfileRecord
     return get_voice_profile(profile_slug)
 
 
+REPLACEMENT_BACKUP_PREFIX = ".replace.backup-"
+REPLACEMENT_STAGING_NAME = ".replace.tmp"
+REPLACEMENT_JOURNAL_NAME = "journal.json"
+PROFILE_FILE_NAMES = (ORIGINAL_REFERENCE_NAME, PREPROCESSED_REFERENCE_NAME, PROFILE_JSON_NAME)
+
+# Dosya islemleri tek noktadan gecer; hata enjeksiyonlu testler bunlari degistirir.
+_replace_file = os.replace
+_copy_file = shutil.copy2
+_move_tree = shutil.move
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_journal(backup_dir: Path, journal: dict[str, Any]) -> None:
+    temporary = backup_dir / (REPLACEMENT_JOURNAL_NAME + ".partial")
+    temporary.write_text(json.dumps(journal, ensure_ascii=False, indent=2), encoding="utf-8")
+    _replace_file(temporary, backup_dir / REPLACEMENT_JOURNAL_NAME)
+
+
+def _read_journal(backup_dir: Path) -> dict[str, Any] | None:
+    try:
+        journal = json.loads((backup_dir / REPLACEMENT_JOURNAL_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return journal if isinstance(journal, dict) and isinstance(journal.get("files"), dict) else None
+
+
+def pending_profile_replacements(profile_slug: str) -> list[Path]:
+    """Profil icinde tamamlanmamis veya arsivlenmemis referans degisimi yedekleri."""
+    profile_dir = resolve_profile_dir(profile_slug)
+    if not profile_dir.is_dir():
+        return []
+    return sorted(path for path in profile_dir.glob(REPLACEMENT_BACKUP_PREFIX + "*") if path.is_dir())
+
+
+def _restore_from_backup(profile_dir: Path, backup_dir: Path, journal: dict[str, Any]) -> None:
+    """Yedekteki eski dosyalari hash dogrulayarak geri koyar; yedek yalniz basarida silinir."""
+    for name, expected in journal["files"].items():
+        source = backup_dir / name
+        if not source.is_file() or _file_sha256(source) != expected:
+            raise VoiceProfileError(
+                f"Yedekteki {name} eksik veya degismis; yedek klasoru korundu: {backup_dir}"
+            )
+    for name, expected in journal["files"].items():
+        target = profile_dir / name
+        if target.is_file() and _file_sha256(target) == expected:
+            continue
+        temporary = profile_dir / f".{name}.restore"
+        _copy_file(backup_dir / name, temporary)
+        _replace_file(temporary, target)
+        if _file_sha256(target) != expected:
+            raise VoiceProfileError(f"{name} geri yuklenemedi; yedek klasoru korundu: {backup_dir}")
+    journal["state"] = "restored"
+    _write_journal(backup_dir, journal)
+    shutil.rmtree(backup_dir)
+
+
+def _archive_backup(backup_dir: Path, keep_previous_dir: Path | None) -> str | None:
+    """Basarili degisimden sonra eski dosyalari cop kutusuna tasir.
+
+    Tasima basarisiz olursa yedek profil klasorunde ``committed`` durumunda kalir ve
+    hicbir dosya silinmez; uyari metni dondurulur.
+    """
+    if keep_previous_dir is None:
+        shutil.rmtree(backup_dir)
+        return None
+    try:
+        keep_previous_dir.parent.mkdir(parents=True, exist_ok=True)
+        if keep_previous_dir.exists():
+            raise FileExistsError(str(keep_previous_dir))
+        _move_tree(str(backup_dir), str(keep_previous_dir))
+    except OSError as exc:
+        if not backup_dir.is_dir():
+            # Tasima kaynagi silip hedefi tamamlamadiysa durum belirsizdir; bunu gizleme.
+            raise VoiceProfileError(f"Eski referans arsivi dogrulanamadi: {exc}") from exc
+        return (
+            "Eski referans cop kutusuna tasinamadi; profil klasorunde korundu "
+            f"({backup_dir.name}). Ayrinti: {exc}"
+        )
+    return None
+
+
+def recover_profile_replacement(profile_slug: str, keep_previous_dir: Path | None = None) -> list[str]:
+    """Yarida kalmis referans degisimlerini guvenli duruma getirir.
+
+    ``prepared``/``swapping`` durumundaki yedek eski dosyalari geri koyar (degisim hic
+    olmamis gibi). ``committed`` durumundaki yedek yeni profil gecerli oldugu icin yalniz
+    arsivlenir. Gunlugu okunamayan yedek dokunulmadan birakilir.
+    """
+    profile_dir = resolve_profile_dir(profile_slug)
+    messages: list[str] = []
+    for backup_dir in pending_profile_replacements(profile_slug):
+        journal = _read_journal(backup_dir)
+        if journal is None:
+            messages.append(f"Gunlugu okunamayan yedek korundu: {backup_dir.name}")
+            continue
+        state = journal.get("state")
+        if state == "committed":
+            # Her yedek kendi zaman damgalı adına gider; aynı çağrıdaki yeni arşivle çakışmaz.
+            stamp = backup_dir.name.removeprefix(REPLACEMENT_BACKUP_PREFIX)
+            target = keep_previous_dir.with_name(f"{keep_previous_dir.name}-recovered-{stamp}") if keep_previous_dir else None
+            warning = _archive_backup(backup_dir, target)
+            messages.append(warning or f"Tamamlanmis degisimin eski referansi arsivlendi: {backup_dir.name}")
+        else:
+            _restore_from_backup(profile_dir, backup_dir, journal)
+            messages.append(f"Yarida kalan degisim geri alindi, eski referans korundu: {backup_dir.name}")
+    return messages
+
+
 def replace_voice_profile_reference(
     profile_slug: str,
     input_audio_path: str | Path,
@@ -607,23 +725,30 @@ def replace_voice_profile_reference(
 ) -> VoiceProfileResult:
     """Profilin referans sesini yenisiyle degistirir ve yeniden on isler.
 
-    Yeni dosyalar once profil icindeki gecici klasorde hazirlanir; on isleme basarisizsa
-    mevcut profil hic degismez. Degisim sirasinda hata olursa eski dosyalar geri konur.
-    ``keep_previous_dir`` verilirse eski referanslar ve profile.json oraya tasinir.
+    Akis (her adim kurtarilabilir):
+    1. Yeni dosyalar ``.replace.tmp`` icinde hazirlanir; basarisizsa profil hic degismez.
+    2. Eski uc dosya ``.replace.backup-<zaman>`` klasorune KOPYALANIR, hash'leri gunluge
+       yazilir (``prepared``). Profil dosyalari bu noktada hala eskidir.
+    3. Gunluk ``swapping`` olur, yeni dosyalar ``os.replace`` ile yerine konur, sonra
+       ``committed`` yazilir. Hata olursa eski dosyalar yedekten hash dogrulanarak geri konur;
+       geri koyma da basarisizsa yedek ve gunluk korunur.
+    4. Yedek ``keep_previous_dir`` altina tasinir. Tasima basarisiz olursa yedek profil
+       klasorunde kalir ve uyari dondurulur; eski kayit hicbir yolda silinmez.
+    Kesilen bir islem ``recover_profile_replacement`` ile (bir sonraki degisimde otomatik)
+    tamamlanir veya geri alinir.
     """
+    recover_profile_replacement(profile_slug, keep_previous_dir)
     profile = get_voice_profile(profile_slug)
     source_audio = resolve_input_path(input_audio_path)
     if not source_audio.is_file():
         raise VoiceProfileError(f"Giris ses dosyasi bulunamadi: {source_audio}")
 
-    staging = profile.profile_dir / ".replace.tmp"
-    backup = profile.profile_dir / ".replace.backup"
-    shutil.rmtree(staging, ignore_errors=True)
-    shutil.rmtree(backup, ignore_errors=True)
+    staging = profile.profile_dir / REPLACEMENT_STAGING_NAME
+    shutil.rmtree(staging, ignore_errors=True)  # yalniz yeni (henuz kullanilmamis) dosyalar
     staging.mkdir()
     try:
         staged_original = staging / ORIGINAL_REFERENCE_NAME
-        shutil.copy2(source_audio, staged_original)
+        _copy_file(source_audio, staged_original)
         try:
             preprocessing_result = preprocess_reference_audio(
                 staged_original, staging / PREPROCESSED_REFERENCE_NAME, mode="safe"
@@ -637,41 +762,66 @@ def replace_voice_profile_reference(
         staged_preprocessed = Path(preprocessing_result["selected_output_path"])
         if original_quality is None or preprocessed_quality is None or not staged_preprocessed.is_file():
             raise VoiceProfileError("On isleme kalite raporu veya referans dosyasi eksik olustu.")
+        if staged_preprocessed.name != PREPROCESSED_REFERENCE_NAME:
+            _replace_file(staged_preprocessed, staging / PREPROCESSED_REFERENCE_NAME)
+            staged_preprocessed = staging / PREPROCESSED_REFERENCE_NAME
 
-        backup.mkdir()
-        moved: list[Path] = []
+        payload = build_profile_payload(
+            profile_name=profile.profile_name,
+            profile_slug=profile.profile_slug,
+            original_reference=profile.original_reference,
+            preprocessed_reference=profile.preprocessed_reference,
+            original_quality=original_quality,
+            preprocessed_quality=preprocessed_quality,
+            selected_preprocessing_variant=selected_variant,
+            preprocessing_warning=preprocessing_result.get("preprocessing_warning"),
+            preprocessing_candidate_reports=candidate_reports,
+        )
+        payload["created_at"] = profile.metadata.get("created_at") or payload["created_at"]
+        payload["reference_replaced_at"] = datetime.now(timezone.utc).isoformat()
+        (staging / PROFILE_JSON_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_dir = profile.profile_dir / f"{REPLACEMENT_BACKUP_PREFIX}{stamp}"
+        backup_dir.mkdir()
+        journal: dict[str, Any] = {"state": "copying", "created_at": stamp, "files": {}}
+        _write_journal(backup_dir, journal)
+        for name in PROFILE_FILE_NAMES:
+            _copy_file(profile.profile_dir / name, backup_dir / name)
+            journal["files"][name] = _file_sha256(profile.profile_dir / name)
+            if _file_sha256(backup_dir / name) != journal["files"][name]:
+                raise VoiceProfileError(f"{name} yedegi dogrulanamadi; profil degistirilmedi.")
+        journal["state"] = "prepared"
+        _write_journal(backup_dir, journal)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        # Profil dosyalari henuz degismedi; tamamlanmamis kopya yalniz yedek olarak kalabilir.
+        if "backup_dir" in locals() and backup_dir.is_dir() and (_read_journal(backup_dir) or {}).get("state") != "prepared":
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+
+    try:
+        journal["state"] = "swapping"
+        _write_journal(backup_dir, journal)
+        for name in PROFILE_FILE_NAMES:
+            _replace_file(staging / name, profile.profile_dir / name)
+        journal["state"] = "committed"
+        _write_journal(backup_dir, journal)
+    except BaseException as exc:
         try:
-            for path in (profile.original_reference, profile.preprocessed_reference, profile.profile_json_path):
-                shutil.move(str(path), str(backup / path.name))
-                moved.append(path)
-            shutil.move(str(staged_original), str(profile.original_reference))
-            shutil.move(str(staged_preprocessed), str(profile.preprocessed_reference))
-            payload = build_profile_payload(
-                profile_name=profile.profile_name,
-                profile_slug=profile.profile_slug,
-                original_reference=profile.original_reference,
-                preprocessed_reference=profile.preprocessed_reference,
-                original_quality=original_quality,
-                preprocessed_quality=preprocessed_quality,
-                selected_preprocessing_variant=selected_variant,
-                preprocessing_warning=preprocessing_result.get("preprocessing_warning"),
-                preprocessing_candidate_reports=candidate_reports,
-            )
-            payload["created_at"] = profile.metadata.get("created_at") or payload["created_at"]
-            payload["reference_replaced_at"] = datetime.now(timezone.utc).isoformat()
-            _write_profile_json(profile.profile_json_path, payload)
-        except BaseException:
-            for path in moved:
-                path.unlink(missing_ok=True)
-                shutil.move(str(backup / path.name), str(path))
-            raise
-        if keep_previous_dir is not None:
-            keep_previous_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(backup), str(keep_previous_dir))
+            _restore_from_backup(profile.profile_dir, backup_dir, journal)
+        except BaseException as restore_exc:
+            raise VoiceProfileError(
+                "Referans degisimi yarida kaldi ve eski dosyalar geri konamadi. Hicbir sey silinmedi; "
+                f"yedek: {backup_dir}. Bir sonraki islemde otomatik kurtarilir. Ayrinti: {restore_exc}"
+            ) from exc
+        if isinstance(exc, (OSError, VoiceProfileError)):
+            raise VoiceProfileError(f"Referans degistirilemedi, eski referans geri kondu: {exc}") from exc
+        raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(backup, ignore_errors=True)
 
+    archive_warning = _archive_backup(backup_dir, keep_previous_dir)
     return VoiceProfileResult(
         profile_name=profile.profile_name,
         profile_slug=profile.profile_slug,
@@ -685,6 +835,7 @@ def replace_voice_profile_reference(
         selected_preprocessing_variant=selected_variant,
         preprocessing_warning=preprocessing_result.get("preprocessing_warning"),
         preprocessing_candidate_reports=candidate_reports,
+        archive_warning=archive_warning,
     )
 
 

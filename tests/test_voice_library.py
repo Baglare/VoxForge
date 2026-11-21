@@ -209,3 +209,119 @@ class PlaygroundLibraryTest(LibraryFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplaceRecoveryTest(LibraryFixture):
+    """Fault injection: the old reference must survive every failure and interruption."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.slug = self.library.create_profile("Ses", self.source, permission=True)
+        self.folder = self.profiles / self.slug
+        self.before = self.snapshot()
+        self.new_source = write_wav(self.tmp / "new.wav", seconds=0.7, value=9)
+        self.real_replace, self.real_copy, self.real_move = vpu._replace_file, vpu._copy_file, vpu._move_tree
+
+    def snapshot(self) -> dict[str, bytes]:
+        return {name: (self.folder / name).read_bytes() for name in vpu.PROFILE_FILE_NAMES}
+
+    def backups(self) -> list[Path]:
+        return vpu.pending_profile_replacements(self.slug)
+
+    def fail_swap_of(self, name: str):
+        def replace(src, dst):
+            if Path(src).parent.name == vpu.REPLACEMENT_STAGING_NAME and Path(dst).name == name:
+                raise OSError("enjekte: dosya kilitli")
+            return self.real_replace(src, dst)
+        return replace
+
+    def test_failed_archive_keeps_old_files_in_profile(self) -> None:
+        def move(*_args):
+            raise OSError("enjekte: çöp kutusu yazılamaz")
+
+        with patch.object(vpu, "_move_tree", move):
+            warning = self.library.replace_reference(self.slug, self.new_source, permission=True)
+        self.assertIn("korundu", warning)
+        self.assertEqual((self.folder / "original_reference.wav").read_bytes(), self.new_source.read_bytes())
+        [backup] = self.backups()
+        self.assertEqual({n: (backup / n).read_bytes() for n in vpu.PROFILE_FILE_NAMES}, self.before)
+        self.assertEqual(vpu._read_journal(backup)["state"], "committed")
+        self.assertEqual(self.library.pending_replacements(), {self.slug: 1})
+        # Sonraki işlem yedeği güvenle arşivler; yeni profil olduğu gibi kalır.
+        self.library.recover_replacements(self.slug)
+        self.assertEqual(self.backups(), [])
+        [kept] = (self.tmp / "trash" / "replaced-references").glob(f"{self.slug}-*")
+        self.assertEqual((kept / "original_reference.wav").read_bytes(), self.source.read_bytes())
+        self.assertEqual((self.folder / "original_reference.wav").read_bytes(), self.new_source.read_bytes())
+
+    def test_partial_archive_move_is_not_reported_as_safe(self) -> None:
+        def move(src, dst):
+            Path(dst).mkdir(parents=True)
+            raise OSError("enjekte: kopya yarıda kaldı")
+
+        with patch.object(vpu, "_move_tree", move):
+            self.library.replace_reference(self.slug, self.new_source, permission=True)
+        [backup] = self.backups()  # kaynak silinmedi, hedef yarım
+        self.assertEqual((backup / "original_reference.wav").read_bytes(), self.source.read_bytes())
+
+    def test_swap_failure_restores_old_files(self) -> None:
+        with patch.object(vpu, "_replace_file", self.fail_swap_of("preprocessed_reference.wav")):
+            with self.assertRaises(VoiceLibraryError):
+                self.library.replace_reference(self.slug, self.new_source, permission=True)
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertEqual(self.backups(), [])
+        self.assertFalse((self.folder / vpu.REPLACEMENT_STAGING_NAME).exists())
+
+    def test_interrupted_swap_with_failed_restore_is_recoverable(self) -> None:
+        def broken_copy(src, dst):
+            if Path(dst).name.endswith(".restore"):
+                raise OSError("enjekte: geri yükleme de başarısız")
+            return self.real_copy(src, dst)
+
+        with patch.object(vpu, "_replace_file", self.fail_swap_of("profile.json")), \
+                patch.object(vpu, "_copy_file", broken_copy), self.assertRaises(VoiceLibraryError) as caught:
+            self.library.replace_reference(self.slug, self.new_source, permission=True)
+        self.assertIn("Hicbir sey silinmedi", str(caught.exception))
+        [backup] = self.backups()
+        self.assertEqual(vpu._read_journal(backup)["state"], "swapping")
+        self.assertNotEqual(self.snapshot(), self.before)  # profil yarım değişti
+        messages = self.library.recover_replacements(self.slug)
+        self.assertIn("geri alindi", messages[0])
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertEqual(self.backups(), [])
+
+    def test_crash_after_commit_is_archived_on_next_replace(self) -> None:
+        with patch.object(vpu, "_archive_backup", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt())):
+            with self.assertRaises(KeyboardInterrupt):
+                self.library.replace_reference(self.slug, self.new_source, permission=True)
+        [backup] = self.backups()
+        self.assertEqual(vpu._read_journal(backup)["state"], "committed")
+        third = write_wav(self.tmp / "third.wav", seconds=0.4, value=11)
+        self.library.replace_reference(self.slug, third, permission=True)
+        self.assertEqual(self.backups(), [])
+        kept = sorted((self.tmp / "trash" / "replaced-references").glob(f"{self.slug}-*"))
+        originals = {(k / "original_reference.wav").read_bytes() for k in kept}
+        self.assertEqual(originals, {self.source.read_bytes(), self.new_source.read_bytes()})
+
+    def test_backup_copy_failure_leaves_profile_untouched(self) -> None:
+        def copy(src, dst):
+            if Path(dst).parent.name.startswith(vpu.REPLACEMENT_BACKUP_PREFIX) and Path(dst).name == "profile.json":
+                raise OSError("enjekte: disk dolu")
+            return self.real_copy(src, dst)
+
+        with patch.object(vpu, "_copy_file", copy), self.assertRaises(OSError):
+            self.library.replace_reference(self.slug, self.new_source, permission=True)
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertEqual(self.backups(), [])
+
+    def test_damaged_backup_is_never_used_or_deleted(self) -> None:
+        with patch.object(vpu, "_replace_file", self.fail_swap_of("profile.json")), \
+                patch.object(vpu, "_restore_from_backup", lambda *a: (_ for _ in ()).throw(OSError("çöktü"))):
+            with self.assertRaises(VoiceLibraryError):
+                self.library.replace_reference(self.slug, self.new_source, permission=True)
+        [backup] = self.backups()
+        (backup / "original_reference.wav").write_bytes(b"bozuk")
+        with self.assertRaises(VoiceLibraryError):
+            self.library.recover_replacements(self.slug)
+        self.assertTrue((backup / "journal.json").is_file())
+        self.assertEqual((backup / "profile.json").read_bytes(), self.before["profile.json"])

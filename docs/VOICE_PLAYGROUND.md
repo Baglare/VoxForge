@@ -120,6 +120,11 @@ Eski XTTS demosunda kalan özellikler ana arayüze taşındı; eşdeğerlik tabl
   dinleme, kalite raporu (ham/ön işlenmiş), yeniden adlandırma (slug ve bağlantılar değişmez), referans
   değiştirme (yeni kayıt önce geçici klasörde ön işlenir; başarısızlıkta profil değişmez, eski dosyalar
   `outputs/voice_library_trash/replaced-references` altına taşınır), mevcut kaydı yeniden işleme ve
+  güvenli değişim: eski üç dosya önce profil içindeki `.replace.backup-<zaman>` klasörüne kopyalanıp
+  hash'leri `journal.json`'a yazılır (`prepared` → `swapping` → `committed`). Değişim hatasında eski dosyalar
+  hash doğrulanarak geri konur; geri koyma da başarısızsa veya süreç kesilirse yedek silinmez ve bir sonraki
+  değişim/yeniden işleme `recover_profile_replacement` ile değişimi geri alır (`committed` ise yalnız arşivler).
+  Çöp kutusuna taşıma başarısızsa yedek profil klasöründe kalır ve arayüz uyarı gösterir. Ayrıca
   güvenli silme (kimlik onayı yazılır; `rmtree` yok, profil `outputs/voice_library_trash/profiles`,
   tasarım Studio kökünde `.voice-design/trash` altına taşınır). Tasarımların WAV'ı ve sürüm kimliği
   değişmez; yalnız adı değişebilir.
