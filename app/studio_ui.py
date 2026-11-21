@@ -16,6 +16,7 @@ import gradio as gr
 from app.ui_theme import section
 from voxforge.quality.checks import describe_report, summarize
 from voxforge.studio.service import NARRATOR_LABEL, STATE_LABELS, StudioError, StudioService
+from voxforge.voices import DESIGN_PREFIX, is_design_key
 
 TABLE_HEADERS = ["Parça", "Metin", "Karakter", "Durum", "Süre (sn)"]
 REFRESH_SECONDS = 2.0
@@ -653,9 +654,14 @@ def build_studio(
             if not slug:
                 return "⚠️ Önce bir proje seçin.", *voice_panel(None)
             try:
-                reference = resolve_reference(profile_slug or None, upload)
                 engine_id = service.open(slug).settings.engine_id
-                service.add_voice(slug, name, reference, preset_for(engine_id, preset_label))
+                design_id = (profile_slug or "")[len(DESIGN_PREFIX):] if is_design_key(profile_slug) else None
+                if design_id and engine_id == "voxcpm2":
+                    # Kütüphanedeki tasarım sesi: sürüm kimliği ve model revizyonu korunarak bağlanır.
+                    service.add_designed_voice(slug, name or "", design_id, preset_for(engine_id, preset_label))
+                else:
+                    reference = resolve_reference(profile_slug or None, upload)
+                    service.add_voice(slug, name, reference, preset_for(engine_id, preset_label))
             except StudioError as exc:
                 return f"⚠️ {exc}", *voice_panel(slug)
             return f"Karakter eklendi: **{name.strip()}**", *voice_panel(slug)
@@ -781,4 +787,8 @@ def build_studio(
             outputs=[*view_outputs, segment_header, segment_audio, *take_outputs],
         )
 
+    # Ses kütüphanesi değişince üst uygulama bu menüleri günceller.
+    studio.voice_dropdowns = [new_profile, voice_profile]
+    studio.design_dropdown = design_choice if vox_presets else None
+    studio.design_choices = design_choices
     return studio

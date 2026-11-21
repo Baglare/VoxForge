@@ -112,6 +112,31 @@ Ayrıntı, eşikler ve ölçümler: [QUALITY_DIRECTOR.md](QUALITY_DIRECTOR.md).
 - VoxCPM2 ağırlıkları `engine_pins.json` revizyonuna (`32279eff`) sabitlendi ve yalnız yerel önbellekten yüklenir
   (Hub'daki yeni revizyon sessizce indirilmez).
 
+## Ses kütüphanesi, Hızlı ses eklemeleri ve Geliştirici araçları
+Eski XTTS demosunda kalan özellikler ana arayüze taşındı; eşdeğerlik tablosu `docs/LEGACY_XTTS_PARITY.md`.
+
+- **Ses kütüphanesi** sekmesi (`app/voice_library_tab.py`, servis `voxforge/voices/library.py`): kayıtlı
+  profiller ve VoxCPM2 tasarım sürümleri tek listede, türleri ayrı. Profil oluşturma (izin onayı zorunlu),
+  dinleme, kalite raporu (ham/ön işlenmiş), yeniden adlandırma (slug ve bağlantılar değişmez), referans
+  değiştirme (yeni kayıt önce geçici klasörde ön işlenir; başarısızlıkta profil değişmez, eski dosyalar
+  `outputs/voice_library_trash/replaced-references` altına taşınır), mevcut kaydı yeniden işleme ve
+  güvenli silme (kimlik onayı yazılır; `rmtree` yok, profil `outputs/voice_library_trash/profiles`,
+  tasarım Studio kökünde `.voice-design/trash` altına taşınır). Tasarımların WAV'ı ve sürüm kimliği
+  değişmez; yalnız adı değişebilir.
+- Kütüphane anahtarları: profil = slug (eski davranış), tasarım = `design:<id>`. Hızlı ses, Sahneli anlatım ve
+  Studio menüleri aynı listeyi kullanır; kütüphanede bir değişiklik aynı olayda bu menüleri günceller,
+  sekme açılışında da yenilenir. Studio'da tasarım VoxCPM2 projesine sürüm kimliğiyle bağlanır
+  (`add_designed_voice`), diğer motorlarda örnek WAV referans olarak kopyalanır. Ultimate Cloning'de
+  tasarımın transkripti varsayılan olarak örnek repliğidir.
+- **Hızlı ses**: *Ses kaynağı* = kütüphane veya tek seferlik referans (izin onayı + profillerle aynı güvenli
+  ön işleme, `outputs/playground/references`; kütüphaneye eklenmez). XTTS seçilince eski demonun üretim
+  modları (Dengeli/Daha stabil/Daha doğal/Daha uzun). İsteğe bağlı çıktı normalizasyonu (FFmpeg loudnorm;
+  ham WAV `raw_wav` olarak korunur, başarısızsa ham çıktı kullanılır). A/B: aynı metin, ses ve tohumla
+  B çıktısı (XTTS modu, VoxCPM2 preset'i/hızlı varyant veya Chatterbox ayarı); iki kayıt da Kayıtlar'a eklenir.
+- **Geliştirici** sekmesi (`app/developer_tools_tab.py`): eski demonun fine-tuning dataset seçimi,
+  readiness raporu, experiment export ve eğitim dry-run'ı; işleyiciler `app/gradio_xtts_demo.py`
+  içindeki aynı fonksiyonlardır. Model eğitmez.
+
 ## Her üretimde gösterilen
 Model, kaynak commit (Chatterbox), uygulanan ayarlar ve kütüphane varsayılanları (JSON'da), tohum,
 profil, parça sayısı, üretim süresi, ses süresi, RTF (üretim / ses süresi), bu istekte model yüklendiyse
@@ -125,8 +150,8 @@ darboğaz notları (CPU, RTF > 1, VRAM dolu, başka süreçlerin GPU belleği, m
 - Normalizasyon cümle bazında yapılır ama cümleler motor sınırına (~220-250 karakter) kadar aynı parçada
   üretilir; yalnız daha uzun metinler bölünüp 0,2 sn sessizlikle birleştirilir (standart ritim). Chatterbox'ta
   her cümleyi ayrı üretmek ~0,9 sn boşluk ve tonlama kopukluğu ekliyordu; VoxCPM2'de ise cümle cümle üretim +
-  kenar kırpma ölçümle daha iyi çıktı (VF-016 "Anlatım" ritmi, isteğe bağlı). loudnorm uygulanmaz; yalnız
-  sahne birleştirmede ±6 dB RMS eşlemesi var.
+  kenar kırpma ölçümle daha iyi çıktı (VF-016 "Anlatım" ritmi, isteğe bağlı). loudnorm varsayılan olarak
+  uygulanmaz (Hızlı ses → Üretim ayarlarında isteğe bağlı); sahne birleştirmede ±6 dB RMS eşlemesi var.
 - XTTS TorchCodec için FFmpeg shared bin PATH'te zaten olsa bile en başa alınır (system32'den sonra
   kalınca `Could not load libtorchcodec` hatası veriyordu).
 - Çıktılar Chatterbox'ta PerTh filigranı içerir.
@@ -141,3 +166,7 @@ Ultimate uyumsuzluğu, preset karşılaştırması ve sahne üret/birleştir ak�
 bu testlerde yoktur (ölçümler PR açıklamasında ve VF016_PROSODY_FINDINGS.md'de). VF-018:
 `tests/test_quality_director.py` (kurallar, güven, take deposu, geri dönüş, sahte ASR worker protokolü, Playground
 köprüsü); sınırlı gerçek GPU doğrulaması `scripts/quality/vf018_validate.py`.
+`tests/test_voice_library.py` ve `tests/test_quick_voice_ui.py`: kütüphane türleri, yeniden adlandırma,
+başarısız referans değişiminde profilin korunması, onaylı çöp kutusu silmesi, tasarım anahtarıyla üretim ve
+transkript, XTTS modu sınırları, loudnorm geri dönüşü, tek seferlik referans izni, A/B'nin aynı tohum ve
+referansı kullanması ve kütüphane değişikliğinin tüm ses menülerini güncellemesi (modelsiz).

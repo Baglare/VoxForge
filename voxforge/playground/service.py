@@ -41,6 +41,9 @@ HISTORY_LIMIT = 60
 MAX_TRANSCRIPT_CHARS = 1000
 DEVICE_LABELS = {"cuda": "GPU (CUDA)", "cpu": "CPU (yalnız karşılaştırma)"}
 SLUG_PATTERN = r"[A-Za-z0-9_.-]+"
+DESIGN_KEY_PATTERN = r"design:[0-9a-f]{32}"
+# XTTS üretim modlarının (eski Gradio demosu) motora geçebilecek ayarları; başka anahtar reddedilir.
+XTTS_SETTING_KEYS = frozenset({"temperature", "top_p", "top_k", "repetition_penalty", "length_penalty"})
 
 
 @dataclass(frozen=True)
@@ -129,9 +132,39 @@ def list_profiles() -> list[dict[str, Any]]:
 
 
 def resolve_profile_reference(slug: str) -> Path:
+    """Cloning reference for a library key: profile slug or ``design:<id>`` (VoxCPM2 design)."""
+    if re.fullmatch(DESIGN_KEY_PATTERN, slug or ""):
+        from voxforge.voices import VoiceLibrary
+
+        return VoiceLibrary().reference(slug)
     from scripts.voice_profile_utils import get_voice_profile
 
     return Path(get_voice_profile(slug).preprocessed_reference)
+
+
+def prepare_uploaded_reference(audio: Any, out_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """One-off reference (not saved to the library): the same safe preprocessing as profiles."""
+    from scripts.audio_preprocessing_utils import PreprocessingError, preprocess_reference_audio
+
+    source = Path(str(audio or ""))
+    if not audio or not source.is_file():
+        raise PlaygroundError("Tek seferlik referans için bir ses dosyası yükleyin.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / f"reference_{time.strftime('%Y%m%d-%H%M%S')}_{time.time_ns() % 10**6:06d}.wav"
+    try:
+        result = preprocess_reference_audio(source, target, mode="safe")
+    except PreprocessingError as exc:
+        raise PlaygroundError(f"Referans ses ön işlenemedi: {exc}") from exc
+    selected = Path(result["selected_output_path"])
+    if not selected.is_file():
+        raise PlaygroundError("Ön işlenmiş referans oluşmadı.")
+    report = (result.get("candidate_reports") or {}).get(result.get("selected_variant")) or {}
+    return selected, {
+        "variant": result.get("selected_variant"),
+        "quality": report.get("quality"),
+        "original_quality": ((result.get("candidate_reports") or {}).get("original") or {}).get("quality"),
+        "warning": result.get("preprocessing_warning"),
+    }
 
 
 class PlaygroundService:
@@ -144,15 +177,24 @@ class PlaygroundService:
 
     # -- reference transcripts (Ultimate Cloning) ------------------------------------------
     def _transcript_path(self, slug: str) -> Path:
+        if re.fullmatch(DESIGN_KEY_PATTERN, slug or ""):
+            return self.transcript_dir / f"design-{slug.split(':', 1)[1]}.txt"  # ':' Windows'ta dosya adında olamaz
         if not re.fullmatch(SLUG_PATTERN, slug or ""):
             raise PlaygroundError(f"Geçersiz profil adı: {slug!r}")
         return self.transcript_dir / f"{slug}.txt"
 
     def get_transcript(self, slug: str | None) -> str:
+        """Saved transcript; a design voice falls back to the exact text of its sample."""
         if not slug:
             return ""
         path = self._transcript_path(slug)
-        return path.read_text(encoding="utf-8") if path.is_file() else ""
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+        if re.fullmatch(DESIGN_KEY_PATTERN, slug):
+            from voxforge.voices import VoiceLibrary
+
+            return VoiceLibrary().design_transcript(slug)
+        return ""
 
     def save_transcript(self, slug: str, text: str) -> None:
         text = (text or "").strip()
@@ -196,8 +238,14 @@ class PlaygroundService:
         controls: VoxControls | None = None,
         preset_key: str | None = None,
         out_dir: Path | None = None,
+        engine_settings: dict[str, Any] | None = None,
+        post_process: bool = False,
     ) -> dict[str, Any]:
         """Generate one variant; the record is written only for a successful WAV.
+
+        ``engine_settings`` carries an XTTS generation mode (temperature, top_p, ...; only
+        XTTS, only known keys). ``post_process`` applies the old demo's FFmpeg loudnorm to the
+        final WAV; the raw WAV is kept and a failed normalisation keeps the raw output.
 
         ``controls`` only applies to VoxCPM2 default/Ultimate variants (other variants
         reject non-default controls instead of ignoring them). ``out_dir`` lets scene
@@ -248,7 +296,14 @@ class PlaygroundService:
         spoken, chunks = plan.spoken, plan.chunks
         if not chunks:
             raise PlaygroundError("Metinden okunacak bir parça çıkmadı.")
-        settings = {**variant.settings, **controls.engine_settings()}
+        extra_settings = dict(engine_settings or {})
+        if extra_settings:
+            if variant.engine != "xtts":
+                raise PlaygroundError(f"Üretim modu yalnız XTTS-v2 için geçerli ({variant.label}).")
+            unknown = sorted(set(extra_settings) - XTTS_SETTING_KEYS)
+            if unknown:
+                raise PlaygroundError(f"Bilinmeyen XTTS ayarı: {', '.join(unknown)}")
+        settings = {**variant.settings, **controls.engine_settings(), **extra_settings}
         notes = controls.warnings(variant.ultimate)
         if variant.engine == "voxcpm2" and not controls.style and any(chunk.lstrip().startswith("(") for chunk in chunks):
             notes.append("Parantezle başlayan cümle VoxCPM2'de stil yönergesi gibi okunabilir; parantezi cümle içine alın.")
@@ -276,6 +331,16 @@ class PlaygroundService:
             device=device,
         )
         worker = reply.get("worker", {})
+        raw_wav = wav_path
+        post = {"enabled": bool(post_process), "applied": False, "message": "kapalı"}
+        if post_process:
+            from voxforge.generation import normalize_wav
+
+            normalized = wav_path.with_name(f"{record_id}_norm.wav")
+            applied, message = normalize_wav(wav_path, normalized)
+            post.update(applied=applied, message=message)
+            if applied:
+                wav_path = normalized
         record = {
             "id": record_id,
             "created_at": utc_now_iso(),
@@ -327,6 +392,8 @@ class PlaygroundService:
             "warnings": [*notes, *reply.get("warnings", [])],
             "join": reply.get("join"),
             "note": worker.get("note"),
+            "post_processing": post,
+            "raw_wav": str(raw_wav),
             "wav": str(wav_path),
         }
         record["diagnosis"] = diagnose(record)
@@ -345,6 +412,8 @@ class PlaygroundService:
         reference_text: str | None = None,
         controls: VoxControls | None = None,
         preset_key: str | None = None,
+        engine_settings: dict[str, Any] | None = None,
+        post_process: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Same text, same seed, several variants; ordered by engine so each model loads once."""
         if seed is None or int(seed) < 0:
@@ -357,6 +426,7 @@ class PlaygroundService:
         keys = sorted(dict.fromkeys(variant_keys), key=lambda k: engine_order.index(VARIANTS[k].engine) if k in VARIANTS else -1)
         records, errors = [], []
         for key in keys:
+            is_xtts = key in VARIANTS and VARIANTS[key].engine == "xtts"
             try:
                 records.append(
                     self.generate(
@@ -369,7 +439,9 @@ class PlaygroundService:
                         device=device,
                         reference_text=reference_text,
                         controls=controls if key in CONTROLLABLE_VARIANTS else None,
-                        preset_key=preset_key if key in CONTROLLABLE_VARIANTS else None,
+                        preset_key=preset_key if key in CONTROLLABLE_VARIANTS or is_xtts else None,
+                        engine_settings=engine_settings if is_xtts else None,
+                        post_process=post_process,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - one failing variant does not stop the others
@@ -387,6 +459,7 @@ class PlaygroundService:
         normalize: bool = True,
         device: str = "cuda",
         reference: Path | None = None,
+        post_process: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Same text, same seed, same voice, one VoxCPM2 generation per preset (side-by-side listening)."""
         if seed is None or int(seed) < 0:
@@ -398,7 +471,7 @@ class PlaygroundService:
                 records.append(
                     self.generate(
                         text, "voxcpm2", profile_slug, seed=seed, normalize=normalize, device=device,
-                        reference=reference, controls=preset.controls, preset_key=key,
+                        reference=reference, controls=preset.controls, preset_key=key, post_process=post_process,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - bir preset diğerlerini durdurmaz
@@ -482,6 +555,9 @@ def describe(record: dict[str, Any]) -> str:
         lines.append("- Ultimate Cloning: referans + transkript (prompt devamı)")
     if settings.get("preset"):
         lines.append(f"- Preset: `{settings['preset']}`")
+    post = record.get("post_processing") or {}
+    if post.get("enabled"):
+        lines.append(f"- Çıktı normalizasyonu (loudnorm): {post.get('message')}")
     join = record.get("join") or {}
     if join.get("pauses"):
         pauses = join["pauses"]

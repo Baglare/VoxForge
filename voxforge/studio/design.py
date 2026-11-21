@@ -79,3 +79,31 @@ class DesignLibrary:
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
         return self.version(version_id)
+
+    def rename(self, token: str, name: str) -> dict[str, Any]:
+        """Change only the display name; the WAV, its hash and the version id stay the same."""
+        name = " ".join((name or "").split())
+        if not name or len(name) > 80:
+            raise ValueError("Tasarım adı 1–80 karakter olmalı.")
+        folder = self._folder("versions", token)
+        metadata = self._read(folder)
+        metadata.pop("wav")
+        metadata["name"] = name
+        temporary = folder / "voice.json.partial"
+        temporary.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(folder / "voice.json")
+        return self.version(token)
+
+    def archive(self, token: str) -> Path:
+        """Move a saved version to ``trash/`` instead of deleting it.
+
+        Studio projects keep their own copy of the sample, so archived versions do not
+        break existing characters; they only leave the library listings.
+        """
+        folder = self._folder("versions", token)
+        self._read(folder)
+        trash = self.root / "trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        target = trash / f"{token}-{uuid.uuid4().hex[:8]}"
+        shutil.move(str(folder), str(target))
+        return target

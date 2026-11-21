@@ -571,3 +571,135 @@ def create_voice_profile(
         preprocessing_warning=preprocessing_result.get("preprocessing_warning"),
         preprocessing_candidate_reports=candidate_reports,
     )
+
+
+MAX_PROFILE_NAME_CHARS = 80
+
+
+def _write_profile_json(profile_json_path: Path, payload: dict[str, Any]) -> None:
+    """profile.json'u gecici dosya + os.replace ile atomik yazar."""
+    temporary = profile_json_path.with_name(profile_json_path.name + ".partial")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(profile_json_path)
+
+
+def rename_voice_profile(profile_slug: str, new_name: str) -> VoiceProfileRecord:
+    """Yalniz gorunen adi degistirir; slug, klasor ve referanslar ayni kalir.
+
+    Slug degismedigi icin Playground transkriptleri ve sahne projelerindeki profil
+    baglantilari bozulmaz.
+    """
+    cleaned = " ".join((new_name or "").split())
+    if not cleaned or len(cleaned) > MAX_PROFILE_NAME_CHARS:
+        raise VoiceProfileError(f"Profil adi 1-{MAX_PROFILE_NAME_CHARS} karakter olmali.")
+    profile = get_voice_profile(profile_slug)
+    metadata = dict(profile.metadata)
+    metadata["profile_name"] = cleaned
+    metadata["renamed_at"] = datetime.now(timezone.utc).isoformat()
+    _write_profile_json(profile.profile_json_path, metadata)
+    return get_voice_profile(profile_slug)
+
+
+def replace_voice_profile_reference(
+    profile_slug: str,
+    input_audio_path: str | Path,
+    keep_previous_dir: Path | None = None,
+) -> VoiceProfileResult:
+    """Profilin referans sesini yenisiyle degistirir ve yeniden on isler.
+
+    Yeni dosyalar once profil icindeki gecici klasorde hazirlanir; on isleme basarisizsa
+    mevcut profil hic degismez. Degisim sirasinda hata olursa eski dosyalar geri konur.
+    ``keep_previous_dir`` verilirse eski referanslar ve profile.json oraya tasinir.
+    """
+    profile = get_voice_profile(profile_slug)
+    source_audio = resolve_input_path(input_audio_path)
+    if not source_audio.is_file():
+        raise VoiceProfileError(f"Giris ses dosyasi bulunamadi: {source_audio}")
+
+    staging = profile.profile_dir / ".replace.tmp"
+    backup = profile.profile_dir / ".replace.backup"
+    shutil.rmtree(staging, ignore_errors=True)
+    shutil.rmtree(backup, ignore_errors=True)
+    staging.mkdir()
+    try:
+        staged_original = staging / ORIGINAL_REFERENCE_NAME
+        shutil.copy2(source_audio, staged_original)
+        try:
+            preprocessing_result = preprocess_reference_audio(
+                staged_original, staging / PREPROCESSED_REFERENCE_NAME, mode="safe"
+            )
+        except PreprocessingError as exc:
+            raise VoiceProfileError(str(exc)) from exc
+        selected_variant = preprocessing_result["selected_variant"]
+        candidate_reports = preprocessing_result["candidate_reports"]
+        original_quality = candidate_reports.get("original")
+        preprocessed_quality = candidate_reports.get(selected_variant)
+        staged_preprocessed = Path(preprocessing_result["selected_output_path"])
+        if original_quality is None or preprocessed_quality is None or not staged_preprocessed.is_file():
+            raise VoiceProfileError("On isleme kalite raporu veya referans dosyasi eksik olustu.")
+
+        backup.mkdir()
+        moved: list[Path] = []
+        try:
+            for path in (profile.original_reference, profile.preprocessed_reference, profile.profile_json_path):
+                shutil.move(str(path), str(backup / path.name))
+                moved.append(path)
+            shutil.move(str(staged_original), str(profile.original_reference))
+            shutil.move(str(staged_preprocessed), str(profile.preprocessed_reference))
+            payload = build_profile_payload(
+                profile_name=profile.profile_name,
+                profile_slug=profile.profile_slug,
+                original_reference=profile.original_reference,
+                preprocessed_reference=profile.preprocessed_reference,
+                original_quality=original_quality,
+                preprocessed_quality=preprocessed_quality,
+                selected_preprocessing_variant=selected_variant,
+                preprocessing_warning=preprocessing_result.get("preprocessing_warning"),
+                preprocessing_candidate_reports=candidate_reports,
+            )
+            payload["created_at"] = profile.metadata.get("created_at") or payload["created_at"]
+            payload["reference_replaced_at"] = datetime.now(timezone.utc).isoformat()
+            _write_profile_json(profile.profile_json_path, payload)
+        except BaseException:
+            for path in moved:
+                path.unlink(missing_ok=True)
+                shutil.move(str(backup / path.name), str(path))
+            raise
+        if keep_previous_dir is not None:
+            keep_previous_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(backup), str(keep_previous_dir))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)
+
+    return VoiceProfileResult(
+        profile_name=profile.profile_name,
+        profile_slug=profile.profile_slug,
+        source_audio=source_audio,
+        profile_dir=profile.profile_dir,
+        original_reference=profile.original_reference,
+        preprocessed_reference=profile.preprocessed_reference,
+        profile_json_path=profile.profile_json_path,
+        original_quality=original_quality,
+        preprocessed_quality=preprocessed_quality,
+        selected_preprocessing_variant=selected_variant,
+        preprocessing_warning=preprocessing_result.get("preprocessing_warning"),
+        preprocessing_candidate_reports=candidate_reports,
+    )
+
+
+def archive_voice_profile(profile_slug: str, trash_root: Path) -> VoiceProfileDeleteResult:
+    """Profili kalici silmek yerine ``trash_root`` altina tasir (geri alinabilir silme)."""
+    profile_dir = resolve_profile_dir(profile_slug)
+    if not profile_dir.is_dir():
+        raise VoiceProfileError(f"Profil bulunamadi: {profile_slug}")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = Path(trash_root) / f"{profile_dir.name}-{stamp}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(profile_dir), str(target))
+    return VoiceProfileDeleteResult(
+        profile_slug=profile_dir.name,
+        profile_dir=target,
+        deleted=True,
+        message=f"Profil cop kutusuna tasindi: {profile_dir.name}",
+    )
