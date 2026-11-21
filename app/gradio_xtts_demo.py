@@ -8,9 +8,9 @@ import os
 import re
 import sys
 import subprocess
-import time
 from threading import Lock
 import traceback
+import uuid
 import unicodedata
 from typing import Any, Optional
 
@@ -920,11 +920,15 @@ def format_recommendations(items: Any) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
-def readiness_report_is_current(report: dict, report_path: Path, dataset_path: Path, started_at: float) -> bool:
-    """The readiness file is a fixed path; accept it only if this run wrote it for this dataset."""
+def readiness_report_is_current(report: dict, dataset_path: Path, run_id: str) -> bool:
+    """The readiness file is a fixed path; accept it only if this run wrote it for this dataset.
+
+    The run id is a fresh random token passed to the script and echoed into the JSON, so an
+    older report (even one written a moment ago for the same dataset) can never match.
+    """
+    if not run_id or report.get("run_id") != run_id:
+        return False
     try:
-        if report_path.stat().st_mtime < started_at - 2:
-            return False
         return Path(str(report.get("dataset_path"))).resolve() == Path(dataset_path).resolve()
     except (OSError, ValueError):
         return False
@@ -934,16 +938,16 @@ def run_readiness_report_from_gradio(selected_dataset_slug: str | None) -> str:
     """Seçili dataset icin readiness raporunu calistirir."""
     try:
         dataset_path = dataset_slug_to_dir(selected_dataset_slug)
-        started_at = time.time()
+        run_id = uuid.uuid4().hex
         result = run_finetune_subprocess(
             "scripts/finetune_readiness_report.py",
-            ["--dataset", str(dataset_path)],
+            ["--dataset", str(dataset_path), "--run-id", run_id],
             timeout_seconds=300,
         )
         report_path = REPORTS_DIR / "finetune_readiness_report.json"
         markdown_path = REPORTS_DIR / "finetune_readiness_report.md"
         report = read_json_file(report_path)
-        if report is not None and not readiness_report_is_current(report, report_path, dataset_path, started_at):
+        if report is not None and not readiness_report_is_current(report, dataset_path, run_id):
             report = None  # betik rapor yazamadı: önceki (başka dataset) raporu bu sonuç gibi gösterme
         if report is None:
             if result.returncode != 0:

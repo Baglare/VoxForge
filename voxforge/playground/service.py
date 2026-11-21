@@ -153,11 +153,14 @@ def prepare_uploaded_reference(audio: Any, out_dir: Path) -> tuple[Path, dict[st
     target = out_dir / f"reference_{time.strftime('%Y%m%d-%H%M%S')}_{time.time_ns() % 10**6:06d}.wav"
     try:
         result = preprocess_reference_audio(source, target, mode="safe")
-    except PreprocessingError as exc:
-        raise PlaygroundError(f"Referans ses ön işlenemedi: {exc}") from exc
-    selected = Path(result["selected_output_path"])
-    if not selected.is_file():
-        raise PlaygroundError("Ön işlenmiş referans oluşmadı.")
+        selected = Path(result["selected_output_path"])
+        if not selected.is_file():
+            raise PlaygroundError("Ön işlenmiş referans oluşmadı.")
+    except BaseException as exc:
+        target.unlink(missing_ok=True)  # bu çağrıya özgü yeni dosya; yarım kalan WAV sahipsiz kalmasın
+        if isinstance(exc, PreprocessingError):
+            raise PlaygroundError(f"Referans ses ön işlenemedi: {exc}") from exc
+        raise
     report = (result.get("candidate_reports") or {}).get(result.get("selected_variant")) or {}
     return selected, {
         "variant": result.get("selected_variant"),

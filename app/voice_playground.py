@@ -574,6 +574,10 @@ def build_app(
             needs_reference = VARIANTS[key].needs_reference
             reference, notes = None, []
             use_upload = source_value == "upload" and needs_reference
+            try:  # referans ön işlenmeden önce doğrula: geçersiz panel değeri geçici WAV bırakmasın
+                controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
+            except ControlError as exc:
+                return quick_result([], current, [str(exc)])
             if use_upload:
                 if not permission_value:
                     return quick_result([], current, ["Tek seferlik referans için sesin size ait olduğunu veya izniniz olduğunu onaylayın."])
@@ -588,24 +592,23 @@ def build_app(
                 )
             elif needs_reference and not profile_value:
                 return quick_result([], current, ["Seslendirmek için kütüphaneden bir ses seçin."])
-            try:
-                controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
-            except ControlError as exc:
-                return quick_result([], current, [str(exc)])
             mode = xtts_mode_value if xtts_mode_value in INFERENCE_PRESET_KWARGS else INFERENCE_PRESET_DEFAULT
             is_xtts = VARIANTS[key].engine == "xtts"
             if is_xtts and mode != INFERENCE_PRESET_DEFAULT:
                 preset_key = f"xtts:{mode}"
             else:
                 preset_key = preset_value if controls is not None and not controls.is_default() else None
-            records, errors = service.generate_many(
-                text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value,
-                device=device_value or "cuda", reference_text=transcript, controls=controls, preset_key=preset_key,
-                reference=reference, engine_settings=INFERENCE_PRESET_KWARGS[mode] if is_xtts else None,
-                post_process=bool(post_value),
-            )
-            if use_upload:
-                service.discard_reference_if_unused(reference, records)
+            records: list[dict[str, Any]] = []
+            try:
+                records, errors = service.generate_many(
+                    text_value, [key], profile_value, seed=_seed(seed_value), normalize=normalize_value,
+                    device=device_value or "cuda", reference_text=transcript, controls=controls, preset_key=preset_key,
+                    reference=reference, engine_settings=INFERENCE_PRESET_KWARGS[mode] if is_xtts else None,
+                    post_process=bool(post_value),
+                )
+            finally:  # üretim öncesi/sırasında beklenmeyen hata da sahipsiz referans bırakmaz
+                if use_upload:
+                    service.discard_reference_if_unused(reference, records)
             primary = records[-1] if records else None
             b_record = None
             if ab_value and primary:
@@ -717,7 +720,7 @@ def build_app(
             if (name or "").strip() != project.name and slugify(name) != project.slug:
                 raise ControlError("Proje adı değişti; yeni proje için 'Sahnelere ayır'a basın.")
             apply_rows(project, rows, service.presets.all())
-            project.profile = profile_value
+            project.select_profile(profile_value)  # boş menü (yetim ses) kayıtlı kimliği silmez
             project.variant = variant_value or "voxcpm2"
             project.seed = _scene_seed(seed_value)
             project.scene_gap = float(gap_value)

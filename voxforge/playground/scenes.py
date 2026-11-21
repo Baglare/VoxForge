@@ -118,6 +118,16 @@ class SceneProject:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def select_profile(self, value: str | None) -> None:
+        """Apply the voice menu value; an empty menu never erases the saved voice.
+
+        A project whose voice left the library loads with an empty menu (Gradio rejects
+        unknown choices). Only an explicit new choice replaces the stored profile, so a
+        failed generation or save cannot silently drop the original voice identity.
+        """
+        if value:
+            self.profile = value
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SceneProject":
         scenes = [Scene(**{k: v for k, v in item.items() if k in Scene.__dataclass_fields__}) for item in data.get("scenes", [])]

@@ -384,6 +384,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         required=True,
         help="Raporlanacak dataset klasoru. Ornek: datasets/baglare-finetune-v1",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Cagiranin raporu bu calistirmaya ait oldugunu dogrulamasi icin JSON'a yazilan kimlik.",
+    )
     return parser.parse_args(argv)
 
 
@@ -391,6 +396,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     dataset_path = resolve_dataset_path(args.dataset)
     report = build_readiness_report(dataset_path)
+    if args.run_id:
+        report["run_id"] = args.run_id
     preserve_previous_reports()
     json_path = write_json_report(report)
     markdown_path = write_markdown_report(report)
