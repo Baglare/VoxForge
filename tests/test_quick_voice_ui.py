@@ -110,7 +110,7 @@ class QuickVoiceLibraryTest(LibraryFixture):
         studio_choices = {value for _label, value in result[-len(targets) + 2]["choices"]}
         self.assertIn("", studio_choices)
         delete = self.events["on_delete"]
-        result = delete.fn("ikinci-ses", "ikinci-ses", "ikinci-ses", None, "", "", None)
+        result = delete.fn("ikinci-ses", "ikinci-ses", False, "ikinci-ses", None, "", "", None)
         self.assertIsNone(result[-len(targets)]["value"])  # deleted voice is no longer selected
         self.assertNotIn("ikinci-ses", {value for _label, value in result[-len(targets)]["choices"]})
 

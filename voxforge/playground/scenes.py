@@ -268,12 +268,21 @@ class SceneNarrator:
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     def scene_state(self, project: SceneProject, scene: Scene, device: str = "cuda") -> str:
-        """``missing`` (no audio), ``stale`` (settings changed / legacy record) or ``ready``."""
+        """``missing`` (no audio), ``orphan`` (its voice no longer exists), ``stale`` (settings
+        changed / legacy record) or ``ready``."""
         if not scene.wav or not Path(scene.wav).is_file():
             return "missing"
+        if self.voice_missing(project):
+            return "orphan"
         if not scene.fingerprint or scene.fingerprint != self.fingerprint(project, scene, device):
             return "stale"
         return "ready"
+
+    def voice_missing(self, project: SceneProject) -> bool:
+        """True when the project's voice (profile or design) can no longer be resolved."""
+        if not project.profile:
+            return False
+        return "error" in self._reference_identity(project.profile)
 
     def is_stale(self, project: SceneProject, scene: Scene, device: str = "cuda") -> bool:
         return self.scene_state(project, scene, device) != "ready"
@@ -284,6 +293,11 @@ class SceneNarrator:
             raise ControlError(f"Sahne bulunamadı: {scene_id}")
         if not project.profile:
             raise ControlError("Sahne anlatımı için bir ses profili seçin.")
+        if self.voice_missing(project):
+            raise ControlError(
+                f"Projenin sesi (`{project.profile}`) kütüphanede bulunamadı (silinmiş veya taşınmış olabilir). "
+                "Yeni bir ses seçin; mevcut sahne sesleri yeniden üretilene kadar korunur."
+            )
         if scene.kind not in SCENE_KINDS:
             raise ControlError(f"Bilinmeyen sahne türü: {scene.kind}")
         fingerprint = self.fingerprint(project, scene, device)  # üretimden önce: kullanılan girdiler
@@ -311,6 +325,8 @@ class SceneNarrator:
 
     def generate_all(self, project: SceneProject, only_stale: bool = True, device: str = "cuda") -> list[str]:
         errors = []
+        if project.scenes and self.voice_missing(project):
+            return [f"Projenin sesi (`{project.profile}`) kütüphanede yok; yeni bir ses seçin."]
         for scene in project.scenes:
             if only_stale and not self.is_stale(project, scene, device):
                 continue
@@ -321,6 +337,11 @@ class SceneNarrator:
         return errors
 
     def merge(self, project: SceneProject, device: str = "cuda") -> dict[str, Any]:
+        if project.scenes and self.voice_missing(project):
+            raise ControlError(
+                f"Projenin sesi (`{project.profile}`) kütüphanede yok; sahnelerin aynı sesle üretildiği doğrulanamadığı "
+                "için birleştirilmedi. Sesi kütüphaneye geri koyun veya yeni bir ses seçip sahneleri yeniden üretin."
+            )
         missing = [scene.title for scene in project.scenes if self.is_stale(project, scene, device)]
         if missing:
             raise ControlError(

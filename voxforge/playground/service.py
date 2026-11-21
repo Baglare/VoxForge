@@ -206,6 +206,45 @@ class PlaygroundService:
         temporary.write_text(text, encoding="utf-8")
         temporary.replace(path)
 
+    # -- one-off references -------------------------------------------------------------------
+    def discard_reference_if_unused(self, reference: Path | None, records: list[dict[str, Any]]) -> bool:
+        """Remove a freshly preprocessed one-off reference when no record kept it (failed run)."""
+        if reference is None or Path(reference).parent != self.root / "references":
+            return False
+        if any(record.get("reference") == str(reference) for record in records):
+            return False
+        Path(reference).unlink(missing_ok=True)
+        return True
+
+    def prune_references(self, max_age_days: float = 14.0, now: float | None = None) -> list[Path]:
+        """Delete old one-off references that nothing refers to any more.
+
+        A reference stays when its file name appears in any history record, take recipe,
+        quality report or scene project (retakes and "same recipe" reruns need it), and while
+        it is younger than ``max_age_days``. Records, takes and profiles are never touched.
+        """
+        folder = self.root / "references"
+        if not folder.is_dir():
+            return []
+        cutoff = (time.time() if now is None else now) - max_age_days * 86400
+        candidates = [path for path in folder.glob("reference_*.wav") if path.is_file() and path.stat().st_mtime < cutoff]
+        if not candidates:
+            return []
+        corpus = []
+        for sub in ("audio", "takes", "quality", "scenes"):
+            for path in (self.root / sub).rglob("*.json"):
+                try:
+                    corpus.append(path.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    return []  # okunamayan kayıt: hiçbir şey silme
+        text = "\n".join(corpus)
+        removed = []
+        for path in candidates:
+            if path.name not in text:
+                path.unlink(missing_ok=True)
+                removed.append(path)
+        return removed
+
     # -- history ----------------------------------------------------------------------------
     def history(self, limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
         records = []

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import subprocess
+import time
 from threading import Lock
 import traceback
 import unicodedata
@@ -83,6 +84,7 @@ from voxforge.generation import synthesize_text
 from voxforge.runs import SCHEMA_VERSION, write_json_atomic
 from voxforge.studio import studio_root
 from voxforge.studio.service import StudioError, StudioService
+from voxforge.ui_paths import gradio_allowed_paths
 from studio_ui import build_studio
 from ui_theme import CSS, THEME, hero, section
 from scripts.voice_profile_utils import (
@@ -918,10 +920,21 @@ def format_recommendations(items: Any) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
+def readiness_report_is_current(report: dict, report_path: Path, dataset_path: Path, started_at: float) -> bool:
+    """The readiness file is a fixed path; accept it only if this run wrote it for this dataset."""
+    try:
+        if report_path.stat().st_mtime < started_at - 2:
+            return False
+        return Path(str(report.get("dataset_path"))).resolve() == Path(dataset_path).resolve()
+    except (OSError, ValueError):
+        return False
+
+
 def run_readiness_report_from_gradio(selected_dataset_slug: str | None) -> str:
     """Seçili dataset icin readiness raporunu calistirir."""
     try:
         dataset_path = dataset_slug_to_dir(selected_dataset_slug)
+        started_at = time.time()
         result = run_finetune_subprocess(
             "scripts/finetune_readiness_report.py",
             ["--dataset", str(dataset_path)],
@@ -930,6 +943,8 @@ def run_readiness_report_from_gradio(selected_dataset_slug: str | None) -> str:
         report_path = REPORTS_DIR / "finetune_readiness_report.json"
         markdown_path = REPORTS_DIR / "finetune_readiness_report.md"
         report = read_json_file(report_path)
+        if report is not None and not readiness_report_is_current(report, report_path, dataset_path, started_at):
+            report = None  # betik rapor yazamadı: önceki (başka dataset) raporu bu sonuç gibi gösterme
         if report is None:
             if result.returncode != 0:
                 return "HATA: Readiness raporu çalıştırılamadı.\n" + first_clean_error_line(result)
@@ -2071,11 +2086,6 @@ if __name__ == "__main__":
     print(f"Studio proje klasoru: {studio_root()}")
 
     app = build_app()
-    # outputs/ may be a junction to another drive folder (e.g. C:\AvenoxData).
-    # Gradio checks the resolved path, so allow the app's own output folders explicitly.
-    studio_root().mkdir(parents=True, exist_ok=True)
-    allowed_output_dirs = [
-        str(path.resolve())
-        for path in (OUTPUT_DIR, PREPROCESSED_REFERENCE_DIR, REPORTS_DIR, studio_root())
-    ]
+    # outputs/ ve profiles/ junction olabilir (C:\AvenoxData); Gradio çözülmüş yolu denetler.
+    allowed_output_dirs = gradio_allowed_paths(OUTPUT_DIR, PREPROCESSED_REFERENCE_DIR, REPORTS_DIR)
     app.launch(server_name="127.0.0.1", share=False, allowed_paths=allowed_output_dirs)

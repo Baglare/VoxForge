@@ -35,7 +35,7 @@ def _quality_line(title: str, report: Any) -> str:
     return line + "".join(f"\n  - {item}" for item in warnings)
 
 
-def describe_entry(item: dict[str, Any] | None) -> str:
+def describe_entry(item: dict[str, Any] | None, usage: str = "") -> str:
     if not item:
         return NO_SELECTION
     lines = [f"### {item['name']}", f"{KIND_LABELS[item['kind']]} · `{item['key']}`"]
@@ -52,6 +52,8 @@ def describe_entry(item: dict[str, Any] | None) -> str:
         lines.append(f"- Örnek replik: {item.get('text') or '—'}")
         lines.append(f"- Tohum {item.get('seed')} · model `{item.get('model_id')}`")
         lines.append("- Hızlı ses ve Studio'da referans olarak kullanılır; VoxCPM2 Studio projesinde sürüm kimliğiyle bağlanır.")
+    if usage:
+        lines.append(f"- Kullanıldığı yerler: {usage} (silmek için ek onay gerekir)")
     return "\n".join(lines)
 
 
@@ -98,11 +100,12 @@ class VoiceLibraryTab:
         token = VoiceLibrary.confirm_token(key) if item else ""
         return [
             str(item["reference"]) if item else None,
-            describe_entry(item),
+            describe_entry(item, self.library.describe_usages(self.library.usages(key)) if item else ""),
             gr.update(value=item["name"] if item else ""),
             gr.update(visible=is_profile),
             gr.update(value="", info=f"Onay için `{token}` yazın." if token else "Önce bir ses seçin."),
             gr.update(interactive=bool(item)),
+            gr.update(value=False),
         ]
 
     def target_updates(self, current_values: list[Any]) -> list[Any]:
@@ -149,7 +152,7 @@ class VoiceLibraryTab:
                     self.refresh = gr.Button("Listeyi yenile", size="sm")
                 with gr.Accordion("Yeni ses profili", open=False):
                     self.new_name = gr.Textbox(label="Profil adı", placeholder="Örnek: Anlatıcı", max_lines=1)
-                    self.new_audio = gr.Audio(label="Referans kayıt (6–30 sn temiz konuşma)", type="filepath")
+                    self.new_audio = gr.Audio(label="Referans kayıt (15–30 sn temiz konuşma)", type="filepath")
                     self.new_permission = gr.Checkbox(label="Bu ses bana ait veya kullanma iznim var", value=False)
                     self.create = gr.Button("Profil oluştur", variant="primary")
             with gr.Column(scale=2, elem_classes="vf-rail"):
@@ -179,6 +182,7 @@ class VoiceLibraryTab:
                         elem_classes="vf-hint",
                     )
                     self.confirm = gr.Textbox(label="Silme onayı", max_lines=1, info="Önce bir ses seçin.")
+                    self.force = gr.Checkbox(label="Bağlı projelere rağmen kaldır", value=False, info="Yalnız ses bir sahne projesinde kullanılıyorsa gerekir.")
                     self.delete_button = gr.Button("Sesi kütüphaneden kaldır", variant="stop", size="sm", interactive=False)
                 self.status = gr.Markdown()
 
@@ -187,7 +191,7 @@ class VoiceLibraryTab:
         return [self.status, self.table, self.broken, self.selector, *self.selection_components()]
 
     def selection_components(self) -> list[Any]:
-        return [self.player, self.details, self.rename_box, self.profile_tools, self.confirm, self.delete_button]
+        return [self.player, self.details, self.rename_box, self.profile_tools, self.confirm, self.delete_button, self.force]
 
     def wire(self) -> None:
         targets = [component for component, _fn, _empty in self.refresh_targets]
@@ -230,10 +234,10 @@ class VoiceLibraryTab:
                 return key, "Mevcut kayıt yeniden işlendi."
             return run(action, key, list(current))
 
-        def on_delete(key, confirmation, *current):
+        def on_delete(key, confirmation, force, *current):
             def action():
                 name = self.library.get(key)["name"]
-                target = self.library.delete(key, confirmation)
+                target = self.library.delete(key, confirmation, force=bool(force))
                 return None, f"**{name}** kütüphaneden kaldırıldı; dosyalar `{target.name}` adıyla çöp kutusunda."
             return run(action, key, list(current))
 
@@ -259,6 +263,6 @@ class VoiceLibraryTab:
             self.status, [self.replace_audio, self.replace_permission],
         )
         self.reprocess_button.click(on_reprocess, [self.selector, *targets], outputs)
-        self.delete_button.click(on_delete, [self.selector, self.confirm, *targets], outputs)
+        self.delete_button.click(on_delete, [self.selector, self.confirm, self.force, *targets], outputs)
         self.selector.change(self.selection_outputs, self.selector, selection)
         self.table.select(on_table_select, None, self.selector)

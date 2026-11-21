@@ -67,6 +67,7 @@ from voxforge.playground.service import (  # noqa: E402
 )
 from voxforge.quality.takes import DEFAULT_ALTERNATIVES, MAX_ALTERNATIVES  # noqa: E402
 from voxforge.studio import studio_root  # noqa: E402
+from voxforge.ui_paths import gradio_allowed_paths  # noqa: E402
 from voxforge.studio.service import StudioError, StudioService  # noqa: E402
 from voxforge.voices import VoiceLibrary, VoiceLibraryError, is_design_key  # noqa: E402
 
@@ -199,7 +200,11 @@ def controls_from(cfg: Any, steps: Any, style: Any, pacing: Any, sentence_pause:
     ).validated()
 
 
-SCENE_STATE_LABELS = {"missing": "üretilmedi", "stale": "ayar değişti, yeniden üret"}
+SCENE_STATE_LABELS = {
+    "missing": "üretilmedi",
+    "stale": "ayar değişti, yeniden üret",
+    "orphan": "ses kütüphanede yok, yeni ses seçin",
+}
 
 
 def scene_rows(project: SceneProject | None, narrator: SceneNarrator | None = None, device: str = "cuda") -> list[list[Any]]:
@@ -238,7 +243,7 @@ def build_app(
     quality = quality or PlaygroundQuality(service)
     quality_tab = QualityTab(quality, lambda: history_choices(service))
     studio_service = StudioService(studio_root(), manager=service.manager, quality=quality.director)
-    library = library or VoiceLibrary(designs=studio_service.designs)
+    library = library or VoiceLibrary(designs=studio_service.designs, playground_root=service.root)
     library_tab = VoiceLibraryTab(library)
 
     def voice_choices() -> list[tuple[str, str]]:
@@ -599,6 +604,8 @@ def build_app(
                 reference=reference, engine_settings=INFERENCE_PRESET_KWARGS[mode] if is_xtts else None,
                 post_process=bool(post_value),
             )
+            if use_upload:
+                service.discard_reference_if_unused(reference, records)
             primary = records[-1] if records else None
             b_record = None
             if ab_value and primary:
@@ -744,9 +751,16 @@ def build_app(
                 project = narrator.store.load(slug)
             except ControlError as exc:
                 return [gr.update()] * 6 + scene_outputs(None, f"Hata — {exc}")
-            loaded = [project.name, project.profile, project.variant, project.seed, project.scene_gap,
+            profile_value, note = project.profile, f"`{slug}` yüklendi."
+            if project.profile and project.profile not in library.keys():
+                profile_value = None  # menüde olmayan değer Gradio'da hata verir; mevcut sahne sesleri korunur
+                note += (
+                    f" ⚠️ Projenin sesi (`{project.profile}`) kütüphanede yok; sahne sesleri korunuyor ama yeni bir ses "
+                    "seçilene kadar yeniden üretilemez veya birleştirilemez."
+                )
+            loaded = [project.name, profile_value, project.variant, project.seed, project.scene_gap,
                       "\n\n".join(f"## {s.title}\n{s.text}" for s in project.scenes)]
-            return loaded + scene_outputs(project, f"`{slug}` yüklendi.")
+            return loaded + scene_outputs(project, note)
 
         def on_scene_generate_one(project, name, profile_value, variant_value, seed_value, gap_value, rows, index, device_value):
             try:
@@ -840,13 +854,16 @@ def main() -> None:
     atexit.register(service.manager.close)
     atexit.register(quality.close)
     service.audio_dir.mkdir(parents=True, exist_ok=True)
+    pruned = service.prune_references()
+    if pruned:
+        print(f"Kullanılmayan {len(pruned)} eski tek seferlik referans temizlendi.")
     app = build_app(service, quality)
     port = int(os.environ.get("VOXFORGE_PLAYGROUND_PORT", "7861"))
     print(f"Voice Playground çıktıları: {service.root}")
-    # outputs/ bir junction olabilir; Gradio çözülmüş yolu denetler.
+    # outputs/ ve profiles/ junction olabilir; Gradio çözülmüş yolu denetler.
     app.launch(
         server_name="127.0.0.1", server_port=port, share=False,
-        allowed_paths=[str(service.root.resolve()), str(studio_root().resolve())],
+        allowed_paths=gradio_allowed_paths(service.root),
     )
 
 
