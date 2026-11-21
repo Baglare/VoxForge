@@ -168,15 +168,19 @@ def build_studio(
         )
 
     def preset_for(engine_id, label):
+        if engine_id == "mock":
+            return {}
         if engine_id == "voxcpm2":
             return (vox_presets or {}).get(label, ("", {}))[1]
         return preset_kwargs.get(label, {})
 
     def preset_update(engine_id):
+        if engine_id == "mock":
+            return gr.update(visible=False)
         if engine_id == "voxcpm2" and vox_presets:
             choices = [(name, key) for key, (name, _) in vox_presets.items()]
             return gr.update(choices=choices, value="normal", visible=True)
-        return gr.update(choices=preset_choices, value=default_preset, visible=engine_id != "mock")
+        return gr.update(choices=preset_choices, value=default_preset, visible=True)
 
     with gr.Blocks(title="VoxForge Studio") as studio:
         if not vox_presets:
