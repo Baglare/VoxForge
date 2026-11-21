@@ -236,9 +236,9 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
                         profile = gr.Dropdown(
                             profile_choices(), label="Ses profili", value=None, allow_custom_value=False,
                             filterable=False, scale=4, min_width=180,
-                            info="Boş bırakırsan varsayılan ses kullanılır.",
+                            info="İlk üretim için kayıtlı bir ses profili seç. Yalnız Mock motoru profilsiz çalışır.",
                         )
-                        generate = gr.Button("Seslendir", variant="primary", size="lg", elem_classes="vf-go", scale=1, min_width=120)
+                        generate = gr.Button("Seslendir", interactive=False, variant="primary", size="lg", elem_classes="vf-go", scale=1, min_width=120)
                     message = gr.Markdown()
                 with gr.Accordion("Ses ve üretim ayarları", open=False):
                     refresh_profiles = gr.Button("Profilleri yenile", size="sm")
@@ -464,6 +464,8 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
             # Son çıktı: bu çağrıda üretilen kaydın kimliği (yoksa None). Otomatik kalite zinciri yalnız
             # bunu kullanır; üretim başarısızsa önceki seçim gösterilmeye devam eder ama denetlenmez.
             key = variant_for(engine_value, chatter_value, voxcpm_value)
+            if VARIANTS[key].needs_reference and not profile_value:
+                return [*after_records([], current, ["Seslendirmek için bir ses profili seçin."]), None]
             try:
                 controls = panel_controls(cfg_v, steps_v, style_v, pacing_v, sp_v, pp_v) if key in CONTROLLABLE_VARIANTS else None
             except ControlError as exc:
@@ -510,6 +512,11 @@ def build_app(service: PlaygroundService | None = None, quality: PlaygroundQuali
         panel = [cfg, steps, style, pacing, sentence_pause, paragraph_pause]
         engine.change(on_engine, [engine, voxcpm_setting], [chatterbox_setting, voxcpm_setting, reference_text, advanced])
         voxcpm_setting.change(on_voxcpm_setting, voxcpm_setting, reference_text)
+        def generation_button(engine_value, profile_value):
+            key = variant_for(engine_value, "chatterbox-default")
+            return gr.update(interactive=bool(profile_value) or not VARIANTS[key].needs_reference)
+
+        gr.on([engine.change, profile.change], generation_button, [engine, profile], generate)
         profile.change(on_profile, profile, reference_text)
         refresh_profiles.click(lambda: [gr.update(choices=profile_choices())] * 2, None, [profile, scene_profile])
         preset.change(on_preset, preset, [*panel, preset_text])
