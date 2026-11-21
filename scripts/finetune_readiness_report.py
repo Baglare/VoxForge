@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import time
 from pathlib import Path
 import sys
 from typing import Any
@@ -264,6 +266,30 @@ def build_readiness_report(dataset_path: Path) -> dict[str, Any]:
     }
 
 
+def preserve_previous_reports() -> list[Path]:
+    """Copy the current latest reports to ``reports/history`` before they are replaced.
+
+    ``finetune_readiness_report.json/.md`` always hold the latest run (the panel reads them),
+    but an older report of another dataset must not vanish silently. Existing history files
+    are never overwritten.
+    """
+    kept: list[Path] = []
+    history = REPORTS_DIR / "history"
+    for path in (JSON_REPORT_PATH, MARKDOWN_REPORT_PATH):
+        if not path.is_file():
+            continue
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(path.stat().st_mtime))
+        history.mkdir(parents=True, exist_ok=True)
+        target = history / f"{path.stem}.{stamp}{path.suffix}"
+        counter = 1
+        while target.exists():
+            counter += 1
+            target = history / f"{path.stem}.{stamp}-{counter}{path.suffix}"
+        shutil.copy2(path, target)
+        kept.append(target)
+    return kept
+
+
 def write_json_report(report: dict[str, Any]) -> Path:
     """Readiness raporunu JSON olarak yazar."""
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -358,6 +384,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         required=True,
         help="Raporlanacak dataset klasoru. Ornek: datasets/baglare-finetune-v1",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Cagiranin raporu bu calistirmaya ait oldugunu dogrulamasi icin JSON'a yazilan kimlik.",
+    )
     return parser.parse_args(argv)
 
 
@@ -365,6 +396,9 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     dataset_path = resolve_dataset_path(args.dataset)
     report = build_readiness_report(dataset_path)
+    if args.run_id:
+        report["run_id"] = args.run_id
+    preserve_previous_reports()
     json_path = write_json_report(report)
     markdown_path = write_markdown_report(report)
     print_report(report, json_path, markdown_path)

@@ -153,11 +153,14 @@ def prepare_uploaded_reference(audio: Any, out_dir: Path) -> tuple[Path, dict[st
     target = out_dir / f"reference_{time.strftime('%Y%m%d-%H%M%S')}_{time.time_ns() % 10**6:06d}.wav"
     try:
         result = preprocess_reference_audio(source, target, mode="safe")
-    except PreprocessingError as exc:
-        raise PlaygroundError(f"Referans ses ön işlenemedi: {exc}") from exc
-    selected = Path(result["selected_output_path"])
-    if not selected.is_file():
-        raise PlaygroundError("Ön işlenmiş referans oluşmadı.")
+        selected = Path(result["selected_output_path"])
+        if not selected.is_file():
+            raise PlaygroundError("Ön işlenmiş referans oluşmadı.")
+    except BaseException as exc:
+        target.unlink(missing_ok=True)  # bu çağrıya özgü yeni dosya; yarım kalan WAV sahipsiz kalmasın
+        if isinstance(exc, PreprocessingError):
+            raise PlaygroundError(f"Referans ses ön işlenemedi: {exc}") from exc
+        raise
     report = (result.get("candidate_reports") or {}).get(result.get("selected_variant")) or {}
     return selected, {
         "variant": result.get("selected_variant"),
@@ -205,6 +208,45 @@ class PlaygroundService:
         temporary = path.with_name(path.name + ".partial")
         temporary.write_text(text, encoding="utf-8")
         temporary.replace(path)
+
+    # -- one-off references -------------------------------------------------------------------
+    def discard_reference_if_unused(self, reference: Path | None, records: list[dict[str, Any]]) -> bool:
+        """Remove a freshly preprocessed one-off reference when no record kept it (failed run)."""
+        if reference is None or Path(reference).parent != self.root / "references":
+            return False
+        if any(record.get("reference") == str(reference) for record in records):
+            return False
+        Path(reference).unlink(missing_ok=True)
+        return True
+
+    def prune_references(self, max_age_days: float = 14.0, now: float | None = None) -> list[Path]:
+        """Delete old one-off references that nothing refers to any more.
+
+        A reference stays when its file name appears in any history record, take recipe,
+        quality report or scene project (retakes and "same recipe" reruns need it), and while
+        it is younger than ``max_age_days``. Records, takes and profiles are never touched.
+        """
+        folder = self.root / "references"
+        if not folder.is_dir():
+            return []
+        cutoff = (time.time() if now is None else now) - max_age_days * 86400
+        candidates = [path for path in folder.glob("reference_*.wav") if path.is_file() and path.stat().st_mtime < cutoff]
+        if not candidates:
+            return []
+        corpus = []
+        for sub in ("audio", "takes", "quality", "scenes"):
+            for path in (self.root / sub).rglob("*.json"):
+                try:
+                    corpus.append(path.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    return []  # okunamayan kayıt: hiçbir şey silme
+        text = "\n".join(corpus)
+        removed = []
+        for path in candidates:
+            if path.name not in text:
+                path.unlink(missing_ok=True)
+                removed.append(path)
+        return removed
 
     # -- history ----------------------------------------------------------------------------
     def history(self, limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:

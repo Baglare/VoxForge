@@ -14,6 +14,9 @@ folder, never ``rmtree``.
 
 from __future__ import annotations
 
+import json
+import re
+import shutil
 import wave
 from pathlib import Path
 from typing import Any
@@ -24,6 +27,7 @@ DESIGN_PREFIX = "design:"
 KIND_LABELS = {"profile": "Kayıtlı ses profili", "design": "VoxCPM2 tasarım sesi"}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TRASH = REPO_ROOT / "outputs" / "voice_library_trash"
+DEFAULT_PLAYGROUND = REPO_ROOT / "outputs" / "playground"
 
 
 class VoiceLibraryError(ValueError):
@@ -53,7 +57,14 @@ def _quality(report: Any) -> str:
 
 
 class VoiceLibrary:
-    def __init__(self, studio_root: Path | None = None, *, designs: DesignLibrary | None = None, trash_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        studio_root: Path | None = None,
+        *,
+        designs: DesignLibrary | None = None,
+        trash_root: Path | None = None,
+        playground_root: Path | None = None,
+    ) -> None:
         if designs is None:
             if studio_root is None:
                 from voxforge.studio import studio_root as default_root
@@ -62,6 +73,7 @@ class VoiceLibrary:
             designs = DesignLibrary(Path(studio_root))
         self.designs = designs
         self.trash_root = Path(trash_root) if trash_root is not None else DEFAULT_TRASH
+        self.playground_root = Path(playground_root) if playground_root is not None else DEFAULT_PLAYGROUND
 
     # -- reading -------------------------------------------------------------------------
     @staticmethod
@@ -168,6 +180,51 @@ class VoiceLibrary:
         except (OSError, ValueError, KeyError):
             return ""
 
+    # -- dependencies --------------------------------------------------------------------
+    def usages(self, key: str) -> dict[str, list[str]]:
+        """Where a voice is still referenced by key: Sahneli Anlatım projects (read only).
+
+        Studio projects keep their own copy of the reference and Playground history records
+        keep their WAV, so those do not depend on the library entry; scene projects do (they
+        resolve the voice again for every regeneration and for the merge check).
+        """
+        scenes = []
+        for path in sorted((self.playground_root / "scenes").glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("profile") == key:
+                scenes.append(str(data.get("name") or path.stem))
+        return {"scenes": scenes} if scenes else {}
+
+    @staticmethod
+    def describe_usages(usages: dict[str, list[str]]) -> str:
+        parts = [f"sahne projeleri: {', '.join(usages['scenes'])}"] if usages.get("scenes") else []
+        return "; ".join(parts)
+
+    def _transcript_path(self, key: str) -> Path | None:
+        if is_design_key(key):
+            return self.playground_root / "transcripts" / f"design-{_design_id(key)}.txt"
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", key or ""):
+            return self.playground_root / "transcripts" / f"{key}.txt"
+        return None
+
+    def _park_transcript(self, key: str) -> Path | None:
+        """Move a voice's saved Ultimate Cloning transcript to the trash.
+
+        The transcript describes one specific recording. A deleted voice whose slug is reused,
+        or a replaced reference, must not silently inherit it (a wrong transcript degrades
+        Ultimate Cloning without any error).
+        """
+        path = self._transcript_path(key)
+        if path is None or not path.is_file():
+            return None
+        target = self._trash_slot("transcripts", key).with_suffix(".txt")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(target))
+        return target
+
     # -- changes ---------------------------------------------------------------------------
     def _profile_call(self, function: str, *args: Any, **kwargs: Any) -> Any:
         utils = self._utils()
@@ -210,7 +267,7 @@ class VoiceLibrary:
         from voxforge.runs import utc_now_iso
 
         stamp = utc_now_iso().replace(":", "").replace("-", "").replace(".", "")
-        return self.trash_root / group / f"{key}-{stamp}"
+        return self.trash_root / group / f"{str(key).replace(':', '-')}-{stamp}"
 
     def replace_reference(self, key: str, audio: Any, permission: bool) -> str | None:
         """Replace a profile reference; returns a warning if the old files stayed in the profile."""
@@ -221,6 +278,7 @@ class VoiceLibrary:
             "replace_voice_profile_reference", key, self._audio_path(audio),
             keep_previous_dir=self._trash_slot("replaced-references", key),
         )
+        self._park_transcript(key)  # eski kaydın transkripti yeni kayda ait değil
         return result.archive_warning
 
     def pending_replacements(self) -> dict[str, int]:
@@ -247,16 +305,29 @@ class VoiceLibrary:
         self.recover_replacements(key)  # yarıda kalan değişim önce tamamlanır veya geri alınır
         self._profile_call("recreate_voice_profile", key)
 
-    def delete(self, key: str, confirmation: str) -> Path:
-        """Move a voice to the trash; ``confirmation`` must repeat its confirm token."""
+    def delete(self, key: str, confirmation: str, *, force: bool = False) -> Path:
+        """Move a voice to the trash; ``confirmation`` must repeat its confirm token.
+
+        A voice that scene projects still use is only removed with ``force`` (the scenes
+        would otherwise stop being regenerable or mergeable without warning).
+        """
         if (confirmation or "").strip() != self.confirm_token(key):
             raise VoiceLibraryError(f"Silmek için onay kutusuna `{self.confirm_token(key)}` yazın.")
+        used = self.describe_usages(self.usages(key))
+        if used and not force:
+            raise VoiceLibraryError(
+                f"Bu ses hâlâ kullanılıyor ({used}). Yine de kaldırmak için «Bağlı projelere rağmen kaldır» kutusunu "
+                "işaretleyin; sahneler yeni bir ses seçilene kadar yeniden üretilemez veya birleştirilemez."
+            )
         if is_design_key(key):
             try:
-                return self.designs.archive(_design_id(key))
+                target = self.designs.archive(_design_id(key))
             except (OSError, ValueError, KeyError) as exc:
                 raise VoiceLibraryError(str(exc)) from exc
+            self._park_transcript(key)
+            return target
         result = self._profile_call("archive_voice_profile", key, self.trash_root / "profiles")
+        self._park_transcript(key)
         return result.profile_dir
 
     @staticmethod
