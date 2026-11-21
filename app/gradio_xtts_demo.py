@@ -84,7 +84,7 @@ from voxforge.runs import SCHEMA_VERSION, write_json_atomic
 from voxforge.studio import studio_root
 from voxforge.studio.service import StudioError, StudioService
 from studio_ui import build_studio
-from ui_theme import CSS, THEME, hero, lead, section
+from ui_theme import CSS, THEME, hero, section
 from scripts.voice_profile_utils import (
     VoiceProfileError,
     VoiceProfileResult,
@@ -1757,15 +1757,10 @@ def build_demo() -> gr.Blocks:
     initial_dataset_scan = scan_finetune_datasets()
 
     with gr.Blocks(title="VoxForge XTTS Demo") as demo:
-        lead(
-            "XTTS-v2 ile tek seferlik üretim, yerel ses profilleri ve fine-tuning hazırlığı. "
-            "Ortam değişkeni `VOXFORGE_TTS_ENGINE=mock` ile kayıt ve model gerektirmeyen sentetik test modu açılır."
-        )
-
         with gr.Row(equal_height=False):
             with gr.Column(scale=3):
                 with gr.Group(elem_classes="vf-card"):
-                    section("Metin")
+                    section("Metni seslendir")
                     text_input = gr.Textbox(
                         label="Türkçe metin",
                         show_label=False,
@@ -1795,22 +1790,22 @@ def build_demo() -> gr.Blocks:
                         type="filepath",
                     )
                 with gr.Group(elem_classes="vf-card"):
-                    section("Üretim")
-                    inference_preset_dropdown = gr.Dropdown(
-                        label="Üretim modu",
-                        choices=INFERENCE_PRESET_CHOICES,
-                        value=INFERENCE_PRESET_DEFAULT,
-                        interactive=True,
-                    )
-                    with gr.Row():
-                        post_processing_checkbox = gr.Checkbox(
-                            label="Çıktı sesini normalize et",
-                            value=True,
+                    with gr.Accordion("Üretim seçenekleri", open=False):
+                        inference_preset_dropdown = gr.Dropdown(
+                            label="Üretim modu",
+                            choices=INFERENCE_PRESET_CHOICES,
+                            value=INFERENCE_PRESET_DEFAULT,
+                            interactive=True,
                         )
-                        ab_test_checkbox = gr.Checkbox(
-                            label="A/B karşılaştırma üret",
-                            value=False,
-                        )
+                        with gr.Row():
+                            post_processing_checkbox = gr.Checkbox(
+                                label="Çıktı sesini normalize et",
+                                value=True,
+                            )
+                            ab_test_checkbox = gr.Checkbox(
+                                label="A/B karşılaştırma üret",
+                                value=False,
+                            )
                     permission_checkbox = gr.Checkbox(
                         label="Bu ses bana ait veya kullanma iznim var",
                         value=False,
@@ -1832,7 +1827,7 @@ def build_demo() -> gr.Blocks:
                         interactive=False,
                     )
                 quality_report_output = gr.Markdown(
-                    value="Kalite raporu ses uretiminden sonra burada gorunecek.",
+                    value="",
                     elem_classes="vf-hint",
                 )
 
@@ -2056,16 +2051,11 @@ def build_app() -> gr.Blocks:
     )
     demo = build_demo()
     with gr.Blocks(title="VoxForge", theme=THEME, css=CSS) as app:
-        hero(
-            "VoxForge",
-            "XTTS Demo",
-            "Türkçe metni yerel ses profilinle XTTS-v2 üzerinden seslendir; uzun metinleri Studio'da proje olarak üret.",
-            ["yerel", selected_tts_engine_name()],
-        )
+        hero("VoxForge", "XTTS atölyesi")
         with gr.Tabs(elem_classes="vf-tabs"):
-            with gr.Tab("XTTS Demo"):
+            with gr.Tab("Hızlı ses (XTTS)"):
                 demo.render()
-            with gr.Tab("Studio"):
+            with gr.Tab("Sesli kitap"):
                 studio.render()
     return app
 

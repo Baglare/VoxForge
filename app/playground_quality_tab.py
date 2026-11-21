@@ -110,7 +110,7 @@ class QualityTab:
         with gr.Accordion("Nasıl çalışır?", open=False):
             gr.Markdown(INTRO)
         with gr.Group(elem_classes="vf-card"):
-            section("1 · Üretimi denetle")
+            section("Kaydı denetle")
             with gr.Row(equal_height=True):
                 self.record = gr.Dropdown(self.history_choices(), label="Üretim", value=None, scale=4)
                 refresh = gr.Button("Listeyi yenile", size="sm", scale=1, min_width=120)
@@ -119,12 +119,12 @@ class QualityTab:
                 check = gr.Button("Kalite denetimi yap", variant="secondary")
         self.report = gr.Markdown()
         with gr.Group(elem_classes="vf-card"):
-            section("2 · Alternatif üret", "⚠️ işaretli cümleler sorunlu bulundu; yalnız onları yeniden üretebilirsin.")
+            section("Alternatif üret", "⚠️ işaretli cümleler sorunlu bulundu; yalnız onları yeniden üretebilirsin.")
             with gr.Row(equal_height=True):
                 self.sentence = gr.Dropdown([("Tüm metin", WHOLE_TEXT)], value=WHOLE_TEXT, label="Alternatif üretilecek bölüm", scale=3)
                 count = gr.Slider(1, MAX_ALTERNATIVES, value=DEFAULT_ALTERNATIVES, step=1, label="Alternatif sayısı", info="Her biri farklı tohum", scale=2)
                 generate = gr.Button("Alternatif üret", variant="primary", scale=1)
-        section("3 · Dinle ve seç")
+        section("Dinle ve seç")
         self.group = gr.Dropdown([], label="Take grubu", value=None)
         self.table = gr.Dataframe(headers=TAKE_HEADERS, interactive=False, wrap=True, label="Take'ler (hiçbiri silinmez)")
         with gr.Row(equal_height=False):
